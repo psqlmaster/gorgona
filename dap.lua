@@ -6,8 +6,8 @@ dap.configurations.c = {
     name = "Запуск omen",
     type = "c",  -- именно этот тип должен существовать в dap.adapters
     request = "launch",
-    program = vim.fn.getcwd() .. "/omen",
-    args = {"-v", "listen", "single", "HsLOMw3u8MM=" },
+    program = vim.fn.getcwd() .. "/gargona",
+    args = {"-v", "listen", "single", "RWTPQzuhzBw=" },
     --args = { "listen", "all"},
     cwd = "${workspaceFolder}",
     stopOnEntry = true,
