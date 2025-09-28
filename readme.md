@@ -35,7 +35,7 @@ The project includes a client for key generation, sending messages, and listenin
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/gargona.git
+   git clone https://github.com/psqlmaster/gargona.git
    cd gargona
    ```
 
@@ -129,7 +129,7 @@ Gargona, названная в честь мифических стражей, �
 
 1. Клонируйте репозиторий:
    ```
-   git clone https://github.com/yourusername/gargona.git
+   git clone https://github.com/psqlmaster/gargona.git
    cd gargona
    ```
 
