@@ -7,12 +7,32 @@
 #include <sys/select.h>
 #include <time.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #define MAX_MSG_LEN 8192  // Increased buffer
 #define MAX_ALERTS 1024
 #define MAX_CLIENTS 100
 #define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
+#define MAX_LOG_SIZE (10 * 1024 * 1024) // 10 MB
+
+FILE *log_file = NULL;  // Глобальный файл лога
+
+// Функция для проверки на HTTP-запрос
+int is_http_request(const char *buffer) {
+    if (strncmp(buffer, "GET ", 4) == 0 ||
+        strncmp(buffer, "HEAD ", 5) == 0 ||
+        strncmp(buffer, "POST ", 5) == 0 ||
+        strncmp(buffer, "OPTIONS ", 8) == 0 ||
+        strncmp(buffer, "CONNECT ", 8) == 0 ||
+        strncmp(buffer, "PUT ", 4) == 0 ||
+        strncmp(buffer, "DELETE ", 7) == 0 ||
+        strncmp(buffer, "TRACE ", 6) == 0 ||
+        strncmp(buffer, "PATCH ", 6) == 0) {
+        return 1;
+    }
+    return 0;
+}
 
 /* Structure for storing an alert */
 typedef struct {
@@ -41,6 +61,7 @@ Recipient *recipients = NULL;
 int recipient_count = 0;
 int recipient_capacity = 0;
 int client_sockets[MAX_CLIENTS];
+
 struct {
     int sock;
     char pubkey_hash[64]; // For single mode
@@ -375,6 +396,21 @@ void send_current_alerts(int sd, int mode, const char *single_hash_b64) {
     }
 }
 
+/* Helper: Rotate log if too large */
+void rotate_log() {
+    struct stat st;
+    if (stat("gargona.log", &st) == 0 && st.st_size > MAX_LOG_SIZE) {
+        if (log_file) fclose(log_file);
+        rename("gargona.log", "gargona.log.1");
+        log_file = fopen("gargona.log", "a");
+        if (!log_file) {
+            perror("Failed to open new gargona.log after rotation");
+        } else {
+            fprintf(log_file, "[%ld] Log rotated\n", (long)time(NULL));
+        }
+    }
+}
+
 int main() {
     int server_fd, new_socket, max_clients = MAX_CLIENTS, activity, i, valread, sd;
     int max_sd;
@@ -389,12 +425,29 @@ int main() {
         client_sockets[i] = 0;
         subscribers[i].sock = 0;
         subscribers[i].mode = 0;
+        subscribers[i].pubkey_hash[0] = '\0';
+    }
+
+    // Initialize logging
+    if (log_file == NULL) {
+        log_file = fopen("gargona.log", "a");
+        if (!log_file) {
+            perror("Failed to open gargona.log");
+        } else {
+            rotate_log();
+            fprintf(log_file, "[%ld] Server started\n", (long)time(NULL));
+        }
     }
 
     // Initialize recipients
     recipient_capacity = INITIAL_RECIPIENT_CAPACITY;
     recipients = malloc(sizeof(Recipient) * recipient_capacity);
     if (!recipients) {
+        if (log_file) {
+            fprintf(log_file, "[%ld] Failed to allocate memory for recipients\n", (long)time(NULL));
+            fclose(log_file);
+            log_file = NULL;
+        }
         perror("Не удалось выделить память для recipients");
         exit(EXIT_FAILURE);
     }
@@ -402,12 +455,22 @@ int main() {
 
     // Create socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        if (log_file) {
+            fprintf(log_file, "[%ld] Socket creation failed: %s\n", (long)time(NULL), strerror(errno));
+            fclose(log_file);
+            log_file = NULL;
+        }
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
 
     // Set socket options
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
+        if (log_file) {
+            fprintf(log_file, "[%ld] Setsockopt failed: %s\n", (long)time(NULL), strerror(errno));
+            fclose(log_file);
+            log_file = NULL;
+        }
         perror("setsockopt");
         exit(EXIT_FAILURE);
     }
@@ -418,17 +481,30 @@ int main() {
 
     // Bind socket
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        if (log_file) {
+            fprintf(log_file, "[%ld] Bind failed: %s\n", (long)time(NULL), strerror(errno));
+            fclose(log_file);
+            log_file = NULL;
+        }
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
 
     // Listen
     if (listen(server_fd, 3) < 0) {
+        if (log_file) {
+            fprintf(log_file, "[%ld] Listen failed: %s\n", (long)time(NULL), strerror(errno));
+            fclose(log_file);
+            log_file = NULL;
+        }
         perror("listen");
         exit(EXIT_FAILURE);
     }
 
     printf("Сервер запущен на порту %d\n", read_port_config());
+    if (log_file) {
+        fprintf(log_file, "[%ld] Server running on port %d\n", (long)time(NULL), read_port_config());
+    }
 
     while (1) {
         FD_ZERO(&readfds);
@@ -442,109 +518,278 @@ int main() {
         }
 
         activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
-
         if ((activity < 0) && (errno != EINTR)) {
-            printf("select error");
+            if (log_file) {
+                rotate_log();
+                fprintf(log_file, "[%ld] Select error: %s\n", (long)time(NULL), strerror(errno));
+            }
+            printf("select error: %s\n", strerror(errno));
+            continue;
         }
 
+        // New connection
         if (FD_ISSET(server_fd, &readfds)) {
             if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+                if (log_file) {
+                    rotate_log();
+                    fprintf(log_file, "[%ld] Accept failed: %s\n", (long)time(NULL), strerror(errno));
+                }
                 perror("accept");
-                exit(EXIT_FAILURE);
+                continue;
             }
-
             for (i = 0; i < max_clients; i++) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
+                    subscribers[i].mode = 0;
+                    subscribers[i].pubkey_hash[0] = '\0';
                     break;
+                }
+            }
+            if (i == max_clients) {
+                dprintf(new_socket, "Server full, try again later\n");
+                close(new_socket);
+                if (log_file) {
+                    rotate_log();
+                    fprintf(log_file, "[%ld] No free slots for new connection\n", (long)time(NULL));
                 }
             }
         }
 
+        // Handle client data
         for (i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
-
             if (FD_ISSET(sd, &readfds)) {
-                if ((valread = read(sd, buffer, MAX_MSG_LEN)) == 0) {
+                valread = read(sd, buffer, MAX_MSG_LEN - 1); // Reserve space for '\0'
+                if (valread <= 0) {
+                    if (valread < 0 && log_file) {
+                        rotate_log();
+                        fprintf(log_file, "[%ld] Read error from client %d: %s\n", 
+                                (long)time(NULL), sd, strerror(errno));
+                    }
+                    // No logging for valread == 0 (normal disconnect)
                     close(sd);
                     client_sockets[i] = 0;
                     subscribers[i].sock = 0;
                     subscribers[i].mode = 0;
-                } else {
-                    buffer[valread] = '\0';
-                    printf("Получено: %s\n", buffer);
+                    subscribers[i].pubkey_hash[0] = '\0';
+                    continue;
+                }
 
-                    if (strncmp(buffer, "SEND|", 5) == 0) {
-                        char *token = strtok(buffer + 5, "|");
-                        char *pubkey_hash_b64 = token;
-                        token = strtok(NULL, "|");
-                        time_t create_at = atol(token);
-                        token = strtok(NULL, "|");
-                        time_t unlock_at = atol(token);
-                        token = strtok(NULL, "|");
-                        time_t expire_at = atol(token);
-                        token = strtok(NULL, "|");
-                        char *base64_text = token;
-                        token = strtok(NULL, "|");
-                        char *base64_encrypted_key = token;
-                        token = strtok(NULL, "|");
-                        char *base64_iv = token;
-                        token = strtok(NULL, "|");
-                        char *base64_tag = token;
+                buffer[valread] = '\0'; // Ensure null-termination
+                printf("Получено: %s\n", buffer);
 
-                        size_t hash_len;
-                        unsigned char *pubkey_hash = base64_decode(pubkey_hash_b64, &hash_len);
-                        if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
-                            dprintf(sd, "Ошибка: Неверный хеш публичного ключа\n");
-                            free(pubkey_hash);
-                            continue;
+                // Early validation: check if the command is valid
+                if (strncmp(buffer, "SEND|", 5) != 0 &&
+                    strncmp(buffer, "LISTEN|", 7) != 0 &&
+                    strncmp(buffer, "SUBSCRIBE ALL", 13) != 0 &&
+                    strncmp(buffer, "SUBSCRIBE LIVE", 14) != 0) {
+                    // Handle HTTP separately
+                    if (is_http_request(buffer)) {
+                        char http_response[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        send(sd, http_response, sizeof(http_response) - 1, 0);
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Handled HTTP probe from %d: %.*s\n", 
+                                    (long)time(NULL), sd, valread, buffer);
                         }
-
-                        add_alert(pubkey_hash, create_at, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
-                        dprintf(sd, "Алерты успешно добавлен\n");
-
-                        Recipient *rec = find_recipient(pubkey_hash);
-                        if (rec) {
-                            notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
-                        }
-
-                        free(pubkey_hash);
-                    } else if (strncmp(buffer, "LISTEN|", 7) == 0) {
-                        char *pubkey_hash_b64 = buffer + 7;
-                        trim_string(pubkey_hash_b64);
-                        for (int j = 0; j < MAX_CLIENTS; j++) {
-                            if (client_sockets[j] == sd) {
-                                subscribers[j].mode = 3;
-                                strncpy(subscribers[j].pubkey_hash, pubkey_hash_b64, sizeof(subscribers[j].pubkey_hash) - 1);
-                                break;
-                            }
-                        }
-                        send_current_alerts(sd, 3, pubkey_hash_b64);
-                        dprintf(sd, "Подписан на SINGLE для %s\n", pubkey_hash_b64);
-                    } else if (strncmp(buffer, "SUBSCRIBE ALL", 13) == 0) {
-                        for (int j = 0; j < MAX_CLIENTS; j++) {
-                            if (client_sockets[j] == sd) {
-                                subscribers[j].mode = 2;
-                                subscribers[j].pubkey_hash[0] = '\0';
-                                break;
-                            }
-                        }
-                        send_current_alerts(sd, 2, NULL);
-                        dprintf(sd, "Подписан на ALL\n");
-                    } else if (strncmp(buffer, "SUBSCRIBE LIVE", 14) == 0) {
-                        for (int j = 0; j < MAX_CLIENTS; j++) {
-                            if (client_sockets[j] == sd) {
-                                subscribers[j].mode = 1;
-                                subscribers[j].pubkey_hash[0] = '\0';
-                                break;
-                            }
-                        }
-                        send_current_alerts(sd, 1, NULL);
-                        dprintf(sd, "Подписан на LIVE\n");
                     } else {
-                        dprintf(sd, "Ошибка: Неизвестная команда\n");
+                        // Invalid command (e.g., MGLNDD_...)
+                        dprintf(sd, "Error: Unknown or malformed command\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Invalid command from %d: %.*s\n", 
+                                    (long)time(NULL), sd, valread, buffer);
+                        }
                     }
+                    close(sd);
+                    client_sockets[i] = 0;
+                    subscribers[i].sock = 0;
+                    subscribers[i].mode = 0;
+                    subscribers[i].pubkey_hash[0] = '\0';
+                    continue;
+                }
+
+                // Additional validation for SEND| and LISTEN|
+                if ((strncmp(buffer, "SEND|", 5) == 0 || strncmp(buffer, "LISTEN|", 7) == 0) && 
+                    (valread < 8 || strchr(buffer, '|') == NULL)) {
+                    dprintf(sd, "Error: Malformed SEND or LISTEN command\n");
+                    if (log_file) {
+                        rotate_log();
+                        fprintf(log_file, "[%ld] Malformed SEND/LISTEN from %d: %.*s\n", 
+                                (long)time(NULL), sd, valread, buffer);
+                    }
+                    close(sd);
+                    client_sockets[i] = 0;
+                    subscribers[i].sock = 0;
+                    subscribers[i].mode = 0;
+                    subscribers[i].pubkey_hash[0] = '\0';
+                    continue;
+                }
+
+                // Process valid commands (no logging)
+                if (strncmp(buffer, "SEND|", 5) == 0) {
+                    char *token = strtok(buffer + 5, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Invalid SEND format\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Invalid SEND format from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    char *pubkey_hash_b64 = token;
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing create_at\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing create_at in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    time_t create_at = atol(token);
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing unlock_at\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing unlock_at in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    time_t unlock_at = atol(token);
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing expire_at\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing expire_at in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    time_t expire_at = atol(token);
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing base64_text\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing base64_text in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    char *base64_text = token;
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing base64_encrypted_key\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing base64_encrypted_key in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    char *base64_encrypted_key = token;
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing base64_iv\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing base64_iv in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    char *base64_iv = token;
+                    token = strtok(NULL, "|");
+                    if (!token) {
+                        dprintf(sd, "Error: Missing base64_tag\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing base64_tag in SEND from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    char *base64_tag = token;
+
+                    size_t hash_len;
+                    unsigned char *pubkey_hash = base64_decode(pubkey_hash_b64, &hash_len);
+                    if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
+                        dprintf(sd, "Ошибка: Неверный хеш публичного ключа\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Invalid pubkey hash from %d\n", (long)time(NULL), sd);
+                        }
+                        free(pubkey_hash);
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+
+                    add_alert(pubkey_hash, create_at, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
+                    dprintf(sd, "Алерты успешно добавлен\n");
+                    Recipient *rec = find_recipient(pubkey_hash);
+                    if (rec) {
+                        notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
+                    }
+                    free(pubkey_hash);
+                } else if (strncmp(buffer, "LISTEN|", 7) == 0) {
+                    char *pubkey_hash_b64 = buffer + 7;
+                    trim_string(pubkey_hash_b64);
+                    if (strlen(pubkey_hash_b64) == 0) {
+                        dprintf(sd, "Error: Empty pubkey hash in LISTEN\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Empty pubkey hash in LISTEN from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                        if (client_sockets[j] == sd) {
+                            subscribers[j].mode = 3;
+                            strncpy(subscribers[j].pubkey_hash, pubkey_hash_b64, sizeof(subscribers[j].pubkey_hash) - 1);
+                            subscribers[j].pubkey_hash[sizeof(subscribers[j].pubkey_hash) - 1] = '\0';
+                            break;
+                        }
+                    }
+                    send_current_alerts(sd, 3, pubkey_hash_b64);
+                    dprintf(sd, "Подписан на SINGLE для %s\n", pubkey_hash_b64);
+                } else if (strncmp(buffer, "SUBSCRIBE ALL", 13) == 0) {
+                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                        if (client_sockets[j] == sd) {
+                            subscribers[j].mode = 2;
+                            subscribers[j].pubkey_hash[0] = '\0';
+                            break;
+                        }
+                    }
+                    send_current_alerts(sd, 2, NULL);
+                    dprintf(sd, "Подписан на ALL\n");
+                } else if (strncmp(buffer, "SUBSCRIBE LIVE", 14) == 0) {
+                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                        if (client_sockets[j] == sd) {
+                            subscribers[j].mode = 1;
+                            subscribers[j].pubkey_hash[0] = '\0';
+                            break;
+                        }
+                    }
+                    send_current_alerts(sd, 1, NULL);
+                    dprintf(sd, "Подписан на LIVE\n");
                 }
             }
         }
@@ -556,6 +801,11 @@ int main() {
             free_alert(&recipients[r].alerts[j]);
         }
     }
-    free(recipients); // Fixed: recipient -> recipients
+    free(recipients);
+    if (log_file) {
+        fprintf(log_file, "[%ld] Server shutting down\n", (long)time(NULL));
+        fclose(log_file);
+    }
+    close(server_fd);
     return 0;
 }

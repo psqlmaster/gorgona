@@ -8,7 +8,7 @@
 
 ### Introduction
 
-Gargona, inspired by the mythical guardians that watch over secrets, is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, Gargona ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing).
+Gargona - is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, Gargona ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing).
 
 The project includes a client for key generation, sending messages, and listening for alerts, and a server for securely storing and delivering them.
 
@@ -45,9 +45,9 @@ The project includes a client for key generation, sending messages, and listenin
 
 3. Build the project:
    ```
-   gcc -g -o gargona gargona.c alert_send.c alert_listen.c config.c encrypt.c -lssl -lcrypto
-   gcc -g -o gargonad gargonad.c encrypt.c -lssl -lcrypto
+   make
    ```
+   Builds both `gargona` and `gargonad`. Clean: `make clean`. Rebuild: `make rebuild`.
 
 ### Usage
 
@@ -70,7 +70,7 @@ The project includes a client for key generation, sending messages, and listenin
 ```
 ./gargona listen <mode> [pubkey_hash_b64]
 ```
-- Modes: `live` (unlocked messages), `all` (all messages, including metadata), `single` (specific recipient hash).
+- Modes: `live` (unlocked messages), `all` (all messages, including metadata), `single` (specific recipient).
 - Example:
   ```
   ./gargona listen single RWTPQzuhzBw=
@@ -102,7 +102,7 @@ Gargona is a robust solution for encrypted, time-locked messaging with a single 
 
 ### Введение
 
-Gargona, названная в честь мифических стражей, охраняющих тайны, — это безопасная система обмена сообщениями, позволяющая отправлять зашифрованные сообщения, которые становятся доступными в заданное время и удаляются после истечения срока действия. Сообщения шифруются от отправителя до получателя с использованием RSA для обмена ключами и AES-GCM для содержимого. Сервер хранит только зашифрованные данные, не имея доступа к их содержимому, что обеспечивает конфиденциальность. Gargona идеально подходит для передачи чувствительной информации, планирования уведомлений или отложенной доставки сообщений (например, временных капсул или экстренного раскрытия данных).
+Gargona  — это безопасная система обмена сообщениями, позволяющая отправлять зашифрованные сообщения, которые становятся доступными в заданное время и удаляются после истечения срока действия. Сообщения шифруются от отправителя до получателя с использованием RSA для обмена ключами и AES-GCM для содержимого. Сервер хранит только зашифрованные данные, не имея доступа к их содержимому, что обеспечивает конфиденциальность. Gargona идеально подходит для передачи чувствительной информации, планирования уведомлений или отложенной доставки сообщений (например, временных капсул или экстренного раскрытия данных).
 
 Проект включает клиент для генерации ключей, отправки сообщений и прослушивания алертов, а также сервер для их хранения и доставки.
 
@@ -139,9 +139,9 @@ Gargona, названная в честь мифических стражей, �
 
 3. Соберите проект:
    ```
-   gcc -g -o gargona gargona.c alert_send.c alert_listen.c config.c encrypt.c -lssl -lcrypto
-   gcc -g -o gargonad gargonad.c encrypt.c -lssl -lcrypto
+   make
    ```
+   Собирает `gargona` и `gargonad`. Очистка: `make clean`. Пересборка: `make rebuild`.
 
 ### Использование
 
@@ -187,4 +187,3 @@ port = 7777
 ### Планы на будущее
 
 Gargona уже эффективно справляется с задачей зашифрованного алертинга с одним сервером. Я работаю над созданием зеркалирования серверов (репликации) без внешних сервисов, таких как Redis или PostgreSQL. Цель — обеспечить высокую скорость, децентрализацию и надёжность. Возможные подходы: протокол gossip для синхронизации между серверами в режиме peer-to-peer или лёгкий механизм консенсуса, например, адаптированный Raft. Другие идеи включают леджеры, вдохновлённые блокчейном (без майнинга), или типы данных с бесконфликтной репликацией (CRDT) для бесшовной синхронизации. Приветствуются любые предложения по улучшению!
-
