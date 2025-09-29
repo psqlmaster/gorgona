@@ -3,6 +3,7 @@
 [Русская версия](#gargona-система-зашифрованного-алертинга-с-временной-блокировкой) | [English Version](#gargona-encrypted-time-locked-messaging-system)
 
 ---
+![ ](gargona.png)
 
 ## Gargona: Encrypted Time-Locked Messaging System
 
