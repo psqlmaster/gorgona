@@ -5,7 +5,7 @@ LDFLAGS = -lssl -lcrypto
 
 # Source files
 GARGONA_SRC = gargona.c alert_send.c alert_listen.c config.c encrypt.c
-GARGONAD_SRC = gargonad.c encrypt.c
+GARGONAD_SRC = gargonad.c gargona_utils.c encrypt.c
 
 # Object files
 GARGONA_OBJ = $(GARGONA_SRC:.c=.o)
