@@ -7,38 +7,50 @@ All rights reserved. */
 #include <stdlib.h>
 #include <string.h>
 
-/* Объявления функций из других модулей */
 extern int send_alert(int argc, char *argv[], int verbose);
 extern int listen_alerts(int argc, char *argv[], int verbose);
 
-/* Выводит справку на русском и английском языках */
 void print_help(const char *program_name) {
-    printf("Использование / Usage:\n");
-    printf("  %s [-v] [-h|--help] <команда> [аргументы]\n", program_name);
-    printf("\nФлаги / Flags:\n");
-    printf("  -v            Включает отладочный вывод / Enables verbose output\n");
-    printf("  -h, --help    Показывает эту справку / Displays this help message\n");
-    printf("\nКоманды / Commands:\n");
-    printf("  genkeys       Генерирует пару ключей RSA / Generates an RSA key pair\n");
-    printf("  send <время_разблокировки> <время_истечения> <сообщение> <файл_публичного_ключа>\n");
-    printf("                Отправляет зашифрованное сообщение / Sends an encrypted message\n");
-    printf("  listen <режим> [pubkey_hash_b64]\n");
-    printf("                Слушает сообщения (режимы: live, all, single) / Listens for messages (modes: live, all, single)\n");
-    printf("\nКонфигурация / Configuration:\n");
-    printf("  Файл ./gargona.conf содержит настройки сервера.\n");
+    printf("Usage:\n");
+    printf("  %s [-v] [-h|--help] <command> [arguments]\n", program_name);
+
+    printf("\nFlags:\n");
+    printf("  -v            Enables verbose output\n");
+    printf("  -h, --help    Displays this help message\n");
+
+    printf("\nCommands:\n");
+    printf("  genkeys\n");
+    printf("      Generates an RSA key pair\n");
+    printf("\n");
+    printf("  send <unlock_time> <expire_time> <message> <public_key_file>\n");
+    printf("      Sends an encrypted message\n");
+    printf("\n");
+    printf("  listen <mode> [pubkey_hash_b64]\n");
+    printf("      Listens for messages\n");
+    printf("      Modes:\n");
+    printf("        live    - only active messages (unlock_at <= now)\n");
+    printf("        all     - all non-expired messages, including locked\n");
+    printf("        lock    - only locked messages (unlock_at > now)\n");
+    printf("        single  - only active messages for the given pubkey_hash_b64\n");
+    printf("      If pubkey_hash_b64 is provided, filters by it (mandatory for single mode)\n");
+
+    printf("\nConfiguration:\n");
     printf("  The file ./gargona.conf contains server settings.\n");
-    printf("  Формат / Format:\n");
+    printf("  Format:\n");
     printf("    [server]\n");
-    printf("    ip = <IP_адрес>  (например / example: 64.188.70.158)\n");
-    printf("    port = <порт>    (например / example: 7777)\n");
+    printf("    ip = <IP_address>   (example: 64.188.70.158)\n");
+    printf("    port = <port>       (example: 7777)\n");
+
+    printf("\nExamples:\n");
+    printf("  %s listen single RWTPQzuhzBw=\n", program_name);
+    printf("  %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"Message in the future for you my dear friend RWTPQzuhzBw=\" \"RWTPQzuhzBw=.pub\"\n", program_name);
 }
 
-/* Основная точка входа, распределяет команды */
+
 int main(int argc, char *argv[]) {
     int verbose = 0;
     int cmd_index = 1;
 
-    /* Проверяем наличие флагов -v, -h или --help */
     while (argc > cmd_index && argv[cmd_index][0] == '-') {
         if (strcmp(argv[cmd_index], "-v") == 0) {
             verbose = 1;
@@ -60,13 +72,10 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(argv[cmd_index], "genkeys") == 0) {
-        /* Генерируем пару ключей RSA */
         return generate_rsa_keys(verbose);
     } else if (strcmp(argv[cmd_index], "send") == 0) {
-        /* Перенаправляем на функцию отправки сообщения */
         return send_alert(argc - cmd_index, argv + cmd_index, verbose);
     } else if (strcmp(argv[cmd_index], "listen") == 0) {
-        /* Перенаправляем на функцию прослушивания */
         return listen_alerts(argc - cmd_index, argv + cmd_index, verbose);
     } else {
         fprintf(stderr, "Неизвестная команда: %s\n", argv[cmd_index]);

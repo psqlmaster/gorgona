@@ -147,7 +147,7 @@ int main() {
                 }
             }
             if (i == max_clients) {
-                dprintf(new_socket, "Server full, try again later\n");
+                dprintf(new_socket, "Server full, try again later\nEND_OF_MESSAGE\n");
                 close(new_socket);
                 if (log_file) {
                     rotate_log();
@@ -182,8 +182,7 @@ int main() {
                 // Early validation: check if the command is valid
                 if (strncmp(buffer, "SEND|", 5) != 0 &&
                     strncmp(buffer, "LISTEN|", 7) != 0 &&
-                    strncmp(buffer, "SUBSCRIBE ALL", 13) != 0 &&
-                    strncmp(buffer, "SUBSCRIBE LIVE", 14) != 0) {
+                    strncmp(buffer, "SUBSCRIBE ", 10) != 0) {
                     // Handle HTTP separately
                     if (is_http_request(buffer)) {
                         char http_response[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -194,8 +193,7 @@ int main() {
                                     (long)time(NULL), sd, valread, buffer);
                         }
                     } else {
-                        // Invalid command (e.g., MGLNDD_...)
-                        dprintf(sd, "Error: Unknown or malformed command\n");
+                        dprintf(sd, "Error: Unknown or malformed command\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Invalid command from %d: %.*s\n", 
@@ -210,10 +208,9 @@ int main() {
                     continue;
                 }
 
-                // Additional validation for SEND| and LISTEN|
                 if ((strncmp(buffer, "SEND|", 5) == 0 || strncmp(buffer, "LISTEN|", 7) == 0) && 
                     (valread < 8 || strchr(buffer, '|') == NULL)) {
-                    dprintf(sd, "Error: Malformed SEND or LISTEN command\n");
+                    dprintf(sd, "Error: Malformed SEND or LISTEN command\nEND_OF_MESSAGE\n");
                     if (log_file) {
                         rotate_log();
                         fprintf(log_file, "[%ld] Malformed SEND/LISTEN from %d: %.*s\n", 
@@ -227,11 +224,10 @@ int main() {
                     continue;
                 }
 
-                // Process valid commands (no logging)
                 if (strncmp(buffer, "SEND|", 5) == 0) {
                     char *token = strtok(buffer + 5, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Invalid SEND format\n");
+                        dprintf(sd, "Error: Invalid SEND format\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Invalid SEND format from %d\n", (long)time(NULL), sd);
@@ -243,7 +239,7 @@ int main() {
                     char *pubkey_hash_b64 = token;
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing create_at\n");
+                        dprintf(sd, "Error: Missing create_at\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing create_at in SEND from %d\n", (long)time(NULL), sd);
@@ -255,7 +251,7 @@ int main() {
                     time_t create_at = atol(token);
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing unlock_at\n");
+                        dprintf(sd, "Error: Missing unlock_at\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing unlock_at in SEND from %d\n", (long)time(NULL), sd);
@@ -267,7 +263,7 @@ int main() {
                     time_t unlock_at = atol(token);
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing expire_at\n");
+                        dprintf(sd, "Error: Missing expire_at\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing expire_at in SEND from %d\n", (long)time(NULL), sd);
@@ -279,7 +275,7 @@ int main() {
                     time_t expire_at = atol(token);
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing base64_text\n");
+                        dprintf(sd, "Error: Missing base64_text\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing base64_text in SEND from %d\n", (long)time(NULL), sd);
@@ -291,7 +287,7 @@ int main() {
                     char *base64_text = token;
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing base64_encrypted_key\n");
+                        dprintf(sd, "Error: Missing base64_encrypted_key\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing base64_encrypted_key in SEND from %d\n", (long)time(NULL), sd);
@@ -303,7 +299,7 @@ int main() {
                     char *base64_encrypted_key = token;
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing base64_iv\n");
+                        dprintf(sd, "Error: Missing base64_iv\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing base64_iv in SEND from %d\n", (long)time(NULL), sd);
@@ -315,7 +311,7 @@ int main() {
                     char *base64_iv = token;
                     token = strtok(NULL, "|");
                     if (!token) {
-                        dprintf(sd, "Error: Missing base64_tag\n");
+                        dprintf(sd, "Error: Missing base64_tag\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Missing base64_tag in SEND from %d\n", (long)time(NULL), sd);
@@ -329,7 +325,7 @@ int main() {
                     size_t hash_len;
                     unsigned char *pubkey_hash = base64_decode(pubkey_hash_b64, &hash_len);
                     if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
-                        dprintf(sd, "Ошибка: Неверный хеш публичного ключа\n");
+                        dprintf(sd, "Ошибка: Неверный хеш публичного ключа\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Invalid pubkey hash from %d\n", (long)time(NULL), sd);
@@ -341,7 +337,7 @@ int main() {
                     }
 
                     add_alert(pubkey_hash, create_at, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
-                    dprintf(sd, "Алерты успешно добавлен\n");
+                    dprintf(sd, "Алерты успешно добавлен\nEND_OF_MESSAGE\n");
                     Recipient *rec = find_recipient(pubkey_hash);
                     if (rec) {
                         notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
@@ -351,7 +347,7 @@ int main() {
                     char *pubkey_hash_b64 = buffer + 7;
                     trim_string(pubkey_hash_b64);
                     if (strlen(pubkey_hash_b64) == 0) {
-                        dprintf(sd, "Error: Empty pubkey hash in LISTEN\n");
+                        dprintf(sd, "Error: Empty pubkey hash in LISTEN\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             rotate_log();
                             fprintf(log_file, "[%ld] Empty pubkey hash in LISTEN from %d\n", (long)time(NULL), sd);
@@ -369,27 +365,55 @@ int main() {
                         }
                     }
                     send_current_alerts(sd, 3, pubkey_hash_b64);
-                    dprintf(sd, "Подписан на SINGLE для %s\n", pubkey_hash_b64);
-                } else if (strncmp(buffer, "SUBSCRIBE ALL", 13) == 0) {
+                    dprintf(sd, "Подписан на SINGLE для %s\nEND_OF_MESSAGE\n", pubkey_hash_b64);
+                } else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
+                    char *rest = buffer + 10;
+                    char *mode_str = strtok(rest, "|");
+                    char *pubkey_hash_b64 = strtok(NULL, "|");
+                    if (!mode_str) {
+                        dprintf(sd, "Error: Missing mode in SUBSCRIBE\nEND_OF_MESSAGE\n");
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Missing mode in SUBSCRIBE from %d\n", (long)time(NULL), sd);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    trim_string(mode_str);
+                    int sub_mode = 0;
+                    char upper_mode[16];
+                    strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
+                    upper_mode[sizeof(upper_mode) - 1] = '\0';
+                    for (char *p = upper_mode; *p; p++) *p = toupper(*p);
+                    if (strcmp(upper_mode, "LIVE") == 0) sub_mode = 1;
+                    else if (strcmp(upper_mode, "ALL") == 0) sub_mode = 2;
+                    else if (strcmp(upper_mode, "LOCK") == 0) sub_mode = 4;
+                    else {
+                        dprintf(sd, "Error: Unknown mode %s\nEND_OF_MESSAGE\n", mode_str);
+                        if (log_file) {
+                            rotate_log();
+                            fprintf(log_file, "[%ld] Unknown mode from %d: %s\n", (long)time(NULL), sd, mode_str);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
                     for (int j = 0; j < MAX_CLIENTS; j++) {
                         if (client_sockets[j] == sd) {
-                            subscribers[j].mode = 2;
-                            subscribers[j].pubkey_hash[0] = '\0';
+                            subscribers[j].mode = sub_mode;
+                            if (pubkey_hash_b64 && strlen(pubkey_hash_b64) > 0) {
+                                trim_string(pubkey_hash_b64);
+                                strncpy(subscribers[j].pubkey_hash, pubkey_hash_b64, sizeof(subscribers[j].pubkey_hash) - 1);
+                                subscribers[j].pubkey_hash[sizeof(subscribers[j].pubkey_hash) - 1] = '\0';
+                            } else {
+                                subscribers[j].pubkey_hash[0] = '\0';
+                            }
                             break;
                         }
                     }
-                    send_current_alerts(sd, 2, NULL);
-                    dprintf(sd, "Подписан на ALL\n");
-                } else if (strncmp(buffer, "SUBSCRIBE LIVE", 14) == 0) {
-                    for (int j = 0; j < MAX_CLIENTS; j++) {
-                        if (client_sockets[j] == sd) {
-                            subscribers[j].mode = 1;
-                            subscribers[j].pubkey_hash[0] = '\0';
-                            break;
-                        }
-                    }
-                    send_current_alerts(sd, 1, NULL);
-                    dprintf(sd, "Подписан на LIVE\n");
+                    send_current_alerts(sd, sub_mode, pubkey_hash_b64);
+                    dprintf(sd, "Подписан на %s%s\nEND_OF_MESSAGE\n", mode_str, pubkey_hash_b64 ? " для указанного ключа" : "");
                 }
             }
         }

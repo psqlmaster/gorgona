@@ -7,9 +7,10 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <ctype.h>
 
 #define MAX_MSG_LEN 8192
-#define MAX_ACCUM_LEN (MAX_MSG_LEN * 10)  // Для накопления данных при больших отправках
+#define MAX_ACCUM_LEN (MAX_MSG_LEN * 10)
 
 /* Удаляет пробелы, \n, \r с конца строки */
 void trim_string(char *str) {
@@ -18,6 +19,17 @@ void trim_string(char *str) {
         str[len - 1] = '\0';
         len--;
     }
+}
+
+/* Конвертирует time_t в строку UTC (буфер передаётся извне) */
+void time_to_utc_string(time_t t, char *buf, size_t bufsize) {
+struct tm *tm = gmtime(&t);
+if (!tm) {
+/* На случай ошибки gmtime */
+snprintf(buf, bufsize, "(invalid time)");
+return;
+}
+strftime(buf, bufsize, "%Y-%m-%d %H:%M:%S", tm);
 }
 
 /* Проверяет наличие приватного ключа для pubkey_hash_b64 */
@@ -33,154 +45,111 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
     return 1;
 }
 
-/* Разбирает ответ от сервера и расшифровывает сообщение */
-void parse_response(const char *response, const char *single_pubkey_hash_b64, int verbose) {
-    char *copy = strdup(response);
+/* Разбирает ответ от сервера и обрабатывает сообщение */
+void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose) {
+    if (strncmp(response, "ALERT|", 6) != 0) {
+        printf("Ответ сервера: %s\n", response);
+        return;
+    }
+
+    char *copy = strdup(response + 6);
     if (!copy) {
         fprintf(stderr, "Не удалось выделить память для ответа\n");
         return;
     }
 
-    char *pubkey_hash_b64 = NULL, *encrypted_text = NULL, *encrypted_key = NULL, *iv = NULL, *tag = NULL;
-    char create_str[50] = "", unlock_str[50] = "", expire_str[50] = "";
-    char metadata_line[256] = "";
-
-    /* Разбираем ответ построчно */
-    char *line = strtok(copy, "\n");
-    while (line) {
-        trim_string(line);
-        if (strncmp(line, "Pubkey_Hash: ", 13) == 0) {
-            pubkey_hash_b64 = line + 13;
-        } else if (strncmp(line, "Encrypted Full text: ", 21) == 0) {
-            encrypted_text = line + 21;
-        } else if (strncmp(line, "Encrypted Key: ", 15) == 0) {
-            encrypted_key = line + 15;
-        } else if (strncmp(line, "IV: ", 4) == 0) {
-            iv = line + 4;
-        } else if (strncmp(line, "Tag: ", 5) == 0) {
-            tag = line + 5;
-        } else if (strncmp(line, "Metadata: ", 10) == 0) {
-            strncpy(metadata_line, line + 10, sizeof(metadata_line) - 1);
-            metadata_line[sizeof(metadata_line) - 1] = '\0';
-        } else if (strncmp(line, "Message expired: ", 17) == 0) {
-            printf("Сообщение истекло: %s\n", line + 17);
-        } else if (strncmp(line, "Message not found", 17) == 0) {
-            printf("Сообщение не найдено\n");
-        }
-        line = strtok(NULL, "\n");
-    }
-
+    char *pubkey_hash_b64 = strtok(copy, "|");
     if (!pubkey_hash_b64) {
-        fprintf(stderr, "Ошибка: Pubkey_Hash отсутствует в ответе, есть сообщение которое можно прочитать в будущем\n");
+        fprintf(stderr, "Ошибка: Неверный формат ALERT\n");
         free(copy);
         return;
     }
 
-    /* Проверяем режим single */
-    if (single_pubkey_hash_b64 && strcmp(pubkey_hash_b64, single_pubkey_hash_b64) != 0) {
+    char *create_at_str = strtok(NULL, "|");
+    char *unlock_at_str = strtok(NULL, "|");
+    char *expire_at_str = strtok(NULL, "|");
+    char *encrypted_text = strtok(NULL, "|");
+    char *encrypted_key = strtok(NULL, "|");
+    char *iv = strtok(NULL, "|");
+    char *tag = strtok(NULL, "|");
+
+    if (!create_at_str || !unlock_at_str || !expire_at_str || !encrypted_text || 
+        !encrypted_key || !iv || !tag) {
+        fprintf(stderr, "Ошибка: Неполные данные в ALERT\n");
+        free(copy);
+        return;
+    }
+
+    time_t create_at = atol(create_at_str);
+    time_t unlock_at = atol(unlock_at_str);
+    time_t expire_at = atol(expire_at_str);
+    time_t now = time(NULL);
+
+    /* Проверяем фильтр по pubkey_hash_b64 */
+    if (expected_pubkey_hash_b64 && strcmp(pubkey_hash_b64, expected_pubkey_hash_b64) != 0) {
         if (verbose) {
-            printf("Пропущено сообщение с Pubkey_Hash=%s (ожидаемо %s)\n", pubkey_hash_b64, single_pubkey_hash_b64);
+            printf("Пропущено сообщение для другого pubkey_hash: %s\n", pubkey_hash_b64);
         }
         free(copy);
         return;
-    }
-
-    /* Проверяем наличие приватного ключа */
-    if (!has_private_key(pubkey_hash_b64, verbose)) {
-        if (verbose) {
-            printf("Пропущено сообщение с Pubkey_Hash=%s (отсутствует приватный ключ)\n", pubkey_hash_b64);
-        }
-        free(copy);
-        return;
-    }
-
-    /* Обрабатываем строку метаданных */
-    if (metadata_line[0]) {
-        char *token = strtok(metadata_line, ",");
-        while (token) {
-            char *key = token;
-            while (*key == ' ') key++;
-            if (strncmp(key, "Pubkey_Hash=", 12) == 0) {
-                // Пропускаем Pubkey_Hash
-            } else if (strncmp(key, "Create=", 7) == 0) {
-                strncpy(create_str, key + 7, sizeof(create_str) - 1);
-                create_str[sizeof(create_str) - 1] = '\0';
-                trim_string(create_str);
-            } else if (strncmp(key, "Unlock=", 7) == 0) {
-                strncpy(unlock_str, key + 7, sizeof(unlock_str) - 1);
-                unlock_str[sizeof(unlock_str) - 1] = '\0';
-                trim_string(unlock_str);
-            } else if (strncmp(key, "Expire=", 7) == 0) {
-                strncpy(expire_str, key + 7, sizeof(expire_str) - 1);
-                expire_str[sizeof(expire_str) - 1] = '\0';
-                trim_string(expire_str);
-            }
-            token = strtok(NULL, ",");
-        }
     }
 
     printf("Получено сообщение: Pubkey_Hash=%s\n", pubkey_hash_b64);
+    /* Используем отдельные буферы, чтобы избежать перезаписи статического буфера */
+    char buf_create[32], buf_unlock[32], buf_expire[32];
+    time_to_utc_string(create_at, buf_create, sizeof(buf_create));
+    time_to_utc_string(unlock_at, buf_unlock, sizeof(buf_unlock));
+    time_to_utc_string(expire_at, buf_expire, sizeof(buf_expire));
 
-    if (encrypted_text && encrypted_key && iv && tag) {
-        size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
-        unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
-        unsigned char *key = base64_decode(encrypted_key, &encrypted_key_len);
-        unsigned char *iv_decoded = base64_decode(iv, &iv_len);
-        unsigned char *tag_decoded = base64_decode(tag, &tag_len);
+    printf("Метаданные: Create=%s, Unlock=%s, Expire=%s, ",buf_create, buf_unlock, buf_expire);
 
-        if (!encrypted || !key || !iv_decoded || !tag_decoded) {
-            fprintf(stderr, "Не удалось декодировать зашифрованные данные для Pubkey_Hash=%s\n", pubkey_hash_b64);
-            free(encrypted);
-            free(key);
-            free(iv_decoded);
-            free(tag_decoded);
-            free(copy);
-            return;
-        }
-
-        if (tag_len != GCM_TAG_LEN) {
-            fprintf(stderr, "Неверная длина тега: %zu (ожидаемо %d) для Pubkey_Hash=%s\n", tag_len, GCM_TAG_LEN, pubkey_hash_b64);
-            free(encrypted);
-            free(key);
-            free(iv_decoded);
-            free(tag_decoded);
-            free(copy);
-            return;
-        }
-
-        if (iv_len != 12) {
-            fprintf(stderr, "Неверная длина IV: %zu (ожидаемо 12) для Pubkey_Hash=%s\n", iv_len, pubkey_hash_b64);
-            free(encrypted);
-            free(key);
-            free(iv_decoded);
-            free(tag_decoded);
-            free(copy);
-            return;
-        }
-
-        if (verbose) {
-            printf("Декодированные длины: encrypted=%zu, key=%zu, iv=%zu, tag=%zu\n", encrypted_len, encrypted_key_len, iv_len, tag_len);
-        }
-
-        char priv_file[256];
-        snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
-
-        char *plaintext = NULL;
-        if (decrypt_message(encrypted, encrypted_len, key, encrypted_key_len, iv_decoded, iv_len, tag_decoded, &plaintext, priv_file, verbose) == 0) {
-            printf("Расшифрованное сообщение: %s\n", plaintext);
-            printf("Метаданные: Create=%s, Unlock=%s, Expire=%s\n", create_str, unlock_str, expire_str);
-            free(plaintext);
-        } else {
-            fprintf(stderr, "Не удалось расшифровать сообщение для Pubkey_Hash=%s (проверьте %s)\n", pubkey_hash_b64, priv_file);
-        }
-
-        free(encrypted);
-        free(key);
-        free(iv_decoded);
-        free(tag_decoded);
+    if (expire_at <= now) {
+        printf("Сообщение истекло\n");
+    } else if (unlock_at > now) {
+        printf("Заблокированное сообщение (тип: текст)\n");
     } else {
-        printf("Только метаданные: Create=%s, Unlock=%s, Expire=%s\n", create_str, unlock_str, expire_str);
+        /* Проверяем наличие приватного ключа */
+        if (has_private_key(pubkey_hash_b64, verbose)) {
+            /* Декодируем base64 данные */
+            size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
+            unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
+            unsigned char *encrypted_key_dec = base64_decode(encrypted_key, &encrypted_key_len);
+            unsigned char *iv_dec = base64_decode(iv, &iv_len);
+            unsigned char *tag_dec = base64_decode(tag, &tag_len);
+
+            if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
+                fprintf(stderr, "Ошибка декодирования base64 данных\n");
+                free(encrypted);
+                free(encrypted_key_dec);
+                free(iv_dec);
+                free(tag_dec);
+                free(copy);
+                return;
+            }
+
+            char priv_file[256];
+            snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
+
+            char *plaintext = NULL;
+            int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
+                                     iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
+
+            free(encrypted);
+            free(encrypted_key_dec);
+            free(iv_dec);
+            free(tag_dec);
+
+            if (ret == 0 && plaintext) {
+                printf("Расшифрованное сообщение: %s\n", plaintext);
+                free(plaintext);
+            } else {
+                fprintf(stderr, "Не удалось расшифровать сообщение\n");
+            }
+        } else {
+            printf("Сообщение для другого получателя, нельзя расшифровать\n");
+        }
     }
+
     free(copy);
 }
 
@@ -188,12 +157,25 @@ void parse_response(const char *response, const char *single_pubkey_hash_b64, in
 int listen_alerts(int argc, char *argv[], int verbose) {
     if (argc < 2) {
         fprintf(stderr, "Использование: listen <режим> [pubkey_hash_b64]\n");
-        fprintf(stderr, "Режимы: live, all, single\n");
+        fprintf(stderr, "Режимы: live, all, lock, single\n");
         return 1;
     }
 
     char *mode = argv[1];
-    char *pubkey_hash_b64 = (argc > 2 && strcmp(mode, "single") == 0) ? argv[2] : NULL;
+    char *pubkey_hash_b64 = (argc > 2) ? argv[2] : NULL;
+
+    /* Проверяем режим */
+    char *upper_mode = strdup(mode);
+    for (char *p = upper_mode; *p; p++) *p = toupper((unsigned char)*p);
+    int valid_mode = (strcmp(upper_mode, "LIVE") == 0 || 
+                      strcmp(upper_mode, "ALL") == 0 || 
+                      strcmp(upper_mode, "LOCK") == 0 || 
+                      strcmp(upper_mode, "SINGLE") == 0);
+    free(upper_mode);
+    if (!valid_mode) {
+        fprintf(stderr, "Неверный режим: %s\n", mode);
+        return 1;
+    }
 
     char server_ip[256];
     int server_port;
@@ -226,14 +208,12 @@ int listen_alerts(int argc, char *argv[], int verbose) {
             return 1;
         }
         snprintf(buffer, MAX_MSG_LEN, "LISTEN|%s", pubkey_hash_b64);
-    } else if (strcmp(mode, "live") == 0) {
-        snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE LIVE");
-    } else if (strcmp(mode, "all") == 0) {
-        snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE ALL");
     } else {
-        fprintf(stderr, "Неверный режим: %s\n", mode);
-        close(sock);
-        return 1;
+        if (pubkey_hash_b64) {
+            snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
+        } else {
+            snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE %s", mode);
+        }
     }
 
     if (verbose) {
@@ -252,7 +232,8 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         char read_buffer[MAX_MSG_LEN];
         int valread = read(sock, read_buffer, MAX_MSG_LEN - 1);
         if (valread <= 0) {
-            perror("Ошибка чтения или соединение закрыто");
+            if (valread < 0) perror("Ошибка чтения");
+            else printf("Соединение закрыто сервером\n");
             break;
         }
         read_buffer[valread] = '\0';
@@ -279,7 +260,6 @@ int listen_alerts(int argc, char *argv[], int verbose) {
             start = end + strlen("\nEND_OF_MESSAGE\n");
         }
 
-        // Сдвигаем оставшуюся часть
         int remain_len = accum + accum_len - start;
         memmove(accum, start, remain_len);
         accum_len = remain_len;
