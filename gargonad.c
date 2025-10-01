@@ -10,6 +10,7 @@ All rights reserved. */
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <errno.h>
+#include <ctype.h>
 
 int main() {
     int server_fd, new_socket, max_clients = MAX_CLIENTS, activity, i, valread, sd;
