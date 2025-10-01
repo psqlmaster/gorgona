@@ -1,3 +1,4 @@
+#include <openssl/bn.h>
 #include "encrypt.h"
 #include <openssl/sha.h>
 #include <openssl/bio.h>
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 
 /* Проверяет наличие файлов public.pem и private.pem (для обратной совместимости) */
 int check_key_files(int verbose) {
@@ -34,133 +36,86 @@ int check_key_files(int verbose) {
 int generate_rsa_keys(int verbose) {
     EVP_PKEY *pkey = NULL;
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!ctx) {
-        fprintf(stderr, "Не удалось создать EVP_PKEY_CTX\n");
-        ERR_print_errors_fp(stderr);
-        return -1;
-    }
-
-    if (EVP_PKEY_keygen_init(ctx) <= 0) {
-        fprintf(stderr, "Не удалось инициализировать генерацию ключей\n");
-        ERR_print_errors_fp(stderr);
+    if (!ctx || EVP_PKEY_keygen_init(ctx) <= 0) {
+        fprintf(stderr, "Не удалось инициализировать генерацию ключа: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_PKEY_CTX_free(ctx);
         return -1;
     }
 
     if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
-        fprintf(stderr, "Не удалось установить длину ключа RSA\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось установить размер ключа RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_PKEY_CTX_free(ctx);
         return -1;
     }
 
     if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
-        fprintf(stderr, "Не удалось сгенерировать пару ключей RSA\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось сгенерировать ключ RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_PKEY_CTX_free(ctx);
+        return -1;
+    }
+    EVP_PKEY_CTX_free(ctx);
+
+    /* Вычисляем хеш публичного ключа */
+    size_t hash_len;
+    unsigned char *pubkey_hash = compute_pubkey_hash(pkey, &hash_len, verbose);
+    if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
+        fprintf(stderr, "Не удалось вычислить хеш публичного ключа\n");
+        EVP_PKEY_free(pkey);
+        free(pubkey_hash);
         return -1;
     }
 
-    /* Сохраняем приватный ключ во временный файл */
-    FILE *priv_fp = fopen("private.pem", "w");
-    if (!priv_fp) {
-        fprintf(stderr, "Не удалось открыть private.pem для записи\n");
+    char *pubkey_hash_b64 = base64_encode(pubkey_hash, hash_len);
+    free(pubkey_hash);
+    if (!pubkey_hash_b64) {
+        fprintf(stderr, "Не удалось закодировать хеш публичного ключа\n");
         EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
         return -1;
     }
-    if (!PEM_write_PrivateKey(priv_fp, pkey, NULL, NULL, 0, NULL, NULL)) {
-        fprintf(stderr, "Не удалось записать приватный ключ\n");
-        ERR_print_errors_fp(stderr);
-        fclose(priv_fp);
-        EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
-    fclose(priv_fp);
 
-    /* Сохраняем публичный ключ во временный файл */
-    FILE *pub_fp = fopen("public.pem", "w");
+    /* Сохраняем ключи */
+    char pub_file[256], priv_file[256];
+    snprintf(pub_file, sizeof(pub_file), "%s.pub", pubkey_hash_b64);
+    snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
+
+    FILE *pub_fp = fopen(pub_file, "wb");
     if (!pub_fp) {
-        fprintf(stderr, "Не удалось открыть public.pem для записи\n");
+        fprintf(stderr, "Не удалось открыть файл для публичного ключа: %s\n", pub_file);
+        free(pubkey_hash_b64);
         EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
         return -1;
     }
-    if (!PEM_write_PUBKEY(pub_fp, pkey)) {
-        fprintf(stderr, "Не удалось записать публичный ключ\n");
-        ERR_print_errors_fp(stderr);
+    if (PEM_write_PUBKEY(pub_fp, pkey) != 1) {
+        fprintf(stderr, "Не удалось записать публичный ключ в %s\n", pub_file);
         fclose(pub_fp);
+        free(pubkey_hash_b64);
         EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
         return -1;
     }
     fclose(pub_fp);
 
-    /* Вычисляем хеш публичного ключа для переименования файлов */
-    EVP_PKEY *pubkey_temp = NULL;
-    FILE *pub_fp_temp = fopen("public.pem", "rb");
-    if (!pub_fp_temp) {
-        fprintf(stderr, "Не удалось повторно открыть public.pem\n");
+    FILE *priv_fp = fopen(priv_file, "wb");
+    if (!priv_fp) {
+        fprintf(stderr, "Не удалось открыть файл для приватного ключа: %s\n", priv_file);
+        free(pubkey_hash_b64);
         EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
         return -1;
     }
-    pubkey_temp = PEM_read_PUBKEY(pub_fp_temp, NULL, NULL, NULL);
-    fclose(pub_fp_temp);
-    if (!pubkey_temp) {
-        fprintf(stderr, "Не удалось прочитать временный публичный ключ\n");
-        ERR_print_errors_fp(stderr);
+    if (PEM_write_PrivateKey(priv_fp, pkey, NULL, NULL, 0, NULL, NULL) != 1) {
+        fprintf(stderr, "Не удалось записать приватный ключ в %s\n", priv_file);
+        fclose(priv_fp);
+        free(pubkey_hash_b64);
         EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
         return -1;
+    }
+    fclose(priv_fp);
+
+    if (verbose) {
+        printf("Сгенерированы ключи: %s (публичный), %s (приватный)\n", pub_file, priv_file);
     }
 
-    size_t hash_len;
-    unsigned char *hash = compute_pubkey_hash(pubkey_temp, &hash_len, verbose);
-    EVP_PKEY_free(pubkey_temp);
-    if (!hash || hash_len != PUBKEY_HASH_LEN) {
-        fprintf(stderr, "Не удалось вычислить хеш публичного ключа\n");
-        EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
-        free(hash);
-        return -1;
-    }
-
-    char *hash_b64 = base64_encode(hash, hash_len);
-    free(hash);
-    if (!hash_b64) {
-        fprintf(stderr, "Не удалось закодировать хеш в base64\n");
-        EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
-
-    /* Формируем имена файлов на основе base64 хеша */
-    char pub_file[256], priv_file[256];
-    snprintf(pub_file, sizeof(pub_file), "%s.pub", hash_b64);
-    snprintf(priv_file, sizeof(priv_file), "%s.key", hash_b64);
-
-    /* Переименовываем файлы */
-    if (rename("public.pem", pub_file) != 0) {
-        perror("Не удалось переименовать public.pem");
-        free(hash_b64);
-        EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
-    if (rename("private.pem", priv_file) != 0) {
-        perror("Не удалось переименовать private.pem");
-        free(hash_b64);
-        EVP_PKEY_free(pkey);
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
-
-    printf("Ключи сгенерированы и сохранены как %s и %s\n", pub_file, priv_file);
-    free(hash_b64);
+    free(pubkey_hash_b64);
     EVP_PKEY_free(pkey);
-    EVP_PKEY_CTX_free(ctx);
     return 0;
 }
 
@@ -219,11 +174,11 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
                    unsigned char **iv, size_t *iv_len, unsigned char **tag, size_t *tag_len,
                    const char *pubkey_file, int verbose) {
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    EVP_PKEY_CTX *pctx = NULL;
     EVP_PKEY *pubkey = NULL;
     FILE *pub_fp = fopen(pubkey_file, "rb");
     if (!pub_fp) {
         fprintf(stderr, "Не удалось открыть файл публичного ключа: %s\n", pubkey_file);
+        EVP_CIPHER_CTX_free(ctx);
         return -1;
     }
     pubkey = PEM_read_PUBKEY(pub_fp, NULL, NULL, NULL);
@@ -251,31 +206,62 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         printf("\n");
     }
 
-    /* Шифруем ключ AES публичным RSA ключом с OAEP padding */
-    pctx = EVP_PKEY_CTX_new(pubkey, NULL);
+    /* Шифруем ключ AES с помощью EVP_PKEY */
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(pubkey, NULL);
     if (!pctx || EVP_PKEY_encrypt_init(pctx) <= 0) {
-        fprintf(stderr, "Не удалось инициализировать шифрование RSA\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось инициализировать шифрование RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_PKEY_free(pubkey);
         EVP_CIPHER_CTX_free(ctx);
         EVP_PKEY_CTX_free(pctx);
         return -1;
     }
-    EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_OAEP_PADDING);
 
-    if (EVP_PKEY_encrypt(pctx, NULL, encrypted_key_len, aes_key, sizeof(aes_key)) <= 0) {
-        fprintf(stderr, "Не удалось определить длину зашифрованного ключа AES\n");
-        ERR_print_errors_fp(stderr);
+    if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+        fprintf(stderr, "Не удалось установить OAEP padding: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_PKEY_CTX_free(pctx);
         EVP_PKEY_free(pubkey);
         EVP_CIPHER_CTX_free(ctx);
         return -1;
     }
 
-    *encrypted_key = malloc(*encrypted_key_len);
-    if (!*encrypted_key || EVP_PKEY_encrypt(pctx, *encrypted_key, encrypted_key_len, aes_key, sizeof(aes_key)) <= 0) {
-        fprintf(stderr, "Не удалось зашифровать ключ AES\n");
-        ERR_print_errors_fp(stderr);
+    if (EVP_PKEY_CTX_set_rsa_oaep_md(pctx, EVP_sha256()) <= 0) {
+        fprintf(stderr, "Не удалось установить OAEP MD: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(pubkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    if (EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, EVP_sha256()) <= 0) {
+        fprintf(stderr, "Не удалось установить MGF1 MD: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(pubkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    /* Определяем размер зашифрованного ключа */
+    size_t rsa_len;
+    if (EVP_PKEY_encrypt(pctx, NULL, &rsa_len, aes_key, sizeof(aes_key)) <= 0) {
+        fprintf(stderr, "Не удалось определить размер зашифрованного ключа: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(pubkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    *encrypted_key = malloc(rsa_len);
+    if (!*encrypted_key) {
+        fprintf(stderr, "Не удалось выделить память для зашифрованного ключа\n");
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(pubkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    /* Проверяем входные данные */
+    if (sizeof(aes_key) > rsa_len - 41) { // 41 = SHA-256 OAEP overhead
+        fprintf(stderr, "Ключ AES слишком длинный для RSA-%zu с OAEP\n", rsa_len * 8);
         free(*encrypted_key);
         EVP_PKEY_CTX_free(pctx);
         EVP_PKEY_free(pubkey);
@@ -283,21 +269,31 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         return -1;
     }
 
-    EVP_PKEY_CTX_free(pctx);
-    EVP_PKEY_free(pubkey);
+    /* Шифруем ключ AES */
+    *encrypted_key_len = rsa_len;
+    if (EVP_PKEY_encrypt(pctx, *encrypted_key, encrypted_key_len, aes_key, sizeof(aes_key)) <= 0) {
+        fprintf(stderr, "Не удалось зашифровать ключ AES: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        free(*encrypted_key);
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(pubkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
 
     if (verbose) {
-        printf("Зашифрованный ключ AES (hex): ");
+        printf("Зашифрованный ключ AES (hex, len=%zu): ", *encrypted_key_len);
         for (size_t i = 0; i < *encrypted_key_len; i++) printf("%02x", (*encrypted_key)[i]);
         printf("\n");
     }
+
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(pubkey);
 
     /* Генерируем IV */
     *iv_len = 12;
     *iv = malloc(*iv_len);
     if (!*iv || RAND_bytes(*iv, *iv_len) != 1) {
-        fprintf(stderr, "Не удалось сгенерировать IV\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось сгенерировать IV: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted_key);
         free(*iv);
         EVP_CIPHER_CTX_free(ctx);
@@ -305,15 +301,14 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     }
 
     if (verbose) {
-        printf("IV (hex): ");
+        printf("IV (hex, len=%zu): ", *iv_len);
         for (size_t i = 0; i < *iv_len; i++) printf("%02x", (*iv)[i]);
         printf("\n");
     }
 
     /* Инициализируем AES-256-GCM */
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
-        fprintf(stderr, "Не удалось инициализировать AES-256-GCM\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось инициализировать AES-256-GCM: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted_key);
         free(*iv);
         EVP_CIPHER_CTX_free(ctx);
@@ -321,8 +316,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     }
 
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, aes_key, *iv) != 1) {
-        fprintf(stderr, "Не удалось установить ключ AES и IV\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось установить ключ AES и IV: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted_key);
         free(*iv);
         EVP_CIPHER_CTX_free(ctx);
@@ -335,7 +329,6 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     *encrypted = malloc(*encrypted_len + AES_BLOCK_SIZE);
     if (!*encrypted) {
         fprintf(stderr, "Не удалось выделить память для зашифрованного текста\n");
-        ERR_print_errors_fp(stderr);
         free(*encrypted_key);
         free(*iv);
         EVP_CIPHER_CTX_free(ctx);
@@ -343,8 +336,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     }
 
     if (EVP_EncryptUpdate(ctx, *encrypted, &len, (unsigned char *)plaintext, *encrypted_len) != 1) {
-        fprintf(stderr, "Не удалось зашифровать сообщение\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось зашифровать сообщение: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted);
         free(*encrypted_key);
         free(*iv);
@@ -354,8 +346,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     *encrypted_len = len;
 
     if (EVP_EncryptFinal_ex(ctx, *encrypted + len, &len) != 1) {
-        fprintf(stderr, "Не удалось завершить шифрование\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось завершить шифрование: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted);
         free(*encrypted_key);
         free(*iv);
@@ -368,8 +359,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     *tag_len = GCM_TAG_LEN;
     *tag = malloc(*tag_len);
     if (!*tag || EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, *tag_len, *tag) != 1) {
-        fprintf(stderr, "Не удалось получить тег GCM\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось получить тег GCM: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted);
         free(*encrypted_key);
         free(*iv);
@@ -379,7 +369,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     }
 
     if (verbose) {
-        printf("Тег GCM (hex): ");
+        printf("Тег GCM (hex, len=%zu): ", *tag_len);
         for (size_t i = 0; i < *tag_len; i++) printf("%02x", (*tag)[i]);
         printf("\n");
     }
@@ -393,7 +383,6 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
                    size_t encrypted_key_len, unsigned char *iv, size_t iv_len,
                    unsigned char *tag, char **plaintext, const char *privkey_file, int verbose) {
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    EVP_PKEY_CTX *pctx = NULL;
     EVP_PKEY *privkey = NULL;
     FILE *priv_fp = fopen(privkey_file, "rb");
     if (!priv_fp) {
@@ -410,32 +399,52 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
         return -1;
     }
 
-    /* Расшифровываем ключ AES приватным RSA ключом */
-    pctx = EVP_PKEY_CTX_new(privkey, NULL);
+    /* Расшифровываем ключ AES с помощью EVP_PKEY */
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(privkey, NULL);
     if (!pctx || EVP_PKEY_decrypt_init(pctx) <= 0) {
-        fprintf(stderr, "Не удалось инициализировать расшифровку RSA\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось инициализировать расшифровку RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
         EVP_PKEY_free(privkey);
         EVP_CIPHER_CTX_free(ctx);
         EVP_PKEY_CTX_free(pctx);
         return -1;
     }
-    EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_OAEP_PADDING);
+
+    if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+        fprintf(stderr, "Не удалось установить OAEP padding: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(privkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    if (EVP_PKEY_CTX_set_rsa_oaep_md(pctx, EVP_sha256()) <= 0) {
+        fprintf(stderr, "Не удалось установить OAEP MD: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(privkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+
+    if (EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, EVP_sha256()) <= 0) {
+        fprintf(stderr, "Не удалось установить MGF1 MD: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(privkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
 
     size_t aes_key_len;
-    if (EVP_PKEY_decrypt(pctx, NULL, &aes_key_len, encrypted_key, encrypted_key_len) <= 0) {
-        fprintf(stderr, "Не удалось определить длину расшифрованного ключа AES\n");
-        ERR_print_errors_fp(stderr);
+    unsigned char *aes_key = malloc(32);
+    if (!aes_key) {
+        fprintf(stderr, "Не удалось выделить память для ключа AES\n");
         EVP_PKEY_CTX_free(pctx);
         EVP_PKEY_free(privkey);
         EVP_CIPHER_CTX_free(ctx);
         return -1;
     }
 
-    unsigned char *aes_key = malloc(aes_key_len);
-    if (!aes_key || EVP_PKEY_decrypt(pctx, aes_key, &aes_key_len, encrypted_key, encrypted_key_len) <= 0) {
-        fprintf(stderr, "Не удалось расшифровать ключ AES\n");
-        ERR_print_errors_fp(stderr);
+    if (EVP_PKEY_decrypt(pctx, NULL, &aes_key_len, encrypted_key, encrypted_key_len) <= 0) {
+        fprintf(stderr, "Не удалось определить размер ключа AES: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(aes_key);
         EVP_PKEY_CTX_free(pctx);
         EVP_PKEY_free(privkey);
@@ -443,35 +452,41 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
         return -1;
     }
 
-    EVP_PKEY_CTX_free(pctx);
-    EVP_PKEY_free(privkey);
+    if (EVP_PKEY_decrypt(pctx, aes_key, &aes_key_len, encrypted_key, encrypted_key_len) <= 0) {
+        fprintf(stderr, "Не удалось расшифровать ключ AES: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        free(aes_key);
+        EVP_PKEY_CTX_free(pctx);
+        EVP_PKEY_free(privkey);
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
 
     if (verbose) {
-        printf("Расшифрованный ключ AES (hex): ");
+        printf("Расшифрованный ключ AES (hex, len=%zu): ", aes_key_len);
         for (size_t i = 0; i < aes_key_len; i++) printf("%02x", aes_key[i]);
         printf("\n");
     }
 
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(privkey);
+
     /* Инициализируем AES-256-GCM для расшифровки */
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
-        fprintf(stderr, "Не удалось инициализировать AES-256-GCM для расшифровки\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось инициализировать AES-256-GCM для расшифровки: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(aes_key);
         EVP_CIPHER_CTX_free(ctx);
         return -1;
     }
 
     if (EVP_DecryptInit_ex(ctx, NULL, NULL, aes_key, iv) != 1) {
-        fprintf(stderr, "Не удалось установить ключ AES и IV для расшифровки\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось установить ключ AES и IV для расшифровки: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(aes_key);
         EVP_CIPHER_CTX_free(ctx);
         return -1;
     }
 
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag) != 1) {
-        fprintf(stderr, "Не удалось установить тег GCM\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось установить тег GCM: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(aes_key);
         EVP_CIPHER_CTX_free(ctx);
         return -1;
@@ -482,15 +497,13 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
     *plaintext = malloc(encrypted_len + 1);
     if (!*plaintext) {
         fprintf(stderr, "Не удалось выделить память для открытого текста\n");
-        ERR_print_errors_fp(stderr);
         free(aes_key);
         EVP_CIPHER_CTX_free(ctx);
         return -1;
     }
 
     if (EVP_DecryptUpdate(ctx, (unsigned char *)*plaintext, &len, encrypted, encrypted_len) != 1) {
-        fprintf(stderr, "Не удалось расшифровать сообщение\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось расшифровать сообщение: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*plaintext);
         free(aes_key);
         EVP_CIPHER_CTX_free(ctx);
@@ -499,8 +512,7 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
     int plaintext_len = len;
 
     if (EVP_DecryptFinal_ex(ctx, (unsigned char *)*plaintext + len, &len) != 1) {
-        fprintf(stderr, "Не удалось завершить расшифровку\n");
-        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Не удалось завершить расшифровку: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*plaintext);
         free(aes_key);
         EVP_CIPHER_CTX_free(ctx);
@@ -513,6 +525,7 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
     EVP_CIPHER_CTX_free(ctx);
     return 0;
 }
+
 
 /* Кодирует данные в base64 */
 char *base64_encode(const unsigned char *data, size_t len) {

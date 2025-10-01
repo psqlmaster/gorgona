@@ -46,6 +46,7 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
 }
 
 /* Разбирает ответ от сервера и обрабатывает сообщение */
+/* Разбирает ответ от сервера и обрабатывает сообщение */
 void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose) {
     if (strncmp(response, "ALERT|", 6) != 0) {
         printf("Ответ сервера: %s\n", response);
@@ -101,53 +102,74 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     time_to_utc_string(unlock_at, buf_unlock, sizeof(buf_unlock));
     time_to_utc_string(expire_at, buf_expire, sizeof(buf_expire));
 
-    printf("Метаданные: Create=%s, Unlock=%s, Expire=%s, ",buf_create, buf_unlock, buf_expire);
+    printf("Метаданные: Create=%s, Unlock=%s, Expire=%s, ", buf_create, buf_unlock, buf_expire);
 
     if (expire_at <= now) {
         printf("Сообщение истекло\n");
+        free(copy);
+        return;
     } else if (unlock_at > now) {
         printf("Заблокированное сообщение (тип: текст)\n");
+        free(copy);
+        return;
+    }
+
+    /* Проверяем наличие приватного ключа */
+    if (!has_private_key(pubkey_hash_b64, verbose)) {
+        printf("Сообщение для другого получателя, нельзя расшифровать\n");
+        free(copy);
+        return;
+    }
+
+    /* Декодируем base64 данные */
+    size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
+    unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
+    unsigned char *encrypted_key_dec = base64_decode(encrypted_key, &encrypted_key_len);
+    unsigned char *iv_dec = base64_decode(iv, &iv_len);
+    unsigned char *tag_dec = base64_decode(tag, &tag_len);
+
+    if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
+        fprintf(stderr, "Ошибка декодирования base64 данных\n");
+        free(encrypted);
+        free(encrypted_key_dec);
+        free(iv_dec);
+        free(tag_dec);
+        free(copy);
+        return;
+    }
+
+    /* Отладочный вывод */
+    if (verbose) {
+        printf("Перед расшифровкой: encrypted_len=%zu, encrypted_key_len=%zu, iv_len=%zu, tag_len=%zu\n",
+               encrypted_len, encrypted_key_len, iv_len, tag_len);
+        printf("encrypted_key (hex): ");
+        for (size_t i = 0; i < encrypted_key_len; i++) printf("%02x", encrypted_key_dec[i]);
+        printf("\n");
+        printf("iv (hex): ");
+        for (size_t i = 0; i < iv_len; i++) printf("%02x", iv_dec[i]);
+        printf("\n");
+        printf("tag (hex): ");
+        for (size_t i = 0; i < tag_len; i++) printf("%02x", tag_dec[i]);
+        printf("\n");
+    }
+
+    char priv_file[256];
+    snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
+
+    char *plaintext = NULL;
+    int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
+                             iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
+
+    free(encrypted);
+    free(encrypted_key_dec);
+    free(iv_dec);
+    free(tag_dec);
+
+    if (ret == 0 && plaintext) {
+        printf("Расшифрованное сообщение: %s\n", plaintext);
+        free(plaintext);
     } else {
-        /* Проверяем наличие приватного ключа */
-        if (has_private_key(pubkey_hash_b64, verbose)) {
-            /* Декодируем base64 данные */
-            size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
-            unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
-            unsigned char *encrypted_key_dec = base64_decode(encrypted_key, &encrypted_key_len);
-            unsigned char *iv_dec = base64_decode(iv, &iv_len);
-            unsigned char *tag_dec = base64_decode(tag, &tag_len);
-
-            if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
-                fprintf(stderr, "Ошибка декодирования base64 данных\n");
-                free(encrypted);
-                free(encrypted_key_dec);
-                free(iv_dec);
-                free(tag_dec);
-                free(copy);
-                return;
-            }
-
-            char priv_file[256];
-            snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
-
-            char *plaintext = NULL;
-            int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
-                                     iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
-
-            free(encrypted);
-            free(encrypted_key_dec);
-            free(iv_dec);
-            free(tag_dec);
-
-            if (ret == 0 && plaintext) {
-                printf("Расшифрованное сообщение: %s\n", plaintext);
-                free(plaintext);
-            } else {
-                fprintf(stderr, "Не удалось расшифровать сообщение\n");
-            }
-        } else {
-            printf("Сообщение для другого получателя, нельзя расшифровать\n");
-        }
+        fprintf(stderr, "Не удалось расшифровать сообщение\n");
     }
 
     free(copy);

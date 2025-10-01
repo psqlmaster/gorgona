@@ -46,7 +46,7 @@ The project includes a client for key generation, sending messages, and listenin
 
 3. Build the project:
    ```
-   make
+   make clean && make
    ```
    Builds both `gargona` and `gargonad`. Clean: `make clean`. Rebuild: `make rebuild`.
 
@@ -140,7 +140,7 @@ Gargona  — это безопасная система обмена сообщ�
 
 3. Соберите проект:
    ```
-   make
+   make clean && make
    ```
    Собирает `gargona` и `gargonad`. Очистка: `make clean`. Пересборка: `make rebuild`.
 
