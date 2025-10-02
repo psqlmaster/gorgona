@@ -53,11 +53,13 @@ extern int recipient_count;
 extern int recipient_capacity;
 extern int client_sockets[MAX_CLIENTS];
 extern Subscriber subscribers[MAX_CLIENTS];
+extern int max_alerts;
+extern int max_clients;
 
 /* Function declarations */
 int is_http_request(const char *buffer);
 void trim_string(char *str);
-int read_port_config(void);
+void read_config(int *port, int *max_alerts, int *max_clients);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);

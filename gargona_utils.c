@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
-#include <stdbool.h> // Добавлено для bool, true, false
+#include <stdbool.h>
 
 /* Global variables */
 FILE *log_file = NULL;
@@ -13,6 +13,8 @@ int recipient_count = 0;
 int recipient_capacity = 0;
 int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
+int max_alerts = MAX_ALERTS;
+int max_clients = MAX_CLIENTS;
 
 /* Function to check for HTTP request */
 int is_http_request(const char *buffer) {
@@ -39,27 +41,36 @@ void trim_string(char *str) {
     }
 }
 
-/* Reads port configuration from gargona.conf */
-int read_port_config() {
-    FILE *conf_fp = fopen("gargona.conf", "r");
+/* Reads configuration from gargonad.conf */
+void read_config(int *port, int *max_alerts, int *max_clients) {
+    *port = DEFAULT_SERVER_PORT;
+    *max_alerts = MAX_ALERTS;
+    *max_clients = MAX_CLIENTS;
+
+    FILE *conf_fp = fopen("gargonad.conf", "r");
     if (!conf_fp) {
-        return DEFAULT_SERVER_PORT;
+        return;
     }
 
     char line[256];
-    int port = DEFAULT_SERVER_PORT;
     while (fgets(line, sizeof(line), conf_fp)) {
         if (strstr(line, "[server]")) continue;
         char *key = strtok(line, " =");
         char *value = strtok(NULL, " =");
         if (value) value[strcspn(value, "\n")] = '\0';
-        if (key && strcmp(key, "port") == 0) {
-            port = atoi(value);
-            break;
+        if (key) {
+            trim_string(key);
+            trim_string(value);
+            if (strcmp(key, "port") == 0) {
+                *port = atoi(value);
+            } else if (strcmp(key, "MAX_ALERTS") == 0) {
+                *max_alerts = atoi(value);
+            } else if (strcmp(key, "MAX_CLIENTS") == 0) {
+                *max_clients = atoi(value);
+            }
         }
     }
     fclose(conf_fp);
-    return port;
 }
 
 /* Formats a timestamp into a string */
@@ -93,7 +104,7 @@ Recipient *find_recipient(const unsigned char *hash) {
 Recipient *add_recipient(const unsigned char *hash) {
     if (recipient_count >= recipient_capacity) {
         recipient_capacity += INITIAL_RECIPIENT_CAPACITY;
-        recipients = realloc(recipients, sizeof(Recipient) * recipient_capacity); // Исправлено: recipient -> recipients
+        recipients = realloc(recipients, sizeof(Recipient) * recipient_capacity);
         if (!recipients) {
             perror("Не удалось выделить память для recipients");
             exit(1);
@@ -151,11 +162,11 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
 
     clean_expired_alerts(rec);
 
-    if (rec->count >= MAX_ALERTS) {
+    if (rec->count >= max_alerts) {
         remove_oldest_alert(rec);
     }
 
-    if (rec->count >= MAX_ALERTS) {
+    if (rec->count >= max_alerts) {
         dprintf(client_fd, "Ошибка: Не удалось добавить алерт, лимит достигнут даже после очистки\nEND_OF_MESSAGE\n");
         return;
     }
@@ -216,26 +227,23 @@ int alert_cmp(const void *a, const void *b) {
 /* Notifies subscribers about a new alert based on their mode */
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     time_t now = time(NULL);
-    if (new_alert->expire_at <= now) return;  // Не уведомляем об истекших
+    if (new_alert->expire_at <= now) return;
 
     char *pubkey_hash_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     if (!pubkey_hash_b64) return;
 
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0; i < max_clients; i++) {
         if (subscribers[i].sock <= 0) continue;
 
-        // Проверяем совпадение хеша (если указан в подписке)
         bool match_hash = (subscribers[i].pubkey_hash[0] == '\0' || strcmp(subscribers[i].pubkey_hash, pubkey_hash_b64) == 0);
         if (!match_hash) continue;
 
-        // Проверяем фильтр по режиму
         bool send_it = false;
-        if (subscribers[i].mode == 2) send_it = true; // all: все неистекшие
-        else if (subscribers[i].mode == 1 || subscribers[i].mode == 3) send_it = (new_alert->unlock_at <= now);  // live/single: только активные
-        else if (subscribers[i].mode == 4) send_it = (new_alert->unlock_at > now);  // lock: только заблокированные
+        if (subscribers[i].mode == 2) send_it = true;
+        else if (subscribers[i].mode == 1 || subscribers[i].mode == 3) send_it = (new_alert->unlock_at <= now);
+        else if (subscribers[i].mode == 4) send_it = (new_alert->unlock_at > now);
 
         if (send_it) {
-            // Кодируем данные в base64
             char *base64_text = base64_encode(new_alert->text, new_alert->text_len);
             char *base64_encrypted_key = base64_encode(new_alert->encrypted_key, new_alert->encrypted_key_len);
             char *base64_iv = base64_encode(new_alert->iv, new_alert->iv_len);
@@ -270,11 +278,9 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
             qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp);
         }
 
-        // Кодируем хеш получателя в base64 для сравнения и отправки
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!pubkey_hash_b64) continue;
 
-        // Фильтр по хешу, если указан
         if (pubkey_hash_b64_filter && strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
             free(pubkey_hash_b64);
             continue;
@@ -284,14 +290,12 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
             Alert *a = &rec->alerts[j];
             if (!a->active) continue;
 
-            // Проверяем фильтр по режиму
             bool send_it = false;
-            if (mode == 2) send_it = true; // all: все неистекшие
-            else if (mode == 1 || mode == 3) send_it = (a->unlock_at <= now);  // live/single: только активные
-            else if (mode == 4) send_it = (a->unlock_at > now);  // lock: только заблокированные
+            if (mode == 2) send_it = true;
+            else if (mode == 1 || mode == 3) send_it = (a->unlock_at <= now);
+            else if (mode == 4) send_it = (a->unlock_at > now);
 
             if (send_it) {
-                // Кодируем данные в base64
                 char *base64_text = base64_encode(a->text, a->text_len);
                 char *base64_encrypted_key = base64_encode(a->encrypted_key, a->encrypted_key_len);
                 char *base64_iv = base64_encode(a->iv, a->iv_len);

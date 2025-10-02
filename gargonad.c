@@ -13,13 +13,19 @@ All rights reserved. */
 #include <ctype.h>
 
 int main() {
-    int server_fd, new_socket, max_clients = MAX_CLIENTS, activity, i, valread, sd;
+    int server_fd, new_socket, activity, i, valread, sd;
     int max_sd;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
     char buffer[MAX_MSG_LEN] = {0};
     fd_set readfds;
+
+    // Read configuration
+    int port, max_alerts_config, max_clients_config;
+    read_config(&port, &max_alerts_config, &max_clients_config);
+    max_alerts = max_alerts_config;
+    max_clients = max_clients_config;
 
     // Initialize arrays
     for (i = 0; i < max_clients; i++) {
@@ -78,7 +84,7 @@ int main() {
 
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(read_port_config());
+    address.sin_port = htons(port);
 
     // Bind socket
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
@@ -102,9 +108,9 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("Сервер запущен на порту %d\n", read_port_config());
+    printf("Сервер запущен на порту %d\n", port);
     if (log_file) {
-        fprintf(log_file, "[%ld] Server running on port %d\n", (long)time(NULL), read_port_config());
+        fprintf(log_file, "[%ld] Server running on port %d\n", (long)time(NULL), port);
     }
 
     while (1) {
@@ -161,14 +167,13 @@ int main() {
         for (i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (FD_ISSET(sd, &readfds)) {
-                valread = read(sd, buffer, MAX_MSG_LEN - 1); // Reserve space for '\0'
+                valread = read(sd, buffer, MAX_MSG_LEN - 1);
                 if (valread <= 0) {
                     if (valread < 0 && log_file) {
                         rotate_log();
                         fprintf(log_file, "[%ld] Read error from client %d: %s\n", 
                                 (long)time(NULL), sd, strerror(errno));
                     }
-                    // No logging for valread == 0 (normal disconnect)
                     close(sd);
                     client_sockets[i] = 0;
                     subscribers[i].sock = 0;
@@ -177,14 +182,12 @@ int main() {
                     continue;
                 }
 
-                buffer[valread] = '\0'; // Ensure null-termination
+                buffer[valread] = '\0';
                 printf("Получено: %s\n", buffer);
 
-                // Early validation: check if the command is valid
                 if (strncmp(buffer, "SEND|", 5) != 0 &&
                     strncmp(buffer, "LISTEN|", 7) != 0 &&
                     strncmp(buffer, "SUBSCRIBE ", 10) != 0) {
-                    // Handle HTTP separately
                     if (is_http_request(buffer)) {
                         char http_response[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                         send(sd, http_response, sizeof(http_response) - 1, 0);
@@ -357,7 +360,7 @@ int main() {
                         client_sockets[i] = 0;
                         continue;
                     }
-                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                    for (int j = 0; j < max_clients; j++) {
                         if (client_sockets[j] == sd) {
                             subscribers[j].mode = 3;
                             strncpy(subscribers[j].pubkey_hash, pubkey_hash_b64, sizeof(subscribers[j].pubkey_hash) - 1);
@@ -400,7 +403,7 @@ int main() {
                         client_sockets[i] = 0;
                         continue;
                     }
-                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                    for (int j = 0; j < max_clients; j++) {
                         if (client_sockets[j] == sd) {
                             subscribers[j].mode = sub_mode;
                             if (pubkey_hash_b64 && strlen(pubkey_hash_b64) > 0) {
