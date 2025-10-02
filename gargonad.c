@@ -12,7 +12,37 @@ All rights reserved. */
 #include <errno.h>
 #include <ctype.h>
 
-int main() {
+void print_server_help(const char *program_name) {
+    printf("Gargona Server\n");
+    printf("Usage: %s [-h|--help]\n", program_name);
+    printf("\nDescription:\n");
+    printf(" The Gargona server handles encrypted alerts, allowing clients to send and subscribe to messages.\n");
+    printf(" It listens for TCP connections and processes commands: SEND, LISTEN, SUBSCRIBE.\n");
+    printf("\nFlags:\n");
+    printf(" -h, --help Displays this help message\n");
+    printf("\nConfiguration:\n");
+    printf(" The file ./gargonad.conf contains server settings.\n");
+    printf(" Format:\n");
+    printf(" [server]\n");
+    printf(" port = <port> (default: 5555, example: 7777)\n");
+    printf(" MAX_ALERTS = <number> (default: 1024, example: 2000)\n");
+    printf(" MAX_CLIENTS = <number> (default: 100, example: 100)\n");
+    printf("\nLogging:\n");
+    printf(" Logs are written to ./gargona.log. The log rotates when it exceeds %d bytes (10 MB).\n", MAX_LOG_SIZE);
+    printf("\nLimits:\n");
+    printf(" - Maximum simultaneous clients: MAX_CLIENTS (default: 100 or from config).\n");
+    printf(" - Maximum alerts per recipient: MAX_ALERTS (default: 1024 or from config).\n");
+    printf(" - Recipient capacity expands dynamically starting from %d.\n", INITIAL_RECIPIENT_CAPACITY);
+    printf("\nExample:\n");
+    printf(" %s\n", program_name);
+    printf(" Starts the server using settings from ./gargonad.conf or defaults.\n");
+}
+
+int main(int argc, char *argv[]) {
+    if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+        print_server_help(argv[0]);
+        return 0;
+    }
     int server_fd, new_socket, activity, i, valread, sd;
     int max_sd;
     struct sockaddr_in address;
