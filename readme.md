@@ -123,6 +123,7 @@ Logs are written to `gargona.log`, with rotation when the file exceeds 10 MB.
 
 Gargona is a robust solution for encrypted, time-locked messaging with a single server. I’m exploring server mirroring (replication) without external services like Redis or PostgreSQL. The goal is a fast, decentralized, and reliable system—potentially using a gossip protocol for peer-to-peer synchronization or a lightweight consensus mechanism like Raft. Ideas include blockchain-inspired ledgers (without crypto mining) or conflict-free replicated data types (CRDTs) for seamless data syncing. This would allow a network of servers to mirror messages in real-time, ensuring high availability. Contributions and suggestions are welcome!
 
+See [contributing.md](contributing.md) for how to contribute to Gargona.
 ---
 
 ## Gargona: Система зашифрованного алертинга с временной блокировкой
@@ -245,3 +246,4 @@ MAX_CLIENTS = 100
 
 Gargona уже эффективно справляется с задачей зашифрованного алертинга с одним сервером. Я работаю над созданием зеркалирования серверов (репликации) без внешних сервисов, таких как Redis или PostgreSQL. Цель — обеспечить высокую скорость, децентрализацию и надёжность. Возможные подходы: протокол gossip для синхронизации между серверами в режиме peer-to-peer или лёгкий механизм консенсуса, например, адаптированный Raft. Другие идеи включают леджеры, вдохновлённые блокчейном (без майнинга), или типы данных с бесконфликтной репликацией (CRDT) для бесшовной синхронизации. Приветствуются любые предложения по улучшению!
 
+Информация о том, как внести свой вклад в Gargona, см. на странице [contributing.md](contributing.md).
