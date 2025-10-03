@@ -1,6 +1,6 @@
 # Contributing to Gargona
 
-Русская версия | [English Version](#contributing-to-gargona)
+[Русская версия](#вклад-в-gargona) | English Version
 
 Thank you for your interest in contributing to **Gargona**, an encrypted time-locked messaging system! We welcome contributions from the community to improve security, performance, documentation, and usability. This guide outlines how you can contribute, from submitting bug reports to proposing new features.
 
@@ -33,7 +33,7 @@ If you find a bug, please report it via GitHub Issues:
    - Steps to reproduce the bug.
    - Expected and actual behavior.
    - Environment details (OS, OpenSSL version, compiler).
-   - Relevant logs (e.g., from `gargona.log`).
+   - Relevant logs (e.g., from `gargonad.log`).
 4. Use the provided issue template if available.
 
 ### Suggesting Features
@@ -42,7 +42,7 @@ We welcome ideas for new features, such as replication or new subscription modes
 
 1. Open a GitHub Issue with the label "enhancement."
 2. Describe the feature, its use case, and potential implementation ideas.
-3. Reference the [Future Plans](#future-plans) section in README.md if relevant.
+3. Reference the [**"Future Plans"**](../README.md#future-plans) section in readme.md if relevant.
 
 ### Submitting Code Changes
 
@@ -176,7 +176,7 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
    - Шаги для воспроизведения ошибки.
    - Ожидаемое и фактическое поведение.
    - Детали окружения (ОС, версия OpenSSL, компилятор).
-   - Соответствующие логи (например, из `gargona.log`).
+   - Соответствующие логи (например, из `gargonad.log`).
 4. Используйте шаблон issue, если он доступен.
 
 ### Предложение функций
@@ -185,9 +185,9 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
 
 1. Откройте GitHub Issue с меткой "enhancement".
 2. Опишите функцию, её сценарий использования и идеи реализации.
-3. Ссылайтесь на раздел [Планы на будущее](#планы-на-будущее) в README.md, если применимо.
+3. Ссылайтесь на раздел [**"Планы на будущее"**](../README.md#планы-на-будущее) в readme.md, если применимо.
 
-### Отправка изменений в коде
+### Отправка изменений в коде[**"Планы на будущее"**](../README.md#планы-на-будущее)
 
 Чтобы внести изменения в код (исправления ошибок, функции или улучшения):
 

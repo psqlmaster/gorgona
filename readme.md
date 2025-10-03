@@ -1,6 +1,6 @@
 # Gargona: Encrypted Time-Locked Messaging System
 
-[Русская версия](#gargona-система-зашифрованного-алертинга-с-временной-блокировкой) | [English Version](#gargona-encrypted-time-locked-messaging-system)
+[Русская версия](#gargona-система-зашифрованного-алертинга-с-временной-блокировкой) | English Version
 
 ---
 ![ ](gargona.png)
@@ -128,7 +128,7 @@ See [contributing.md](contributing.md) for how to contribute to Gargona.
 
 ## Gargona: Система зашифрованного алертинга с временной блокировкой
 
-[English Version](#gargona-encrypted-time-locked-messaging-system) | [Русская версия](#gargona-система-зашифрованного-алертинга-с-временной-блокировкой)
+[English Version](#gargona-encrypted-time-locked-messaging-system) | Русская версия
 
 ### Введение
 
