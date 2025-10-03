@@ -32,6 +32,13 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 - **No Third-Party Reliance**: Operates locally or via direct client-server communication.
 - **Creative Applications**: Build time capsules, gamified messaging, or secure delayed backups.
 
+## Quick Start
+```bash
+git clone https://github.com/psqlmaster/gargona.git
+cd gargona
+./gargona listen all
+```
+
 ### Installation
 
 1. Clone the repository:
@@ -146,6 +153,13 @@ Gargona — это безопасная система обмена сообще
 - **Масштабируемость**: Простой TCP-сервер поддерживает множество клиентов (по умолчанию: 100, настраивается) и может быть расширен.
 - **Без внешних сервисов**: Работает локально или через прямое взаимодействие клиент-сервер.
 - **Креативные сценарии**: Временные капсулы, игровые системы обмена сообщениями или безопасные резервные копии.
+
+## Быстрый старт
+```bash
+git clone https://github.com/psqlmaster/gargona.git
+cd gargona
+./gargona listen all
+```
 
 ### Установка
 
