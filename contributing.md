@@ -42,7 +42,7 @@ We welcome ideas for new features, such as replication or new subscription modes
 
 1. Open a GitHub Issue with the label "enhancement."
 2. Describe the feature, its use case, and potential implementation ideas.
-3. Reference the [**"Future Plans"**](../README.md#future-plans) section in readme.md if relevant.
+3. Reference the [**"Future Plans"**](./readme.md#future-plans) section in readme.md if relevant.
 
 ### Submitting Code Changes
 
@@ -185,9 +185,7 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
 
 1. Откройте GitHub Issue с меткой "enhancement".
 2. Опишите функцию, её сценарий использования и идеи реализации.
-3. Ссылайтесь на раздел [**"Планы на будущее"**](./README.md#планы-на-будущее) в readme.md, если применимо.
-
-### Отправка изменений в коде[**"Планы на будущее"**](./README.md#планы-на-будущее)
+3. Ссылайтесь на раздел [**"Планы на будущее"**](./readme.md#планы-на-будущее) в readme.md, если применимо.
 
 Чтобы внести изменения в код (исправления ошибок, функции или улучшения):
 
