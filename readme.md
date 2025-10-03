@@ -97,7 +97,7 @@ cd gargona
 ### Configuration
 
 #### Client Configuration
-Edit `gargonad.conf` in the client’s working directory to configure server connection settings:
+Edit `gargona.conf` in the client’s working directory to configure server connection settings:
 ```
 [server]
 ip = 64.188.70.158
@@ -219,7 +219,7 @@ cd gargona
 ### Конфигурация
 
 #### Конфигурация клиента
-Отредактируйте `gargonad.conf` в рабочей директории клиента для настройки подключения к серверу:
+Отредактируйте `gargona.conf` в рабочей директории клиента для настройки подключения к серверу:
 ```
 [server]
 ip = 64.188.70.158
