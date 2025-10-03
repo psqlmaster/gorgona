@@ -13,7 +13,7 @@ int recipient_count = 0;
 int recipient_capacity = 0;
 int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
-int max_alerts = MAX_ALERTS;
+int max_alerts = DEFAULT_MAX_ALERTS;
 int max_clients = MAX_CLIENTS;
 
 /* Function to check for HTTP request */
@@ -44,7 +44,7 @@ void trim_string(char *str) {
 /* Reads configuration from gargonad.conf */
 void read_config(int *port, int *max_alerts, int *max_clients) {
     *port = DEFAULT_SERVER_PORT;
-    *max_alerts = MAX_ALERTS;
+    *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
 
     FILE *conf_fp = fopen("gargonad.conf", "r");
@@ -113,6 +113,12 @@ Recipient *add_recipient(const unsigned char *hash) {
     Recipient *rec = &recipients[recipient_count];
     memcpy(rec->hash, hash, PUBKEY_HASH_LEN);
     rec->count = 0;
+    rec->capacity = max_alerts;
+    rec->alerts = malloc(sizeof(Alert) * rec->capacity);
+    if (!rec->alerts) {
+        perror("Не удалось выделить память для alerts");
+        exit(1);
+    }
     recipient_count++;
     return rec;
 }

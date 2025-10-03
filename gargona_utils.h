@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 
 #define MAX_MSG_LEN 8192
-#define MAX_ALERTS 1024
+#define DEFAULT_MAX_ALERTS 1000
 #define MAX_CLIENTS 100
 #define MODE_LIVE 1
 #define MODE_ALL 2
@@ -35,8 +35,9 @@ typedef struct {
 /* Structure for alerts by recipient */
 typedef struct {
     unsigned char hash[PUBKEY_HASH_LEN];
-    Alert alerts[MAX_ALERTS];
+    Alert *alerts; // Динамический массив
     int count;
+    int capacity;
 } Recipient;
 
 /* Structure for subscribers */

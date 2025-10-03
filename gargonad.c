@@ -458,6 +458,7 @@ int main(int argc, char *argv[]) {
         for (int j = 0; j < recipients[r].count; j++) {
             free_alert(&recipients[r].alerts[j]);
         }
+        free(recipients[r].alerts); // Освобождаем динамический массив
     }
     free(recipients);
     if (log_file) {
