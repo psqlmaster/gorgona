@@ -305,7 +305,7 @@ int main(int argc, char *argv[]) {
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Invalid command from %d: %.*s\n", 
+                            fprintf(log_file, "%s Unknown command from %d: %.*s\n", 
                                     time_str, sd, valread, buffer);
                             fflush(log_file);
                         }
@@ -316,28 +316,15 @@ int main(int argc, char *argv[]) {
                     subscribers[i].mode = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
                     continue;
-                }
-
-                if ((strncmp(buffer, "SEND|", 5) == 0 || strncmp(buffer, "LISTEN|", 7) == 0) && 
-                    (valread < 8 || strchr(buffer, '|') == NULL)) {
-                    dprintf(sd, "Error: Malformed SEND or LISTEN command\nEND_OF_MESSAGE\n");
-                    if (log_file) {
-                        char time_str[32];
-                        get_utc_time_str(time_str, sizeof(time_str));
-                        fprintf(log_file, "%s Malformed SEND/LISTEN from %d: %.*s\n", 
-                                time_str, sd, valread, buffer);
-                        fflush(log_file);
+                } else if (strncmp(buffer, "SEND|", 5) == 0) {
+                    char *copy = strdup(buffer + 5);
+                    if (!copy) {
+                        dprintf(sd, "Error: Memory allocation failed\nEND_OF_MESSAGE\n");
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
                     }
-                    close(sd);
-                    client_sockets[i] = 0;
-                    subscribers[i].sock = 0;
-                    subscribers[i].mode = 0;
-                    subscribers[i].pubkey_hash[0] = '\0';
-                    continue;
-                }
-
-                if (strncmp(buffer, "SEND|", 5) == 0) {
-                    char *token = strtok(buffer + 5, "|");
+                    char *token = strtok(copy, "|");
                     if (!token) {
                         dprintf(sd, "Error: Invalid SEND format\nEND_OF_MESSAGE\n");
                         if (log_file) {
@@ -346,6 +333,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Invalid SEND format from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -360,6 +348,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing create_at in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -374,6 +363,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing unlock_at in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -388,6 +378,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing expire_at in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -402,6 +393,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing base64_text in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -416,6 +408,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing base64_encrypted_key in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -430,6 +423,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing base64_iv in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -444,6 +438,7 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Missing base64_tag in SEND from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -461,10 +456,12 @@ int main(int argc, char *argv[]) {
                             fflush(log_file);
                         }
                         free(pubkey_hash);
+                        free(copy);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
                     }
+                    free(copy);
 
                     add_alert(pubkey_hash, create_at, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
                     dprintf(sd, "Alert successfully added\nEND_OF_MESSAGE\n");
@@ -474,7 +471,15 @@ int main(int argc, char *argv[]) {
                     }
                     free(pubkey_hash);
                 } else if (strncmp(buffer, "LISTEN|", 7) == 0) {
-                    char *pubkey_hash_b64 = buffer + 7;
+                    char *rest = strdup(buffer + 7);
+                    if (!rest) {
+                        dprintf(sd, "Error: Memory allocation failed\nEND_OF_MESSAGE\n");
+                        close(sd);
+                        client_sockets[i] = 0;
+                        continue;
+                    }
+                    char *pubkey_hash_b64 = strtok(rest, "|");
+                    char *mode_str = strtok(NULL, "|");
                     trim_string(pubkey_hash_b64);
                     if (strlen(pubkey_hash_b64) == 0) {
                         dprintf(sd, "Error: Empty pubkey hash in LISTEN\nEND_OF_MESSAGE\n");
@@ -484,20 +489,39 @@ int main(int argc, char *argv[]) {
                             fprintf(log_file, "%s Empty pubkey hash in LISTEN from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(rest);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
                     }
+                    int sub_mode = MODE_SINGLE;  /* Default to single */
+                    if (mode_str) {
+                        trim_string(mode_str);
+                        char upper_mode[16];
+                        strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
+                        upper_mode[sizeof(upper_mode) - 1] = '\0';
+                        for (char *p = upper_mode; *p; p++) *p = toupper(*p);
+                        if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
+                    }
                     for (int j = 0; j < max_clients; j++) {
                         if (client_sockets[j] == sd) {
-                            subscribers[j].mode = 3;
+                            subscribers[j].mode = sub_mode;
                             strncpy(subscribers[j].pubkey_hash, pubkey_hash_b64, sizeof(subscribers[j].pubkey_hash) - 1);
                             subscribers[j].pubkey_hash[sizeof(subscribers[j].pubkey_hash) - 1] = '\0';
                             break;
                         }
                     }
-                    send_current_alerts(sd, 3, pubkey_hash_b64);
-                    dprintf(sd, "Subscribed to SINGLE for %s\nEND_OF_MESSAGE\n", pubkey_hash_b64);
+                    send_current_alerts(sd, sub_mode, pubkey_hash_b64);
+                    dprintf(sd, "Subscribed to %s for %s\nEND_OF_MESSAGE\n", (sub_mode == MODE_LAST ? "LAST" : "SINGLE"), pubkey_hash_b64);
+                    free(rest);
+                    if (sub_mode == MODE_LAST) {
+                        /* Close connection for last mode after sending */
+                        close(sd);
+                        client_sockets[i] = 0;
+                        subscribers[i].sock = 0;
+                        subscribers[i].mode = 0;
+                        subscribers[i].pubkey_hash[0] = '\0';
+                    }
                 } else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
                     char *rest = buffer + 10;
                     char *mode_str = strtok(rest, "|");
@@ -520,9 +544,10 @@ int main(int argc, char *argv[]) {
                     strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
                     upper_mode[sizeof(upper_mode) - 1] = '\0';
                     for (char *p = upper_mode; *p; p++) *p = toupper(*p);
-                    if (strcmp(upper_mode, "LIVE") == 0) sub_mode = 1;
-                    else if (strcmp(upper_mode, "ALL") == 0) sub_mode = 2;
-                    else if (strcmp(upper_mode, "LOCK") == 0) sub_mode = 4;
+                    if (strcmp(upper_mode, "LIVE") == 0) sub_mode = MODE_LIVE;
+                    else if (strcmp(upper_mode, "ALL") == 0) sub_mode = MODE_ALL;
+                    else if (strcmp(upper_mode, "LOCK") == 0) sub_mode = MODE_LOCK;
+                    else if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;  /* New mode */
                     else {
                         dprintf(sd, "Error: Unknown mode %s\nEND_OF_MESSAGE\n", mode_str);
                         if (log_file) {
@@ -550,6 +575,14 @@ int main(int argc, char *argv[]) {
                     }
                     send_current_alerts(sd, sub_mode, pubkey_hash_b64);
                     dprintf(sd, "Subscribed to %s%s\nEND_OF_MESSAGE\n", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
+                    if (sub_mode == MODE_LAST) {
+                        /* Close connection for last mode after sending */
+                        close(sd);
+                        client_sockets[i] = 0;
+                        subscribers[i].sock = 0;
+                        subscribers[i].mode = 0;
+                        subscribers[i].pubkey_hash[0] = '\0';
+                    }
                 }
             }
         }

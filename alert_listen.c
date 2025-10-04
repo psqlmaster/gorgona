@@ -177,7 +177,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
 int listen_alerts(int argc, char *argv[], int verbose) {
     if (argc < 2) {
         fprintf(stderr, "Usage: listen <mode> [pubkey_hash_b64]\n");
-        fprintf(stderr, "Modes: live, all, lock, single\n");
+        fprintf(stderr, "Modes: live, all, lock, single, last\n");
         return 1;
     }
 
@@ -190,7 +190,8 @@ int listen_alerts(int argc, char *argv[], int verbose) {
     int valid_mode = (strcmp(upper_mode, "LIVE") == 0 || 
                       strcmp(upper_mode, "ALL") == 0 || 
                       strcmp(upper_mode, "LOCK") == 0 || 
-                      strcmp(upper_mode, "SINGLE") == 0);
+                      strcmp(upper_mode, "SINGLE") == 0 ||
+                      strcmp(upper_mode, "LAST") == 0);
     free(upper_mode);
     if (!valid_mode) {
         fprintf(stderr, "Invalid mode: %s\n", mode);
@@ -221,13 +222,13 @@ int listen_alerts(int argc, char *argv[], int verbose) {
     }
 
     char buffer[MAX_MSG_LEN];
-    if (strcmp(mode, "single") == 0) {
+    if (strcmp(mode, "single") == 0 || strcmp(mode, "last") == 0) {
         if (!pubkey_hash_b64) {
-            fprintf(stderr, "Pubkey hash required for single mode\n");
+            fprintf(stderr, "Pubkey hash required for %s mode\n", mode);
             close(sock);
             return 1;
         }
-        snprintf(buffer, MAX_MSG_LEN, "LISTEN|%s", pubkey_hash_b64);
+        snprintf(buffer, MAX_MSG_LEN, "LISTEN|%s|%s", pubkey_hash_b64, mode);
     } else {
         if (pubkey_hash_b64) {
             snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
@@ -284,6 +285,10 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         memmove(accum, start, remain_len);
         accum_len = remain_len;
         accum[accum_len] = '\0';
+
+        if (strcmp(mode, "last") == 0) {
+            break;
+        }
     }
 
     close(sock);

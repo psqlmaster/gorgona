@@ -277,6 +277,61 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
 /* Sends current alerts to a subscriber based on mode */
 void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
     time_t now = time(NULL);
+    if (mode == MODE_LAST) {
+        Alert *latest_alert = NULL;
+        Recipient *latest_rec = NULL;
+        time_t max_create_at = 0;
+
+        for (int r = 0; r < recipient_count; r++) {
+            Recipient *rec = &recipients[r];
+            clean_expired_alerts(rec);
+            if (rec->count == 0) continue;
+
+            char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
+            if (!pubkey_hash_b64) continue;
+            if (pubkey_hash_b64_filter && strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
+                free(pubkey_hash_b64);
+                continue;
+            }
+            free(pubkey_hash_b64);
+
+            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp);
+            Alert *a = &rec->alerts[rec->count - 1]; // Последний алерт после сортировки
+            if (a->active && a->create_at > max_create_at && a->expire_at > now) {
+                max_create_at = a->create_at;
+                latest_alert = a;
+                latest_rec = rec;
+            }
+        }
+
+        if (latest_alert && latest_rec) {
+            char *pubkey_hash_b64 = base64_encode(latest_rec->hash, PUBKEY_HASH_LEN);
+            if (pubkey_hash_b64) {
+                char *base64_text = base64_encode(latest_alert->text, latest_alert->text_len);
+                char *base64_encrypted_key = base64_encode(latest_alert->encrypted_key, latest_alert->encrypted_key_len);
+                char *base64_iv = base64_encode(latest_alert->iv, latest_alert->iv_len);
+                char *base64_tag = base64_encode(latest_alert->tag, GCM_TAG_LEN);
+
+                if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
+                    char response[MAX_MSG_LEN];
+                    int len = snprintf(response, MAX_MSG_LEN, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
+                                       pubkey_hash_b64, latest_alert->create_at, latest_alert->unlock_at, latest_alert->expire_at,
+                                       base64_text, base64_encrypted_key, base64_iv, base64_tag);
+                    free(base64_text);
+                    free(base64_encrypted_key);
+                    free(base64_iv);
+                   free(base64_tag);
+                    if (len < MAX_MSG_LEN - 20) {
+                        strcat(response, "\nEND_OF_MESSAGE\n");
+                        send(sd, response, strlen(response), 0);
+                    }
+                }
+                free(pubkey_hash_b64);
+            }
+        }
+        return;
+    }
+
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         clean_expired_alerts(rec);

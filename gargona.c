@@ -32,6 +32,7 @@ void print_help(const char *program_name) {
     printf("        all     - all non-expired messages, including locked\n");
     printf("        lock    - only locked messages (unlock_at > now)\n");
     printf("        single  - only active messages for the given pubkey_hash_b64\n");
+    printf("        last    - only the most recent message(s), optionally for the given pubkey_hash_b64\n");
     printf("      If pubkey_hash_b64 is provided, filters by it (mandatory for single mode)\n");
 
     printf("\nConfiguration:\n");
