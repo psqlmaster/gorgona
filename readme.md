@@ -19,8 +19,9 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 - **Time-Locked Delivery**: Messages unlock at a specified `unlock_at` time and expire at `expire_at`.
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
 - **Key Management**: Generates RSA key pairs named by the public key’s hash for secure sharing and local private key storage.
-- **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (including metadata for locked messages), "lock" (locked messages only), or "single" (specific recipient).
-- **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1024), automatically removing the oldest or expired messages.
+- **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (get including metadata for locked messages), 
+    "lock" (locked messages only), or "single" (specific recipient)., "last (get one last message)".
+- **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
 - **Tamper-Proof**: GCM authentication tags and RSA-OAEP padding protect against tampering.
@@ -142,7 +143,9 @@ Gargona — это безопасная система обмена сообще
 - **Временная блокировка**: Сообщения становятся доступными в заданное время (`unlock_at`) и удаляются после (`expire_at`).
 - **Конфиденциальность**: Сервер работает только с зашифрованными данными, не имея доступа к содержимому.
 - **Управление ключами**: Генерирует пары RSA-ключей, названные по хешу публичного ключа для удобного обмена и безопасного хранения.
-- **Гибкие режимы подписки**: Поддерживает "live" (доступные сообщения), "all" (все сообщения, включая метаданные), "lock" (только заблокированные сообщения) и "single" (для конкретного получателя).
+- **Гибкие режимы подписки**: Поддерживает "live" (доступные сообщения), "all" (все сообщения, включая метаданные), 
+    "lock" (только заблокированные сообщения) и "single" (для конкретного получателя), "last" (получить одно последнее сообщение, для конкретного получателя).
+     
 - **Эффективное хранение**: Кольцевой буфер ограничивает количество сообщений на получателя до настраиваемого значения (по умолчанию: 1024), удаляя старые или истекшие.
 - **Децентрализованный дизайн**: Пользователи контролируют ключи, сервер лёгкий и подходит для самостоятельного хостинга.
 - **Быстрота и лёгкость**: Использует OpenSSL, без тяжёлых зависимостей.
