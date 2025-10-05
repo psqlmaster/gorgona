@@ -105,7 +105,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     time_to_utc_string(unlock_at, buf_unlock, sizeof(buf_unlock));
     time_to_utc_string(expire_at, buf_expire, sizeof(buf_expire));
 
-    printf("Metadata: Create=%s, Unlock=%s, Expire=%s, ", buf_create, buf_unlock, buf_expire);
+    printf("Metadata: Create=%s, Unlock=%s, Expire=%s\n", buf_create, buf_unlock, buf_expire);
 
     if (expire_at <= now) {
         printf("Message expired\n");
