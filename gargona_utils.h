@@ -6,7 +6,6 @@
 #include <time.h>
 #include <sys/socket.h>
 
-#define MAX_MSG_LEN 8192
 #define DEFAULT_MAX_ALERTS 1000
 #define MAX_CLIENTS 100
 #define MODE_LIVE 1
@@ -17,6 +16,7 @@
 #define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
 #define MAX_LOG_SIZE (10 * 1024 * 1024) // 10 MB
+#define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) // 5 MB по умолчанию
 
 /* Structure for storing an alert */
 typedef struct {
@@ -57,11 +57,12 @@ extern int client_sockets[MAX_CLIENTS];
 extern Subscriber subscribers[MAX_CLIENTS];
 extern int max_alerts;
 extern int max_clients;
+extern size_t max_message_size;  // Новый параметр
 
 /* Function declarations */
 int is_http_request(const char *buffer);
 void trim_string(char *str);
-void read_config(int *port, int *max_alerts, int *max_clients);
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size);  // Изменено: добавлен параметр
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);
@@ -76,3 +77,4 @@ void send_current_alerts(int sd, int mode, const char *single_hash_b64);
 void rotate_log(void);
 
 #endif
+

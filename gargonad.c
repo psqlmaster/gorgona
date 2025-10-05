@@ -13,6 +13,7 @@ All rights reserved. */
 #include <ctype.h>
 #include <signal.h>
 #include <time.h>  /* Added for UTC time formatting */
+#include <stdint.h>  // Добавлено для uint32_t
 
 /* Global flag for verbose mode */
 int verbose = 0;
@@ -54,6 +55,7 @@ void print_server_help(const char *program_name) {
     printf(" port = <port> (default: 5555, example: 7777)\n");
     printf(" MAX_ALERTS = <number> (default: 1024, example: 2000)\n");
     printf(" MAX_CLIENTS = <number> (default: 100, example: 100)\n");
+    printf(" max_message_size = <bytes> (default: 5242880 for 5 MB, example: 10485760 for 10 MB)\n");
     printf("\nLogging:\n");
     printf(" Logs are written to ./gargonad.log. The log rotates when it exceeds %d bytes (10 MB).\n", MAX_LOG_SIZE);
     printf("\nLimits:\n");
@@ -84,7 +86,6 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
-    char buffer[MAX_MSG_LEN] = {0};
     fd_set readfds;
 
     /* Register signal handlers */
@@ -93,9 +94,11 @@ int main(int argc, char *argv[]) {
 
     /* Read configuration */
     int port, max_alerts_config, max_clients_config;
-    read_config(&port, &max_alerts_config, &max_clients_config);
+    size_t max_message_size_config;
+    read_config(&port, &max_alerts_config, &max_clients_config, &max_message_size_config);
     max_alerts = max_alerts_config;
     max_clients = max_clients_config;
+    max_message_size = max_message_size_config;
 
     /* Initialize arrays */
     for (i = 0; i < max_clients; i++) {
@@ -217,6 +220,7 @@ int main(int argc, char *argv[]) {
         }
 
         activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
+
         if ((activity < 0) && (errno != EINTR)) {
             if (log_file) {
                 char time_str[32];
@@ -224,11 +228,9 @@ int main(int argc, char *argv[]) {
                 fprintf(log_file, "%s Select error: %s\n", time_str, strerror(errno));
                 fflush(log_file);
             }
-            printf("select error: %s\n", strerror(errno));
             continue;
         }
 
-        /* New connection */
         if (FD_ISSET(server_fd, &readfds)) {
             if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
                 if (log_file) {
@@ -240,73 +242,55 @@ int main(int argc, char *argv[]) {
                 perror("accept");
                 continue;
             }
+
             for (i = 0; i < max_clients; i++) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
-                    subscribers[i].mode = 0;
-                    subscribers[i].pubkey_hash[0] = '\0';
+                    if (log_file) {
+                        char time_str[32];
+                        get_utc_time_str(time_str, sizeof(time_str));
+                        fprintf(log_file, "%s New connection, socket fd %d, ip %s, port %d\n",
+                                time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+                        fflush(log_file);
+                    }
                     break;
                 }
             }
             if (i == max_clients) {
-                dprintf(new_socket, "Server full, try again later\nEND_OF_MESSAGE\n");
-                close(new_socket);
                 if (log_file) {
                     char time_str[32];
                     get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s No free slots for new connection\n", time_str);
+                    fprintf(log_file, "%s Max clients reached, rejecting connection\n", time_str);
                     fflush(log_file);
                 }
+                char *resp = "Error: Max clients reached";
+                uint32_t len_net = htonl(strlen(resp));
+                send(new_socket, &len_net, sizeof(uint32_t), 0);
+                send(new_socket, resp, strlen(resp), 0);
+                close(new_socket);
             }
         }
 
-        /* Handle client data */
         for (i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (FD_ISSET(sd, &readfds)) {
-                valread = read(sd, buffer, MAX_MSG_LEN - 1);
-                if (valread <= 0) {
-                    if (valread < 0 && log_file) {
-                        char time_str[32];
-                        get_utc_time_str(time_str, sizeof(time_str));
-                        fprintf(log_file, "%s Read error from client %d: %s\n", 
-                                time_str, sd, strerror(errno));
-                        fflush(log_file);
-                    }
-                    close(sd);
-                    client_sockets[i] = 0;
-                    subscribers[i].sock = 0;
-                    subscribers[i].mode = 0;
-                    subscribers[i].pubkey_hash[0] = '\0';
-                    continue;
-                }
-
-                buffer[valread] = '\0';
-                if (verbose) {  /* Print only in verbose mode */
-                    printf("Received: %s\n", buffer);
-                }
-
-                if (strncmp(buffer, "SEND|", 5) != 0 &&
-                    strncmp(buffer, "LISTEN|", 7) != 0 &&
-                    strncmp(buffer, "SUBSCRIBE ", 10) != 0) {
-                    if (is_http_request(buffer)) {
-                        char http_response[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                        send(sd, http_response, sizeof(http_response) - 1, 0);
+                // Чтение длины сообщения
+                uint32_t msg_len_net;
+                valread = read(sd, &msg_len_net, sizeof(uint32_t));
+                if (valread != sizeof(uint32_t)) {
+                    if (valread == 0) {
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Handled HTTP probe from %d: %.*s\n", 
-                                    time_str, sd, valread, buffer);
+                            fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
                             fflush(log_file);
                         }
                     } else {
-                        dprintf(sd, "Error: Unknown or malformed command\nEND_OF_MESSAGE\n");
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Unknown command from %d: %.*s\n", 
-                                    time_str, sd, valread, buffer);
+                            fprintf(log_file, "%s Read error on fd %d: %s\n", time_str, sd, strerror(errno));
                             fflush(log_file);
                         }
                     }
@@ -316,173 +300,163 @@ int main(int argc, char *argv[]) {
                     subscribers[i].mode = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
                     continue;
-                } else if (strncmp(buffer, "SEND|", 5) == 0) {
-                    char *copy = strdup(buffer + 5);
-                    if (!copy) {
-                        dprintf(sd, "Error: Memory allocation failed\nEND_OF_MESSAGE\n");
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
+                }
+                size_t msg_len = ntohl(msg_len_net);
+
+                if (msg_len > max_message_size) {
+                    if (log_file) {
+                        char time_str[32];
+                        get_utc_time_str(time_str, sizeof(time_str));
+                        fprintf(log_file, "%s Message too large (%zu > %zu) from fd %d\n", time_str, msg_len, max_message_size, sd);
+                        fflush(log_file);
                     }
-                    char *token = strtok(copy, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Invalid SEND format\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Invalid SEND format from %d\n", time_str, sd);
-                            fflush(log_file);
+                    char *error_msg = "Error: Message too large";
+                    uint32_t error_len_net = htonl(strlen(error_msg));
+                    send(sd, &error_len_net, sizeof(uint32_t), 0);
+                    send(sd, error_msg, strlen(error_msg), 0);
+                    close(sd);
+                    client_sockets[i] = 0;
+                    subscribers[i].sock = 0;
+                    subscribers[i].mode = 0;
+                    subscribers[i].pubkey_hash[0] = '\0';
+                    continue;
+                }
+
+                char *buffer = malloc(msg_len + 1);
+                if (!buffer) {
+                    if (log_file) {
+                        char time_str[32];
+                        get_utc_time_str(time_str, sizeof(time_str));
+                        fprintf(log_file, "%s Memory allocation failed for msg_len %zu on fd %d\n", time_str, msg_len, sd);
+                        fflush(log_file);
+                    }
+                    char *error_msg = "Error: Server memory error";
+                    uint32_t error_len_net = htonl(strlen(error_msg));
+                    send(sd, &error_len_net, sizeof(uint32_t), 0);
+                    send(sd, error_msg, strlen(error_msg), 0);
+                    close(sd);
+                    client_sockets[i] = 0;
+                    continue;
+                }
+
+                size_t total_read = 0;
+                while (total_read < msg_len) {
+                    valread = read(sd, buffer + total_read, msg_len - total_read);
+                    if (valread <= 0) {
+                        if (valread < 0) {
+                            if (log_file) {
+                                char time_str[32];
+                                get_utc_time_str(time_str, sizeof(time_str));
+                                fprintf(log_file, "%s Read error during data: %s on fd %d\n", time_str, strerror(errno), sd);
+                                fflush(log_file);
+                            }
+                        } else {
+                            if (log_file) {
+                                char time_str[32];
+                                get_utc_time_str(time_str, sizeof(time_str));
+                                fprintf(log_file, "%s Unexpected disconnect during read on fd %d\n", time_str, sd);
+                                fflush(log_file);
+                            }
                         }
-                        free(copy);
+                        free(buffer);
+                        close(sd);
+                        client_sockets[i] = 0;
+                        subscribers[i].sock = 0;
+                        subscribers[i].mode = 0;
+                        subscribers[i].pubkey_hash[0] = '\0';
+                        break;
+                    }
+                    total_read += valread;
+                }
+                if (total_read < msg_len) continue;  // Если не дочитали, уже закрыли
+                buffer[msg_len] = '\0';
+
+                if (verbose) {
+                    printf("Received: %s\n", buffer);
+                }
+
+                // Обработка команды (остальной код без изменений, но с динамической отправкой ответов)
+                if (strncmp(buffer, "SEND|", 5) == 0) {
+                    char *rest = strdup(buffer + 5);
+                    if (!rest) {
+                        char *error_msg = "Error: Memory allocation failed";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
+                        free(buffer);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
                     }
-                    char *pubkey_hash_b64 = token;
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing create_at\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing create_at in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
+                    char *pubkey_hash_b64 = strtok(rest, "|");
+                    char *create_at_str = strtok(NULL, "|");
+                    char *unlock_at_str = strtok(NULL, "|");
+                    char *expire_at_str = strtok(NULL, "|");
+                    char *encrypted_b64 = strtok(NULL, "|");
+                    char *encrypted_key_b64 = strtok(NULL, "|");
+                    char *iv_b64 = strtok(NULL, "|");
+                    char *tag_b64 = strtok(NULL, "|");
+
+                    if (!pubkey_hash_b64 || !create_at_str || !unlock_at_str || !expire_at_str ||
+                        !encrypted_b64 || !encrypted_key_b64 || !iv_b64 || !tag_b64) {
+                        char *error_msg = "Error: Incomplete SEND data";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
+                        free(rest);
+                        free(buffer);
                         continue;
                     }
-                    time_t create_at = atol(token);
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing unlock_at\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing unlock_at in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
-                    }
-                    time_t unlock_at = atol(token);
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing expire_at\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing expire_at in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
-                    }
-                    time_t expire_at = atol(token);
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing base64_text\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing base64_text in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
-                    }
-                    char *base64_text = token;
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing base64_encrypted_key\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing base64_encrypted_key in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
-                    }
-                    char *base64_encrypted_key = token;
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing base64_iv\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing base64_iv in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
-                    }
-                    char *base64_iv = token;
-                    token = strtok(NULL, "|");
-                    if (!token) {
-                        dprintf(sd, "Error: Missing base64_tag\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Missing base64_tag in SEND from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        continue;
-                    }
-                    char *base64_tag = token;
+
+                    trim_string(pubkey_hash_b64);
+                    time_t create_at = atol(create_at_str);
+                    time_t unlock_at = atol(unlock_at_str);
+                    time_t expire_at = atol(expire_at_str);
 
                     size_t hash_len;
                     unsigned char *pubkey_hash = base64_decode(pubkey_hash_b64, &hash_len);
                     if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
-                        dprintf(sd, "Error: Invalid public key hash\nEND_OF_MESSAGE\n");
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Invalid pubkey hash from %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
+                        char *error_msg = "Error: Invalid pubkey hash";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
                         free(pubkey_hash);
-                        free(copy);
-                        close(sd);
-                        client_sockets[i] = 0;
+                        free(rest);
+                        free(buffer);
                         continue;
                     }
-                    free(copy);
 
-                    add_alert(pubkey_hash, create_at, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
-                    dprintf(sd, "Alert successfully added\nEND_OF_MESSAGE\n");
+                    add_alert(pubkey_hash, create_at, unlock_at, expire_at, encrypted_b64, encrypted_key_b64, iv_b64, tag_b64, sd);
+                    char *success_msg = "Alert successfully added";
+                    uint32_t success_len_net = htonl(strlen(success_msg));
+                    send(sd, &success_len_net, sizeof(uint32_t), 0);
+                    send(sd, success_msg, strlen(success_msg), 0);
                     Recipient *rec = find_recipient(pubkey_hash);
                     if (rec) {
                         notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
                     }
                     free(pubkey_hash);
+                    free(rest);
                 } else if (strncmp(buffer, "LISTEN|", 7) == 0) {
                     char *rest = strdup(buffer + 7);
                     if (!rest) {
-                        dprintf(sd, "Error: Memory allocation failed\nEND_OF_MESSAGE\n");
+                        char *error_msg = "Error: Memory allocation failed";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
                         close(sd);
                         client_sockets[i] = 0;
+                        free(buffer);
                         continue;
                     }
                     char *pubkey_hash_b64 = strtok(rest, "|");
                     char *mode_str = strtok(NULL, "|");
                     trim_string(pubkey_hash_b64);
                     if (strlen(pubkey_hash_b64) == 0) {
-                        dprintf(sd, "Error: Empty pubkey hash in LISTEN\nEND_OF_MESSAGE\n");
+                        char *error_msg = "Error: Empty pubkey hash in LISTEN";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
@@ -490,6 +464,7 @@ int main(int argc, char *argv[]) {
                             fflush(log_file);
                         }
                         free(rest);
+                        free(buffer);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -512,7 +487,11 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     send_current_alerts(sd, sub_mode, pubkey_hash_b64);
-                    dprintf(sd, "Subscribed to %s for %s\nEND_OF_MESSAGE\n", (sub_mode == MODE_LAST ? "LAST" : "SINGLE"), pubkey_hash_b64);
+                    char sub_msg[256];
+                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s for %s", (sub_mode == MODE_LAST ? "LAST" : "SINGLE"), pubkey_hash_b64);
+                    uint32_t sub_len_net = htonl(sub_len);
+                    send(sd, &sub_len_net, sizeof(uint32_t), 0);
+                    send(sd, sub_msg, sub_len, 0);
                     free(rest);
                     if (sub_mode == MODE_LAST) {
                         /* Close connection for last mode after sending */
@@ -523,17 +502,32 @@ int main(int argc, char *argv[]) {
                         subscribers[i].pubkey_hash[0] = '\0';
                     }
                 } else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
-                    char *rest = buffer + 10;
+                    char *rest = strdup(buffer + 10);
+                    if (!rest) {
+                        char *error_msg = "Error: Memory allocation failed";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
+                        close(sd);
+                        client_sockets[i] = 0;
+                        free(buffer);
+                        continue;
+                    }
                     char *mode_str = strtok(rest, "|");
                     char *pubkey_hash_b64 = strtok(NULL, "|");
                     if (!mode_str) {
-                        dprintf(sd, "Error: Missing mode in SUBSCRIBE\nEND_OF_MESSAGE\n");
+                        char *error_msg = "Error: Missing mode in SUBSCRIBE";
+                        uint32_t error_len_net = htonl(strlen(error_msg));
+                        send(sd, &error_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, strlen(error_msg), 0);
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
                             fprintf(log_file, "%s Missing mode in SUBSCRIBE from %d\n", time_str, sd);
                             fflush(log_file);
                         }
+                        free(rest);
+                        free(buffer);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -549,13 +543,19 @@ int main(int argc, char *argv[]) {
                     else if (strcmp(upper_mode, "LOCK") == 0) sub_mode = MODE_LOCK;
                     else if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;  /* New mode */
                     else {
-                        dprintf(sd, "Error: Unknown mode %s\nEND_OF_MESSAGE\n", mode_str);
+                        char error_msg[256];
+                        int err_len = snprintf(error_msg, sizeof(error_msg), "Error: Unknown mode %s", mode_str);
+                        uint32_t err_len_net = htonl(err_len);
+                        send(sd, &err_len_net, sizeof(uint32_t), 0);
+                        send(sd, error_msg, err_len, 0);
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
                             fprintf(log_file, "%s Unknown mode from %d: %s\n", time_str, sd, mode_str);
                             fflush(log_file);
                         }
+                        free(rest);
+                        free(buffer);
                         close(sd);
                         client_sockets[i] = 0;
                         continue;
@@ -574,7 +574,12 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     send_current_alerts(sd, sub_mode, pubkey_hash_b64);
-                    dprintf(sd, "Subscribed to %s%s\nEND_OF_MESSAGE\n", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
+                    char sub_msg[256];
+                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s%s", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
+                    uint32_t sub_len_net = htonl(sub_len);
+                    send(sd, &sub_len_net, sizeof(uint32_t), 0);
+                    send(sd, sub_msg, sub_len, 0);
+                    free(rest);
                     if (sub_mode == MODE_LAST) {
                         /* Close connection for last mode after sending */
                         close(sd);
@@ -584,6 +589,7 @@ int main(int argc, char *argv[]) {
                         subscribers[i].pubkey_hash[0] = '\0';
                     }
                 }
+                free(buffer);
             }
         }
     }
@@ -606,3 +612,4 @@ int main(int argc, char *argv[]) {
     close(server_fd);
     return 0;
 }
+

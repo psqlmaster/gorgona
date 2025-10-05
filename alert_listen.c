@@ -8,9 +8,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <ctype.h>
-
-#define MAX_MSG_LEN 8192
-#define MAX_ACCUM_LEN (MAX_MSG_LEN * 10)
+#include <stdint.h>  // Добавлено для uint32_t
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -221,70 +219,94 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         return 1;
     }
 
-    char buffer[MAX_MSG_LEN];
+    // Формируем запрос динамически
+    size_t needed_len = 256;  // Запас для строки
+    char *buffer = malloc(needed_len);
+    if (!buffer) {
+        fprintf(stderr, "Ошибка: Не удалось выделить память\n");
+        close(sock);
+        return 1;
+    }
+    int len;
     if (strcmp(mode, "single") == 0 || strcmp(mode, "last") == 0) {
         if (!pubkey_hash_b64) {
             fprintf(stderr, "Pubkey hash required for %s mode\n", mode);
+            free(buffer);
             close(sock);
             return 1;
         }
-        snprintf(buffer, MAX_MSG_LEN, "LISTEN|%s|%s", pubkey_hash_b64, mode);
+        len = snprintf(buffer, needed_len, "LISTEN|%s|%s", pubkey_hash_b64, mode);
     } else {
         if (pubkey_hash_b64) {
-            snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
+            len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
         } else {
-            snprintf(buffer, MAX_MSG_LEN, "SUBSCRIBE %s", mode);
+            len = snprintf(buffer, needed_len, "SUBSCRIBE %s", mode);
         }
+    }
+    if (len < 0 || (size_t)len >= needed_len) {
+        fprintf(stderr, "Ошибка: Сообщение слишком длинное\n");
+        free(buffer);
+        close(sock);
+        return 1;
     }
 
     if (verbose) {
         printf("Sending: %s\n", buffer);
     }
-    if (send(sock, buffer, strlen(buffer), 0) < 0) {
-        perror("Send error");
+
+    // Отправляем длину и данные
+    uint32_t msg_len_net = htonl(len);
+    if (send(sock, &msg_len_net, sizeof(uint32_t), 0) != sizeof(uint32_t)) {
+        perror("Send error (length)");
+        free(buffer);
         close(sock);
         return 1;
     }
+    if (send(sock, buffer, len, 0) != len) {
+        perror("Send error");
+        free(buffer);
+        close(sock);
+        return 1;
+    }
+    free(buffer);
 
-    char accum[MAX_ACCUM_LEN] = {0};
-    int accum_len = 0;
-
+    // Чтение ответов в цикле
     while (1) {
-        char read_buffer[MAX_MSG_LEN];
-        int valread = read(sock, read_buffer, MAX_MSG_LEN - 1);
-        if (valread <= 0) {
-            if (valread < 0) perror("Read error");
+        uint32_t resp_len_net;
+        int valread = read(sock, &resp_len_net, sizeof(uint32_t));
+        if (valread != sizeof(uint32_t)) {
+            if (valread < 0) perror("Read error (length)");
             else printf("Connection closed by server\n");
             break;
         }
-        read_buffer[valread] = '\0';
+        size_t resp_len = ntohl(resp_len_net);
 
-        if (accum_len + valread >= MAX_ACCUM_LEN) {
-            fprintf(stderr, "Error: Accumulation buffer overflow\n");
+        char *resp_buffer = malloc(resp_len + 1);
+        if (!resp_buffer) {
+            fprintf(stderr, "Ошибка: Не удалось выделить память для ответа\n");
             break;
         }
-        memcpy(accum + accum_len, read_buffer, valread);
-        accum_len += valread;
-        accum[accum_len] = '\0';
 
-        char *start = accum;
-        while (1) {
-            char *end = strstr(start, "\nEND_OF_MESSAGE\n");
-            if (end == NULL) break;
-
-            *end = '\0';
-            if (verbose) {
-                printf("Received response: %s\n", start);
+        size_t total_read = 0;
+        while (total_read < resp_len) {
+            valread = read(sock, resp_buffer + total_read, resp_len - total_read);
+            if (valread <= 0) {
+                if (valread < 0) perror("Read error");
+                else fprintf(stderr, "Соединение закрыто сервером\n");
+                free(resp_buffer);
+                close(sock);
+                return 1;
             }
-            parse_response(start, pubkey_hash_b64, verbose);
-
-            start = end + strlen("\nEND_OF_MESSAGE\n");
+            total_read += valread;
         }
+        resp_buffer[resp_len] = '\0';
 
-        int remain_len = accum + accum_len - start;
-        memmove(accum, start, remain_len);
-        accum_len = remain_len;
-        accum[accum_len] = '\0';
+        if (verbose) {
+            printf("Received response: %s\n", resp_buffer);
+        }
+        parse_response(resp_buffer, pubkey_hash_b64, verbose);
+
+        free(resp_buffer);
 
         if (strcmp(mode, "last") == 0) {
             break;
@@ -294,3 +316,4 @@ int listen_alerts(int argc, char *argv[], int verbose) {
     close(sock);
     return 0;
 }
+

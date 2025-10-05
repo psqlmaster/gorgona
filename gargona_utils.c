@@ -15,6 +15,7 @@ int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
 int max_alerts = DEFAULT_MAX_ALERTS;
 int max_clients = MAX_CLIENTS;
+size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;  // Новый глобальный параметр
 
 /* Function to check for HTTP request */
 int is_http_request(const char *buffer) {
@@ -42,10 +43,11 @@ void trim_string(char *str) {
 }
 
 /* Reads configuration from gargonad.conf */
-void read_config(int *port, int *max_alerts, int *max_clients) {
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size) {
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
+    *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 
     FILE *conf_fp = fopen("gargonad.conf", "r");
     if (!conf_fp) {
@@ -67,6 +69,8 @@ void read_config(int *port, int *max_alerts, int *max_clients) {
                 *max_alerts = atoi(value);
             } else if (strcmp(key, "MAX_CLIENTS") == 0) {
                 *max_clients = atoi(value);
+            } else if (strcmp(key, "max_message_size") == 0) {  // Новый параметр
+                *max_message_size = atol(value);
             }
         }
     }
@@ -173,49 +177,56 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     }
 
     if (rec->count >= max_alerts) {
-        dprintf(client_fd, "Ошибка: Не удалось добавить алерт, лимит достигнут даже после очистки\nEND_OF_MESSAGE\n");
+        char *error_msg = "Ошибка: Не удалось добавить алерт, лимит достигнут даже после очистки";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
         return;
     }
 
     Alert *alert = &rec->alerts[rec->count];
     alert->text = base64_decode(base64_text, &alert->text_len);
     if (!alert->text) {
-        dprintf(client_fd, "Ошибка: Не удалось декодировать base64_text\nEND_OF_MESSAGE\n");
+        char *error_msg = "Ошибка: Не удалось декодировать base64_text";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
         return;
     }
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     if (!alert->encrypted_key) {
+        char *error_msg = "Ошибка: Не удалось декодировать base64_encrypted_key";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
         free(alert->text);
-        dprintf(client_fd, "Ошибка: Не удалось декодировать base64_encrypted_key\nEND_OF_MESSAGE\n");
         return;
     }
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     if (!alert->iv) {
+        char *error_msg = "Ошибка: Не удалось декодировать base64_iv";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
         free(alert->text);
         free(alert->encrypted_key);
-        dprintf(client_fd, "Ошибка: Не удалось декодировать base64_iv\nEND_OF_MESSAGE\n");
-        return;
-    }
-    if (alert->iv_len != 12) {
-        free(alert->text);
-        free(alert->encrypted_key);
-        free(alert->iv);
-        dprintf(client_fd, "Ошибка: Неверная длина IV: %zu (ожидаемо 12)\nEND_OF_MESSAGE\n", alert->iv_len);
         return;
     }
     size_t tag_len;
-    unsigned char *tag = base64_decode(base64_tag, &tag_len);
-    if (!tag || tag_len != GCM_TAG_LEN) {
+    unsigned char *tag_dec = base64_decode(base64_tag, &tag_len);
+    if (!tag_dec || tag_len != GCM_TAG_LEN) {
+        char *error_msg = "Ошибка: Не удалось декодировать base64_tag или неверный размер";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
         free(alert->text);
         free(alert->encrypted_key);
         free(alert->iv);
-        free(tag);
-        dprintf(client_fd, "Ошибка: Не удалось декодировать base64_tag или неверная длина: %zu (ожидаемо %d)\nEND_OF_MESSAGE\n", tag_len, GCM_TAG_LEN);
+        free(tag_dec);
         return;
     }
-    memcpy(alert->tag, tag, GCM_TAG_LEN);
-    free(tag);
-
+    memcpy(alert->tag, tag_dec, GCM_TAG_LEN);
+    free(tag_dec);
     alert->create_at = create_at;
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
@@ -223,14 +234,14 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     rec->count++;
 }
 
-/* Comparator for sorting alerts by create_at (ascending) */
+/* Comparator for sorting alerts by create_at */
 int alert_cmp(const void *a, const void *b) {
-    const Alert *alert_a = (const Alert *)a;
-    const Alert *alert_b = (const Alert *)b;
-    return (int)(alert_a->create_at - alert_b->create_at);
+    Alert *alert_a = (Alert *)a;
+    Alert *alert_b = (Alert *)b;
+    return (alert_a->create_at > alert_b->create_at) - (alert_a->create_at < alert_b->create_at);
 }
 
-/* Notifies subscribers about a new alert based on their mode */
+/* Notifies subscribers about a new alert */
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     time_t now = time(NULL);
     if (new_alert->expire_at <= now) return;
@@ -239,34 +250,44 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     if (!pubkey_hash_b64) return;
 
     for (int i = 0; i < max_clients; i++) {
-        if (subscribers[i].sock <= 0) continue;
+        if (subscribers[i].sock > 0 && subscribers[i].mode != 0) {
+            if (subscribers[i].pubkey_hash[0] != '\0' && strcmp(subscribers[i].pubkey_hash, pubkey_hash_b64) != 0) continue;
 
-        bool match_hash = (subscribers[i].pubkey_hash[0] == '\0' || strcmp(subscribers[i].pubkey_hash, pubkey_hash_b64) == 0);
-        if (!match_hash) continue;
+            bool send_it = false;
+            if (subscribers[i].mode == MODE_ALL || subscribers[i].mode == MODE_SINGLE) send_it = true;
+            else if (subscribers[i].mode == MODE_LIVE) send_it = (new_alert->unlock_at <= now);
+            else if (subscribers[i].mode == MODE_LOCK) send_it = (new_alert->unlock_at > now);
 
-        bool send_it = false;
-        if (subscribers[i].mode == 2) send_it = true;
-        else if (subscribers[i].mode == 1 || subscribers[i].mode == 3) send_it = (new_alert->unlock_at <= now);
-        else if (subscribers[i].mode == 4) send_it = (new_alert->unlock_at > now);
+            if (send_it) {
+                char *base64_text = base64_encode(new_alert->text, new_alert->text_len);
+                char *base64_encrypted_key = base64_encode(new_alert->encrypted_key, new_alert->encrypted_key_len);
+                char *base64_iv = base64_encode(new_alert->iv, new_alert->iv_len);
+                char *base64_tag = base64_encode(new_alert->tag, GCM_TAG_LEN);
 
-        if (send_it) {
-            char *base64_text = base64_encode(new_alert->text, new_alert->text_len);
-            char *base64_encrypted_key = base64_encode(new_alert->encrypted_key, new_alert->encrypted_key_len);
-            char *base64_iv = base64_encode(new_alert->iv, new_alert->iv_len);
-            char *base64_tag = base64_encode(new_alert->tag, GCM_TAG_LEN);
-
-            if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                char response[MAX_MSG_LEN];
-                int len = snprintf(response, MAX_MSG_LEN, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
-                                   pubkey_hash_b64, new_alert->create_at, new_alert->unlock_at, new_alert->expire_at,
-                                   base64_text, base64_encrypted_key, base64_iv, base64_tag);
-                free(base64_text);
-                free(base64_encrypted_key);
-                free(base64_iv);
-                free(base64_tag);
-                if (len < MAX_MSG_LEN - 20) {
-                    strcat(response, "\nEND_OF_MESSAGE\n");
-                    send(subscribers[i].sock, response, strlen(response), 0);
+                if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
+                    // Вычисляем длину
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;  // Запас
+                    char *response = malloc(needed_len);
+                    if (!response) {
+                        free(base64_text);
+                        free(base64_encrypted_key);
+                        free(base64_iv);
+                        free(base64_tag);
+                        continue;
+                    }
+                    int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
+                                       pubkey_hash_b64, new_alert->create_at, new_alert->unlock_at, new_alert->expire_at,
+                                       base64_text, base64_encrypted_key, base64_iv, base64_tag);
+                    free(base64_text);
+                    free(base64_encrypted_key);
+                    free(base64_iv);
+                    free(base64_tag);
+                    if (len > 0 && (size_t)len < needed_len) {
+                        uint32_t len_net = htonl(len);
+                        send(subscribers[i].sock, &len_net, sizeof(uint32_t), 0);
+                        send(subscribers[i].sock, response, len, 0);
+                    }
+                    free(response);
                 }
             }
         }
@@ -313,18 +334,29 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
                 char *base64_tag = base64_encode(latest_alert->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    char response[MAX_MSG_LEN];
-                    int len = snprintf(response, MAX_MSG_LEN, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
+                    char *response = malloc(needed_len);
+                    if (!response) {
+                        free(pubkey_hash_b64);
+                        free(base64_text);
+                        free(base64_encrypted_key);
+                        free(base64_iv);
+                        free(base64_tag);
+                        return;
+                    }
+                    int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
                                        pubkey_hash_b64, latest_alert->create_at, latest_alert->unlock_at, latest_alert->expire_at,
                                        base64_text, base64_encrypted_key, base64_iv, base64_tag);
                     free(base64_text);
                     free(base64_encrypted_key);
                     free(base64_iv);
-                   free(base64_tag);
-                    if (len < MAX_MSG_LEN - 20) {
-                        strcat(response, "\nEND_OF_MESSAGE\n");
-                        send(sd, response, strlen(response), 0);
+                    free(base64_tag);
+                    if (len > 0 && (size_t)len < needed_len) {
+                        uint32_t len_net = htonl(len);
+                        send(sd, &len_net, sizeof(uint32_t), 0);
+                        send(sd, response, len, 0);
                     }
+                    free(response);
                 }
                 free(pubkey_hash_b64);
             }
@@ -352,9 +384,9 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
             if (!a->active) continue;
 
             bool send_it = false;
-            if (mode == 2) send_it = true;
-            else if (mode == 1 || mode == 3) send_it = (a->unlock_at <= now);
-            else if (mode == 4) send_it = (a->unlock_at > now);
+            if (mode == MODE_ALL) send_it = true;
+            else if (mode == MODE_LIVE || mode == MODE_SINGLE) send_it = (a->unlock_at <= now);
+            else if (mode == MODE_LOCK) send_it = (a->unlock_at > now);
 
             if (send_it) {
                 char *base64_text = base64_encode(a->text, a->text_len);
@@ -363,18 +395,29 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
                 char *base64_tag = base64_encode(a->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    char response[MAX_MSG_LEN];
-                    int len = snprintf(response, MAX_MSG_LEN, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
+                    char *response = malloc(needed_len);
+                    if (!response) {
+                        free(base64_text);
+                        free(base64_encrypted_key);
+                        free(base64_iv);
+                        free(base64_tag);
+                        free(pubkey_hash_b64);
+                        return;
+                    }
+                    int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
                                        pubkey_hash_b64, a->create_at, a->unlock_at, a->expire_at,
                                        base64_text, base64_encrypted_key, base64_iv, base64_tag);
                     free(base64_text);
                     free(base64_encrypted_key);
                     free(base64_iv);
                     free(base64_tag);
-                    if (len < MAX_MSG_LEN - 20) {
-                        strcat(response, "\nEND_OF_MESSAGE\n");
-                        send(sd, response, strlen(response), 0);
+                    if (len > 0 && (size_t)len < needed_len) {
+                        uint32_t len_net = htonl(len);
+                        send(sd, &len_net, sizeof(uint32_t), 0);
+                        send(sd, response, len, 0);
                     }
+                    free(response);
                 }
             }
         }
@@ -396,3 +439,4 @@ void rotate_log() {
         }
     }
 }
+
