@@ -112,10 +112,12 @@ Edit `gargonad.conf` in the server’s working directory to configure server set
 port = 7777
 MAX_ALERTS = 2000
 MAX_CLIENTS = 100
+max_message_size = 5242880
 ```
 - **port**: The TCP port the server listens on (default: 5555).
 - **MAX_ALERTS**: Maximum number of alerts per recipient (default: 1024).
 - **MAX_CLIENTS**: Maximum number of simultaneous client connections (default: 100).
+- **max_message_size**: max_message_size = <bytes> (default: 5242880 for 5 MB).
 - If the file is missing or parameters are not specified, defaults are used.
 
 Logs are written to `gargona.log`, with rotation when the file exceeds 10 MB.
@@ -237,10 +239,12 @@ port = 7777
 port = 7777
 MAX_ALERTS = 2000
 MAX_CLIENTS = 100
+max_message_size = 5242880
 ```
 - **port**: TCP-порт сервера (по умолчанию: 5555).
 - **MAX_ALERTS**: Максимальное количество алертов на получателя (по умолчанию: 1024).
 - **MAX_CLIENTS**: Максимальное количество одновременных клиентских подключений (по умолчанию: 100).
+- **max_message_size**: max_message_size = <bytes> (default: 5242880 for 5 MB).
 - Если файл отсутствует или параметры не указаны, используются значения по умолчанию.
 
 Логи записываются в `gargona.log` с ротацией при превышении размера в 10 МБ.
