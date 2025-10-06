@@ -1,11 +1,13 @@
 /* BSD 3-Clause License
-Copyright (c) 2025, Alexander Shcheglov
-All rights reserved. */
+ * Copyright (c) 2025, Alexander Shcheglov
+ * All rights reserved.
+ */
 
 #include "encrypt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
 
 extern int send_alert(int argc, char *argv[], int verbose);
 extern int listen_alerts(int argc, char *argv[], int verbose);
@@ -24,6 +26,7 @@ void print_help(const char *program_name) {
     printf("\n");
     printf("  send <unlock_time> <expire_time> <message> <public_key_file>\n");
     printf("      Sends an encrypted message\n");
+    printf("      Use '-' for <message> to read from stdin\n");
     printf("\n");
     printf("  listen <mode> [pubkey_hash_b64]\n");
     printf("      Listens for messages\n");
@@ -45,41 +48,53 @@ void print_help(const char *program_name) {
     printf("\nExamples:\n");
     printf("  %s listen single RWTPQzuhzBw=\n", program_name);
     printf("  %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"Message in the future for you my dear friend RWTPQzuhzBw=\" \"RWTPQzuhzBw=.pub\"\n", program_name);
+    printf("  cat message.txt | %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"\n", program_name);
 }
-
 
 int main(int argc, char *argv[]) {
     int verbose = 0;
-    int cmd_index = 1;
+    int opt;
 
-    while (argc > cmd_index && argv[cmd_index][0] == '-') {
-        if (strcmp(argv[cmd_index], "-v") == 0) {
-            verbose = 1;
-            cmd_index++;
-        } else if (strcmp(argv[cmd_index], "-h") == 0 || strcmp(argv[cmd_index], "--help") == 0) {
-            print_help(argv[0]);
-            return 0;
-        } else {
-            fprintf(stderr, "Неизвестный флаг: %s\n", argv[cmd_index]);
-            print_help(argv[0]);
-            return 1;
+    /* Define long options for getopt_long */
+    static struct option long_options[] = {
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    while ((opt = getopt_long(argc, argv, "vh", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'v':
+                verbose = 1;
+                break;
+            case 'h':
+                print_help(argv[0]);
+                return 0;
+            case '?':
+                fprintf(stderr, "Unknown flag: %s\n", argv[optind-1]);
+                print_help(argv[0]);
+                return 1;
+            default:
+                fprintf(stderr, "Error processing flags\n");
+                print_help(argv[0]);
+                return 1;
         }
     }
 
-    if (argc < cmd_index + 1) {
-        fprintf(stderr, "Ошибка: Не указана команда\n");
+    if (optind >= argc) {
+        fprintf(stderr, "Error: No command specified\n");
         print_help(argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[cmd_index], "genkeys") == 0) {
+    /* Process commands */
+    if (strcmp(argv[optind], "genkeys") == 0) {
         return generate_rsa_keys(verbose);
-    } else if (strcmp(argv[cmd_index], "send") == 0) {
-        return send_alert(argc - cmd_index, argv + cmd_index, verbose);
-    } else if (strcmp(argv[cmd_index], "listen") == 0) {
-        return listen_alerts(argc - cmd_index, argv + cmd_index, verbose);
+    } else if (strcmp(argv[optind], "send") == 0) {
+        return send_alert(argc - optind, argv + optind, verbose);
+    } else if (strcmp(argv[optind], "listen") == 0) {
+        return listen_alerts(argc - optind, argv + optind, verbose);
     } else {
-        fprintf(stderr, "Неизвестная команда: %s\n", argv[cmd_index]);
+        fprintf(stderr, "Unknown command: %s\n", argv[optind]);
         print_help(argv[0]);
         return 1;
     }

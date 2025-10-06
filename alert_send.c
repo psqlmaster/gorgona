@@ -7,7 +7,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <stdint.h>  // Added for uint32_t
+#include <stdint.h>
 
 /* Parses date and time in format "YYYY-MM-DD HH:MM:SS" */
 time_t parse_datetime(const char *datetime) {
@@ -17,6 +17,36 @@ time_t parse_datetime(const char *datetime) {
         return -1;
     }
     return mktime(&tm);
+}
+
+/* Reads input from stdin into a dynamically allocated buffer */
+char *read_from_stdin(size_t *out_len) {
+    size_t capacity = 1024; // Initial buffer size
+    size_t len = 0;
+    char *buffer = malloc(capacity);
+    if (!buffer) {
+        fprintf(stderr, "Error: Failed to allocate memory for stdin input\n");
+        return NULL;
+    }
+
+    int c;
+    while ((c = getchar()) != EOF) {
+        if (len + 1 >= capacity) {
+            capacity *= 2; // Double the buffer size
+            char *new_buffer = realloc(buffer, capacity);
+            if (!new_buffer) {
+                fprintf(stderr, "Error: Failed to reallocate memory for stdin input\n");
+                free(buffer);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+        buffer[len++] = (char)c;
+    }
+
+    buffer[len] = '\0'; // Null-terminate the string
+    *out_len = len;
+    return buffer;
 }
 
 /* Sends encrypted message to server */
@@ -31,13 +61,32 @@ int send_alert(int argc, char *argv[], int verbose) {
     if (unlock_at == -1 || expire_at == -1) {
         return 1;
     }
-    const char *message = argv[3];
+    
+    const char *message_arg = argv[3];
     const char *pubkey_file = argv[4];
+    char *message = NULL;
+    size_t message_len = 0;
+
+    /* Read message from stdin if message_arg is "-" */
+    if (strcmp(message_arg, "-") == 0) {
+        message = read_from_stdin(&message_len);
+        if (!message) {
+            return 1;
+        }
+    } else {
+        message = strdup(message_arg);
+        if (!message) {
+            fprintf(stderr, "Error: Failed to allocate memory for message\n");
+            return 1;
+        }
+        message_len = strlen(message);
+    }
 
     /* Read recipient's public key */
     FILE *pub_fp = fopen(pubkey_file, "rb");
     if (!pub_fp) {
         fprintf(stderr, "Failed to open public key file: %s\n", pubkey_file);
+        free(message);
         return 1;
     }
     EVP_PKEY *pubkey = PEM_read_PUBKEY(pub_fp, NULL, NULL, NULL);
@@ -45,6 +94,7 @@ int send_alert(int argc, char *argv[], int verbose) {
     if (!pubkey) {
         fprintf(stderr, "Failed to read public key from %s\n", pubkey_file);
         ERR_print_errors_fp(stderr);
+        free(message);
         return 1;
     }
 
@@ -55,12 +105,14 @@ int send_alert(int argc, char *argv[], int verbose) {
     if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
         fprintf(stderr, "Failed to compute public key hash\n");
         free(pubkey_hash);
+        free(message);
         return 1;
     }
     char *pubkey_hash_b64 = base64_encode(pubkey_hash, hash_len);
     if (!pubkey_hash_b64) {
         fprintf(stderr, "Failed to encode public key hash\n");
         free(pubkey_hash);
+        free(message);
         return 1;
     }
     if (verbose) {
@@ -74,6 +126,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         fprintf(stderr, "Failed to encrypt message\n");
         free(pubkey_hash);
         free(pubkey_hash_b64);
+        free(message);
         return 1;
     }
 
@@ -87,6 +140,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key);
         free(iv);
         free(tag);
+        free(message);
         return 1;
     }
 
@@ -107,6 +161,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -129,6 +184,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -146,6 +202,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -163,6 +220,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -184,6 +242,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
     int len = snprintf(buffer, needed_len + 1, "SEND|%s|%ld|%ld|%ld|%s|%s|%s|%s",
@@ -203,6 +262,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -226,6 +286,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -244,6 +305,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
     free(buffer);
@@ -264,6 +326,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
     size_t resp_len = ntohl(resp_len_net);
@@ -282,6 +345,7 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(encrypted_key_b64);
         free(iv_b64);
         free(tag_b64);
+        free(message);
         return 1;
     }
 
@@ -303,6 +367,7 @@ int send_alert(int argc, char *argv[], int verbose) {
             free(encrypted_key_b64);
             free(iv_b64);
             free(tag_b64);
+            free(message);
             return 1;
         }
         total_read += valread;
@@ -325,5 +390,6 @@ int send_alert(int argc, char *argv[], int verbose) {
     free(encrypted_key_b64);
     free(iv_b64);
     free(tag_b64);
+    free(message);
     return 0;
 }

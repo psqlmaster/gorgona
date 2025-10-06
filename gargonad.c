@@ -12,13 +12,13 @@ All rights reserved. */
 #include <errno.h>
 #include <ctype.h>
 #include <signal.h>
-#include <time.h>  /* Added for UTC time formatting */
-#include <stdint.h>  // Добавлено для uint32_t
+#include <time.h>  
+#include <stdint.h>
+#include <getopt.h>
 
-/* Global flag for verbose mode */
 int verbose = 0;
 
-/* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ssZ] */
+/* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ss UTC] */
 static void get_utc_time_str(char *buffer, size_t buffer_size) {
     time_t now = time(NULL);
     struct tm *utc_time = gmtime(&now);
@@ -68,23 +68,32 @@ void print_server_help(const char *program_name) {
 }
 
 int main(int argc, char *argv[]) {
-    int i;
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            print_server_help(argv[0]);
-            return 0;
-        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
-            verbose = 1;
-        } else {
-            fprintf(stderr, "Unknown option: %s. Use -h for help.\n", argv[i]);
-            return 1;
+    int i, opt;
+    static struct option long_options[] = {
+        {"help", no_argument, 0, 'h'},
+        {"verbose", no_argument, 0, 'v'},
+        {0, 0, 0, 0}
+    };
+    while ((opt = getopt_long(argc, argv, "vh", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'v':
+                verbose = 1;
+                break;
+            case 'h':
+                print_server_help(argv[0]);
+                return 0;
+            case '?':
+                fprintf(stderr, "Unknown option: %s. Use -h for help.\n", argv[optind-1]);
+                return 1;
+            default:
+                fprintf(stderr, "Error processing options\n");
+                return 1;
         }
     }
 
     int server_fd, new_socket, activity, valread, sd;
     int max_sd;
     struct sockaddr_in address;
-    int opt = 1;
     int addrlen = sizeof(address);
     fd_set readfds;
 

@@ -20,7 +20,7 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
 - **Key Management**: Generates RSA key pairs named by the public key’s hash for secure sharing and local private key storage.
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (get including metadata for locked messages), 
-    "lock" (locked messages only), or "single" (specific recipient)., "last (get one last message)".
+    "lock" (locked messages only), or "single" (specific recipient), "last" (get one last message).
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
@@ -37,6 +37,7 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 ```bash
 git clone https://github.com/psqlmaster/gargona.git
 cd gargona
+make clean && make
 ./gargona listen all
 ```
 
@@ -73,9 +74,16 @@ cd gargona
 ```
 ./gargona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipient.pub"
 ```
-- Example:
+- Use `-` instead of `"Your message"` to read the message from stdin.
+- Examples:
   ```
   ./gargona send "2025-09-25 09:00:00" "2026-09-30 09:00:00" "Secret message" "RWTPQzuhzBw=.pub"
+  ```
+  ```
+  echo "Secret message from stdin" | ./gargona send "2025-09-25 09:00:00" "2026-09-30 09:00:00" - "RWTPQzuhzBw=.pub"
+  ```
+  ```
+  cat message.txt | ./gargona send "2025-09-25 09:00:00" "2026-09-30 09:00:00" - "RWTPQzuhzBw=.pub"
   ```
 
 #### Listen for Messages
@@ -147,7 +155,6 @@ Gargona — это безопасная система обмена сообще
 - **Управление ключами**: Генерирует пары RSA-ключей, названные по хешу публичного ключа для удобного обмена и безопасного хранения.
 - **Гибкие режимы подписки**: Поддерживает "live" (доступные сообщения), "all" (все сообщения, включая метаданные), 
     "lock" (только заблокированные сообщения) и "single" (для конкретного получателя), "last" (получить одно последнее сообщение, для конкретного получателя).
-     
 - **Эффективное хранение**: Кольцевой буфер ограничивает количество сообщений на получателя до настраиваемого значения (по умолчанию: 1024), удаляя старые или истекшие.
 - **Децентрализованный дизайн**: Пользователи контролируют ключи, сервер лёгкий и подходит для самостоятельного хостинга.
 - **Быстрота и лёгкость**: Использует OpenSSL, без тяжёлых зависимостей.
@@ -164,6 +171,7 @@ Gargona — это безопасная система обмена сообще
 ```bash
 git clone https://github.com/psqlmaster/gargona.git
 cd gargona
+make clean && make
 ./gargona listen all
 ```
 
@@ -200,9 +208,16 @@ cd gargona
 ```
 ./gargona send "ГГГГ-ММ-ДД ЧЧ:ММ:СС" "ГГГГ-ММ-ДД ЧЧ:ММ:СС" "Ваше сообщение" "recipient.pub"
 ```
-- Пример:
+- Используйте `-` вместо `"Ваше сообщение"`, чтобы читать сообщение из stdin.
+- Примеры:
   ```
   ./gargona send "2025-09-25 09:00:00" "2026-09-30 09:00:00" "Секретное сообщение" "RWTPQzuhzBw=.pub"
+  ```
+  ```
+  echo "Секретное сообщение из stdin" | ./gargona send "2025-09-25 09:00:00" "2026-09-30 09:00:00" - "RWTPQzuhzBw=.pub"
+  ```
+  ```
+  cat message.txt | ./gargona send "2025-09-25 09:00:00" "2026-09-30 09:00:00" - "RWTPQzuhzBw=.pub"
   ```
 
 #### Прослушивание сообщений
@@ -254,3 +269,4 @@ max_message_size = 5242880
 Gargona уже эффективно справляется с задачей зашифрованного алертинга с одним сервером. Я работаю над созданием зеркалирования серверов (репликации) без внешних сервисов, таких как Redis или PostgreSQL. Цель — обеспечить высокую скорость, децентрализацию и надёжность. Возможные подходы: протокол gossip для синхронизации между серверами в режиме peer-to-peer или лёгкий механизм консенсуса, например, адаптированный Raft. Другие идеи включают леджеры, вдохновлённые блокчейном (без майнинга), или типы данных с бесконфликтной репликацией (CRDT) для бесшовной синхронизации. Приветствуются любые предложения по улучшению!
 
 Информация о том, как внести свой вклад в Gargona, см. на странице [contributing.md](contributing.md).
+
