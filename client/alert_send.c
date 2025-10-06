@@ -83,16 +83,18 @@ int send_alert(int argc, char *argv[], int verbose) {
     }
 
     /* Read recipient's public key */
-    FILE *pub_fp = fopen(pubkey_file, "rb");
+    char full_pubkey_file[256];
+    snprintf(full_pubkey_file, sizeof(full_pubkey_file), "/etc/gargona/%s", pubkey_file);
+    FILE *pub_fp = fopen(full_pubkey_file, "rb");
     if (!pub_fp) {
-        fprintf(stderr, "Failed to open public key file: %s\n", pubkey_file);
+        fprintf(stderr, "Failed to open public key file: %s\n", full_pubkey_file);
         free(message);
         return 1;
     }
     EVP_PKEY *pubkey = PEM_read_PUBKEY(pub_fp, NULL, NULL, NULL);
     fclose(pub_fp);
     if (!pubkey) {
-        fprintf(stderr, "Failed to read public key from %s\n", pubkey_file);
+        fprintf(stderr, "Failed to read public key from %s\n", full_pubkey_file);
         ERR_print_errors_fp(stderr);
         free(message);
         return 1;
@@ -122,7 +124,7 @@ int send_alert(int argc, char *argv[], int verbose) {
     /* Encrypt message */
     unsigned char *encrypted = NULL, *encrypted_key = NULL, *iv = NULL, *tag = NULL;
     size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
-    if (encrypt_message(message, &encrypted, &encrypted_len, &encrypted_key, &encrypted_key_len, &iv, &iv_len, &tag, &tag_len, pubkey_file, verbose) != 0) {
+    if (encrypt_message(message, &encrypted, &encrypted_len, &encrypted_key, &encrypted_key_len, &iv, &iv_len, &tag, &tag_len, full_pubkey_file, verbose) != 0) {
         fprintf(stderr, "Failed to encrypt message\n");
         free(pubkey_hash);
         free(pubkey_hash_b64);

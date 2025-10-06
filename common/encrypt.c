@@ -75,8 +75,8 @@ int generate_rsa_keys(int verbose) {
 
     /* Сохраняем ключи */
     char pub_file[256], priv_file[256];
-    snprintf(pub_file, sizeof(pub_file), "%s.pub", pubkey_hash_b64);
-    snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
+    snprintf(pub_file, sizeof(pub_file), "/etc/gargona/%s.pub", pubkey_hash_b64);
+    snprintf(priv_file, sizeof(priv_file), "/etc/gargona/%s.key", pubkey_hash_b64);
 
     FILE *pub_fp = fopen(pub_file, "wb");
     if (!pub_fp) {

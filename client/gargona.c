@@ -22,7 +22,7 @@ void print_help(const char *program_name) {
 
     printf("\nCommands:\n");
     printf("  genkeys\n");
-    printf("      Generates an RSA key pair\n");
+    printf("      Generates an RSA key pair in /etc/gargona/ (Example: sudo gargona genkeys)\n");
     printf("\n");
     printf("  send <unlock_time> <expire_time> <message> <public_key_file>\n");
     printf("      Sends an encrypted message\n");
@@ -39,7 +39,7 @@ void print_help(const char *program_name) {
     printf("      If pubkey_hash_b64 is provided, filters by it (mandatory for single mode)\n");
 
     printf("\nConfiguration:\n");
-    printf("  The file ./gargona.conf contains server settings.\n");
+    printf("  The file /etc/gargona/gargona.conf contains server settings.\n");
     printf("  Format:\n");
     printf("    [server]\n");
     printf("    ip = <IP_address>   (example: 64.188.70.158)\n");

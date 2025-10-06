@@ -33,10 +33,10 @@ void time_to_utc_string(time_t t, char *buf, size_t bufsize) {
 /* Checks for private key for pubkey_hash_b64 */
 int has_private_key(const char *pubkey_hash_b64, int verbose) {
     char priv_file[256];
-    snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
+    snprintf(priv_file, sizeof(priv_file), "/etc/gargona/%s.key", pubkey_hash_b64);
     FILE *priv_fp = fopen(priv_file, "rb");
     if (!priv_fp) {
-        if (verbose) fprintf(stderr, "Private key not found: %s\n", priv_file);
+        if (verbose) fprintf(stderr, "Private key not found: /etc/gargona/%s\n", priv_file);
         return 0;
     }
     fclose(priv_fp);
@@ -150,7 +150,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     }
 
     char priv_file[256];
-    snprintf(priv_file, sizeof(priv_file), "%s.key", pubkey_hash_b64);
+    snprintf(priv_file, sizeof(priv_file), "/etc/gargona/%s.key", pubkey_hash_b64);
 
     char *plaintext = NULL;
     int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
