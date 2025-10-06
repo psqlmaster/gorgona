@@ -49,7 +49,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_messa
     *max_clients = MAX_CLIENTS;
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 
-    FILE *conf_fp = fopen("gargonad.conf", "r");
+    FILE *conf_fp = fopen("/etc/gargona/gargonad.conf", "r");
     if (!conf_fp) {
         return;
     }

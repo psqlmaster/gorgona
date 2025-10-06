@@ -101,7 +101,7 @@ make clean && make
 ./gargonad [-h|--help]
 ```
 - Use `-h` or `--help` to display server configuration and usage details.
-- The server reads settings from `./gargonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
+- The server reads settings from `/etc/gargona/gargonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
 
 ### Configuration
 
@@ -114,7 +114,7 @@ port = 7777
 ```
 
 #### Server Configuration
-Edit `gargonad.conf` in the server’s working directory to configure server settings:
+Edit `/etc/gargona/gargonad.conf` to configure server settings:
 ```
 [server]
 port = 7777
@@ -235,7 +235,7 @@ make clean && make
 ./gargonad [-h|--help]
 ```
 - Используйте `-h` или `--help` для отображения справки по настройке сервера.
-- Сервер читает настройки из `./gargonad.conf` или использует значения по умолчанию (порт: 5555, макс. алертов: 1024, макс. клиентов: 100).
+- Сервер читает настройки из `/etc/gargona/gargonad.conf` или использует значения по умолчанию (порт: 5555, макс. алертов: 1024, макс. клиентов: 100).
 
 ### Конфигурация
 
@@ -248,7 +248,7 @@ port = 7777
 ```
 
 #### Конфигурация сервера
-Отредактируйте `gargonad.conf` в рабочей директории сервера для настройки параметров:
+Отредактируйте `/etc/gargona/gargonad.conf` для настройки параметров:
 ```
 [server]
 port = 7777

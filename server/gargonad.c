@@ -49,7 +49,7 @@ void print_server_help(const char *program_name) {
     printf(" -h, --help Displays this help message\n");
     printf(" -v, --verbose Enables verbose output (e.g., received messages in console)\n");
     printf("\nConfiguration:\n");
-    printf(" The file ./gargonad.conf contains server settings.\n");
+    printf(" The file /etc/gargona/gargonad.conf contains server settings.\n");
     printf(" Format:\n");
     printf(" [server]\n");
     printf(" port = <port> (default: 5555, example: 7777)\n");

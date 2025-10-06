@@ -6,7 +6,7 @@
 void read_config(char *server_ip, int *server_port) {
     server_ip[0] = '\0'; // Инициализируем пустой строкой
     *server_port = DEFAULT_SERVER_PORT;
-    FILE *conf_fp = fopen("gargona.conf", "r");
+    FILE *conf_fp = fopen("/etc/gargona/gargona.conf", "r");
     if (!conf_fp) {
         strcpy(server_ip, DEFAULT_SERVER_IP);
         *server_port = DEFAULT_SERVER_PORT;
