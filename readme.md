@@ -34,10 +34,13 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 
 ## Quick Start
 ```bash
-git clone https://github.com/psqlmaster/gargona.git
-cd gargona
-make clean && make
-gargona listen all
+git clone https://github.com/psqlmaster/gargona.git && \
+cd gargona && \
+make clean && make && \
+sudo mkdir -p /etc/gargona && \
+printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gargona/gargona.conf >/dev/null && \
+sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gargona/ && \
+./gargona listen last 4 RWTPQzuhzBw=
 ```
 
 ### Installation
@@ -184,10 +187,13 @@ Gargona — безопасная система сообщений для отп
 
 ## Быстрый старт
 ```bash
-git clone https://github.com/psqlmaster/gargona.git
-cd gargona
-make clean && make
-gargona listen all
+git clone https://github.com/psqlmaster/gargona.git && \
+cd gargona && \
+make clean && make && \
+sudo mkdir -p /etc/gargona && \
+printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gargona/gargona.conf >/dev/null && \
+sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gargona/ && \
+./gargona listen last 4 RWTPQzuhzBw=
 ```
 
 ### Установка
