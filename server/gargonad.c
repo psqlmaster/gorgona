@@ -371,13 +371,14 @@ int main(int argc, char *argv[]) {
                 buffer[msg_len] = '\0';
 
                 if (verbose) {
-                    printf("Received: %s\n", buffer);
-                }
-                if (log_file) {
+                  printf("Received: %s\n", buffer);
+                  if (log_file) {
                     char time_str[32];
                     get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s Received from fd %d: %s\n", time_str, sd, buffer);
+                    fprintf(log_file, "%s Received from fd %d: %s\n", time_str,
+                            sd, buffer);
                     fflush(log_file);
+                  }
                 }
 
                 if (is_http_request(buffer)) {
