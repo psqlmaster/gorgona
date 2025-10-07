@@ -28,15 +28,15 @@ void print_help(const char *program_name) {
     printf("      Sends an encrypted message\n");
     printf("      Use '-' for <message> to read from stdin\n");
     printf("\n");
-    printf("  listen <mode> [pubkey_hash_b64]\n");
+    printf("  listen <mode> [<count>] [pubkey_hash_b64]\n");
     printf("      Listens for messages\n");
     printf("      Modes:\n");
     printf("        live    - only active messages (unlock_at <= now)\n");
     printf("        all     - all non-expired messages, including locked\n");
     printf("        lock    - only locked messages (unlock_at > now)\n");
     printf("        single  - only active messages for the given pubkey_hash_b64\n");
-    printf("        last    - only the most recent message(s), optionally for the given pubkey_hash_b64\n");
-    printf("      If pubkey_hash_b64 is provided, filters by it (mandatory for single mode)\n");
+    printf("        last    - the most recent [<count>] message(s) for the given pubkey_hash_b64 (count defaults to 1)\n");
+    printf("      If pubkey_hash_b64 is provided, filters by it (mandatory for single and last modes)\n");
 
     printf("\nConfiguration:\n");
     printf("  The file /etc/gargona/gargona.conf contains server settings.\n");
@@ -47,6 +47,8 @@ void print_help(const char *program_name) {
 
     printf("\nExamples:\n");
     printf("  %s listen single RWTPQzuhzBw=\n", program_name);
+    printf("  %s listen last RWTPQzuhzBw=  # Gets the last 1 message\n", program_name);
+    printf("  %s listen last 3 RWTPQzuhzBw=  # Gets the last 3 messages\n", program_name);
     printf("  %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"Message in the future for you my dear friend RWTPQzuhzBw=\" \"RWTPQzuhzBw=.pub\"\n", program_name);
     printf("  cat message.txt | %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"\n", program_name);
 }

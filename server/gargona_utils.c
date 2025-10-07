@@ -295,18 +295,28 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     free(pubkey_hash_b64);
 }
 
+/* Comparator for sorting alerts by create_at descending */
+int alert_cmp_desc(const void *a, const void *b) {
+    Alert *alert_a = (Alert *)a;
+    Alert *alert_b = (Alert *)b;
+    return (alert_b->create_at > alert_a->create_at) - (alert_b->create_at < alert_a->create_at);  /* Descending order */
+}
+
+/* Comparator for sorting alerts by create_at ascending */
+int alert_cmp_asc(const void *a, const void *b) {
+    Alert *alert_a = (Alert *)a;
+    Alert *alert_b = (Alert *)b;
+    return (alert_a->create_at > alert_b->create_at) - (alert_a->create_at < alert_b->create_at);  /* Ascending order */
+}
+
 /* Sends current alerts to a subscriber based on mode */
-void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
+void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
     if (mode == MODE_LAST) {
-        Alert *latest_alert = NULL;
-        Recipient *latest_rec = NULL;
-        time_t max_create_at = 0;
-
+        Recipient *target_rec = NULL;
         for (int r = 0; r < recipient_count; r++) {
             Recipient *rec = &recipients[r];
             clean_expired_alerts(rec);
-            if (rec->count == 0) continue;
 
             char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
             if (!pubkey_hash_b64) continue;
@@ -316,51 +326,72 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter) {
             }
             free(pubkey_hash_b64);
 
-            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp);
-            Alert *a = &rec->alerts[rec->count - 1]; // Последний алерт после сортировки
-            if (a->active && a->create_at > max_create_at && a->expire_at > now) {
-                max_create_at = a->create_at;
-                latest_alert = a;
-                latest_rec = rec;
-            }
+            target_rec = rec;
+            break;  /* Found the target recipient (assuming hash uniqueness) */
         }
 
-        if (latest_alert && latest_rec) {
-            char *pubkey_hash_b64 = base64_encode(latest_rec->hash, PUBKEY_HASH_LEN);
-            if (pubkey_hash_b64) {
-                char *base64_text = base64_encode(latest_alert->text, latest_alert->text_len);
-                char *base64_encrypted_key = base64_encode(latest_alert->encrypted_key, latest_alert->encrypted_key_len);
-                char *base64_iv = base64_encode(latest_alert->iv, latest_alert->iv_len);
-                char *base64_tag = base64_encode(latest_alert->tag, GCM_TAG_LEN);
+        if (!target_rec || target_rec->count == 0) {
+            return;  /* No messages */
+        }
+
+        /* Sort by create_at descending to get the most recent messages */
+        qsort(target_rec->alerts, target_rec->count, sizeof(Alert), alert_cmp_desc);
+
+        /* Create a temporary array for the most recent 'count' messages */
+        int messages_to_send = (target_rec->count < count) ? target_rec->count : count;
+        Alert *recent_alerts = malloc(messages_to_send * sizeof(Alert));
+        if (!recent_alerts) {
+            return;  /* Memory allocation failed */
+        }
+
+        /* Copy the most recent messages (already sorted descending) */
+        int sent = 0;
+        for (int j = 0; j < target_rec->count && sent < messages_to_send; j++) {
+            Alert *a = &target_rec->alerts[j];
+            if (!a->active || a->expire_at <= now) continue;  /* Skip inactive/expired */
+            recent_alerts[sent] = *a;  /* Copy the alert */
+            sent++;
+        }
+        messages_to_send = sent;  /* Update with actual number of valid messages */
+
+        /* Sort the selected messages by create_at ascending for sending */
+        if (messages_to_send > 0) {
+            qsort(recent_alerts, messages_to_send, sizeof(Alert), alert_cmp_asc);
+
+            /* Send the messages in ascending order */
+            for (int j = 0; j < messages_to_send; j++) {
+                Alert *a = &recent_alerts[j];
+                char *pubkey_hash_b64 = base64_encode(target_rec->hash, PUBKEY_HASH_LEN);
+                if (!pubkey_hash_b64) continue;
+
+                char *base64_text = base64_encode(a->text, a->text_len);
+                char *base64_encrypted_key = base64_encode(a->encrypted_key, a->encrypted_key_len);
+                char *base64_iv = base64_encode(a->iv, a->iv_len);
+                char *base64_tag = base64_encode(a->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
                     size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
                     char *response = malloc(needed_len);
-                    if (!response) {
-                        free(pubkey_hash_b64);
-                        free(base64_text);
-                        free(base64_encrypted_key);
-                        free(base64_iv);
-                        free(base64_tag);
-                        return;
+                    if (response) {
+                        int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
+                                           pubkey_hash_b64, a->create_at, a->unlock_at, a->expire_at,
+                                           base64_text, base64_encrypted_key, base64_iv, base64_tag);
+                        if (len > 0 && (size_t)len < needed_len) {
+                            uint32_t len_net = htonl(len);
+                            send(sd, &len_net, sizeof(uint32_t), 0);
+                            send(sd, response, len, 0);
+                        }
+                        free(response);
                     }
-                    int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
-                                       pubkey_hash_b64, latest_alert->create_at, latest_alert->unlock_at, latest_alert->expire_at,
-                                       base64_text, base64_encrypted_key, base64_iv, base64_tag);
-                    free(base64_text);
-                    free(base64_encrypted_key);
-                    free(base64_iv);
-                    free(base64_tag);
-                    if (len > 0 && (size_t)len < needed_len) {
-                        uint32_t len_net = htonl(len);
-                        send(sd, &len_net, sizeof(uint32_t), 0);
-                        send(sd, response, len, 0);
-                    }
-                    free(response);
                 }
+                free(base64_text);
+                free(base64_encrypted_key);
+                free(base64_iv);
+                free(base64_tag);
                 free(pubkey_hash_b64);
             }
         }
+        free(recent_alerts);
         return;
     }
 

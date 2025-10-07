@@ -19,7 +19,7 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 - **Time-Locked Delivery**: Messages unlock at a specified `unlock_at` time and expire at `expire_at`.
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
 - **Key Management**: Generates RSA key pairs named by the public key’s hash for secure sharing and local private key storage.
-- **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message).
+- **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
@@ -99,25 +99,27 @@ gargona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipie
 
 #### Listen for Messages
 ```bash
-gargona listen <mode> [pubkey_hash_b64]
+gargona listen <mode> [<count>] [pubkey_hash_b64]
 ```
 - Modes:
   - `live`: Only active messages (`unlock_at <= now`).
   - `all`: All non-expired messages, including locked.
   - `lock`: Only locked messages (`unlock_at > now`).
   - `single`: Only active messages for the given `pubkey_hash_b64`.
-  - `last`: Only the most recent message(s), optionally for the given `pubkey_hash_b64`.
-- If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` mode).
-- Example:
+  - `last`: Most recent [<count>] message(s) for the given `pubkey_hash_b64` (count defaults to 1).
+- If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `last`).
+- Examples:
   ```bash
   gargona listen single RWTPQzuhzBw=
+  gargona listen last RWTPQzuhzBw=  # Gets the last 1 message
+  gargona listen last 3 RWTPQzuhzBw=  # Gets the last 3 messages
   ```
 
 #### Run Server
 ```bash
 gargonad [-h|--help]
 ```
-- Use `-h` or `--help` for server configuration and usage details.
+- Use `-h` or `--help` for configuration help.
 - The server reads settings from `/etc/gargona/gargonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
 
 ### Configuration
@@ -131,7 +133,7 @@ port = 7777
 ```
 
 #### Server Configuration
-Edit `/etc/gargona/gargonad.conf` for server settings:
+Edit `/etc/gargona/gargonad.conf`:
 ```ini
 [server]
 port = 7777
@@ -141,43 +143,34 @@ max_message_size = 5242880
 ```
 - **port**: TCP port (default: 5555).
 - **MAX_ALERTS**: Max alerts per recipient (default: 1024).
-- **MAX_CLIENTS**: Max simultaneous client connections (default: 100).
+- **MAX_CLIENTS**: Max simultaneous connections (default: 100).
 - **max_message_size**: Max message size in bytes (default: 5242880, 5 MB).
-- Defaults are used if the file or parameters are missing.
+- If the file is missing, defaults are used.
 
-Logs are written to `gargona.log` with rotation at 10 MB.
+Logs are written to `gargona.log` with rotation when exceeding 10 MB.
 
 ### Future Plans
 
-Gargona efficiently handles encrypted alerting with a single server. Future work includes server mirroring (replication) without external services like Redis or PostgreSQL, aiming for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or a lightweight consensus mechanism like adapted Raft. Other ideas include blockchain-inspired ledgers (without mining) or conflict-free replicated data types (CRDT) for seamless synchronization. Suggestions are welcome!
+Gargona works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
 
-See [contributing.md](contributing.md) for how to contribute.
-
----
-
-# Gargona: система зашифрованного алертинга с временной блокировкой
-
-English Version | [Русская версия](#gargona-система-зашифрованного-алертинга-с-временной-блокировкой)
-
----
-![ ](gargona.png)
+[contributing.md](contributing.md) 
 
 ## Gargona: система зашифрованного алертинга с временной блокировкой
 
 ### Введение
 
-Gargona — безопасная система для отправки зашифрованных сообщений, которые разблокируются в указанное время и истекают через заданный период. Используя RSA для обмена ключами и AES-GCM для шифрования, Gargona обеспечивает сквозную конфиденциальность. Сервер хранит только зашифрованные сообщения, не имея доступа к их содержимому, что идеально для чувствительных коммуникаций, запланированных уведомлений или отложенного выпуска сообщений (например, временные капсулы или экстренный обмен данными).
+Gargona — безопасная система сообщений для отправки зашифрованных сообщений, которые разблокируются в указанное время и истекают после заданного периода. Используя RSA для обмена ключами и AES-GCM для шифрования содержимого, Gargona обеспечивает конфиденциальность от начала до конца. Сервер хранит только зашифрованные сообщения, не имея доступа к их содержимому, что идеально для конфиденциальных коммуникаций, запланированных уведомлений или отложенного раскрытия сообщений (например, временные капсулы или обмен данными в чрезвычайных ситуациях).
 
-Проект включает клиент (`gargona`) для генерации ключей, отправки сообщений и прослушивания алертов, и сервер (`gargonad`) для их хранения и доставки.
+Проект включает клиент (`gargona`) для генерации ключей, отправки сообщений и прослушивания алертов, и сервер (`gargonad`) для их безопасного хранения и доставки.
 
 ### Возможности
 
-- **Сквозное шифрование**: Сообщения шифруются на клиенте и расшифровываются только получателем с приватным ключом.
-- **Временная блокировка**: Сообщения разблокируются в `unlock_at` и истекают в `expire_at`.
-- **Приоритет конфиденциальности**: Сервер работает только с зашифрованными данными.
-- **Управление ключами**: Генерирует RSA-пары ключей, названные по хешу публичного ключа.
-- **Гибкие режимы подписки**: Режимы `live` (разблокированные сообщения), `all` (все неистёкшие), `lock` (только заблокированные), `single` (для конкретного получателя), `last` (последнее сообщение).
-- **Эффективное хранение**: Кольцевой буфер ограничивает сообщения на получателя (по умолчанию: 1000), удаляя старые или истёкшие.
+- **Шифрование от конца до конца**: Сообщения шифруются на клиенте и расшифровываются только получателем с приватным ключом.
+- **Временная блокировка доставки**: Сообщения разблокируются в указанное время `unlock_at` и истекают в `expire_at`.
+- **Приоритет конфиденциальности**: Сервер работает только с зашифрованными данными, без доступа к содержимому.
+- **Управление ключами**: Генерирует пары RSA-ключей, названные по хешу публичного ключа для безопасного обмена и локального хранения приватного ключа.
+- **Гибкие режимы подписки**: Прослушивание в "live" (разблокированные сообщения), "all" (неистёкшие сообщения, включая заблокированные), "lock" (только заблокированные), "single" (для конкретного получателя) или "last" (самое недавнее сообщение(я), с опциональным счётом).
+- **Эффективное хранение**: Кольцевой буфер ограничивает алерты на получателя (по умолчанию: 1000), автоматически удаляя старые или истёкшие.
 - **Децентрализованный дизайн**: Пользователи контролируют ключи, сервер лёгкий и подходит для хостинга.
 - **Быстрота и лёгкость**: Использует OpenSSL с минимальными зависимостями.
 - **Защита от подделки**: Теги GCM и RSA-OAEP предотвращают вмешательство.
@@ -256,18 +249,20 @@ gargona send "ГГГГ-ММ-ДД ЧЧ:ММ:СС" "ГГГГ-ММ-ДД ЧЧ:ММ:�
 
 #### Прослушивание сообщений
 ```bash
-gargona listen <режим> [pubkey_hash_b64]
+gargona listen <режим> [<count>] [pubkey_hash_b64]
 ```
 - Режимы:
   - `live`: Только активные сообщения (`unlock_at <= now`).
   - `all`: Все неистёкшие сообщения, включая заблокированные.
   - `lock`: Только заблокированные сообщения (`unlock_at > now`).
   - `single`: Только активные сообщения для указанного `pubkey_hash_b64`.
-  - `last`: Только последнее сообщение(я), опционально для `pubkey_hash_b64`.
-- Если указан `pubkey_hash_b64`, фильтрует по нему (обязателен для `single`).
-- Пример:
+  - `last`: Самое недавнее [<count>] сообщение(я) для указанного `pubkey_hash_b64` (count по умолчанию 1).
+- Если указан `pubkey_hash_b64`, фильтрует по нему (обязателен для `single` и `last`).
+- Примеры:
   ```bash
   gargona listen single RWTPQzuhzBw=
+  gargona listen last RWTPQzuhzBw=  # Получает последнее 1 сообщение
+  gargona listen last 3 RWTPQzuhzBw=  # Получает последние 3 сообщения
   ```
 
 #### Запуск сервера
@@ -308,5 +303,4 @@ max_message_size = 5242880
 
 Gargona эффективно работает с одним сервером. В планах — зеркалирование серверов (репликация) без внешних сервисов (Redis, PostgreSQL) для скорости, децентрализации и надёжности. Возможные подходы: протокол gossip для peer-to-peer синхронизации или лёгкий консенсус (например, адаптированный Raft). Также рассматриваются леджеры, вдохновлённые блокчейном (без майнинга), или CRDT для бесшовной синхронизации. Приветствуются предложения!
 
-См. [contributing.md](contributing.md) для информации о вкладе.
-
+[contributing.md](contributing.md) 

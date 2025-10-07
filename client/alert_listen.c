@@ -174,13 +174,15 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
 /* Listens for messages from server in specified mode */
 int listen_alerts(int argc, char *argv[], int verbose) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: listen <mode> [pubkey_hash_b64]\n");
+        fprintf(stderr, "Usage: listen <mode> [<count>] [pubkey_hash_b64]\n");
         fprintf(stderr, "Modes: live, all, lock, single, last\n");
+        fprintf(stderr, "For last mode: listen last [<count>] <pubkey_hash_b64> (count defaults to 1)\n");
         return 1;
     }
 
     char *mode = argv[1];
-    char *pubkey_hash_b64 = (argc > 2) ? argv[2] : NULL;
+    int count = 1;  /* Default count for 'last' mode */
+    char *pubkey_hash_b64 = NULL;
 
     /* Check mode */
     char *upper_mode = strdup(mode);
@@ -194,6 +196,36 @@ int listen_alerts(int argc, char *argv[], int verbose) {
     if (!valid_mode) {
         fprintf(stderr, "Invalid mode: %s\n", mode);
         return 1;
+    }
+
+    /* Parse arguments based on mode */
+    if (strcmp(mode, "last") == 0) {
+        if (argc == 3) {
+            /* Format: listen last <pubkey_hash_b64> -> count=1 */
+            pubkey_hash_b64 = argv[2];
+        } else if (argc == 4) {
+            /* Format: listen last <count> <pubkey_hash_b64> */
+            char *endptr;
+            count = strtol(argv[2], &endptr, 10);
+            if (*endptr != '\0' || count <= 0) {
+                fprintf(stderr, "Invalid count: %s (must be a positive integer)\n", argv[2]);
+                return 1;
+            }
+            pubkey_hash_b64 = argv[3];
+        } else {
+            fprintf(stderr, "Usage for last mode: listen last [<count>] <pubkey_hash_b64>\n");
+            return 1;
+        }
+    } else if (strcmp(mode, "single") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "Pubkey hash required for single mode\n");
+            return 1;
+        }
+        pubkey_hash_b64 = argv[2];
+    } else {
+        if (argc > 2) {
+            pubkey_hash_b64 = argv[2];
+        }
     }
 
     char server_ip[256];
@@ -219,23 +251,31 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         return 1;
     }
 
-    // Формируем запрос динамически
-    size_t needed_len = 256;  // Запас для строки
+    /* Form request dynamically */
+    size_t needed_len = 256;  /* Buffer size for request */
     char *buffer = malloc(needed_len);
     if (!buffer) {
-        fprintf(stderr, "Ошибка: Не удалось выделить память\n");
+        fprintf(stderr, "Error: Failed to allocate memory\n");
         close(sock);
         return 1;
     }
     int len;
-    if (strcmp(mode, "single") == 0 || strcmp(mode, "last") == 0) {
+    if (strcmp(mode, "single") == 0) {
         if (!pubkey_hash_b64) {
-            fprintf(stderr, "Pubkey hash required for %s mode\n", mode);
+            fprintf(stderr, "Pubkey hash required for single mode\n");
             free(buffer);
             close(sock);
             return 1;
         }
         len = snprintf(buffer, needed_len, "LISTEN|%s|%s", pubkey_hash_b64, mode);
+    } else if (strcmp(mode, "last") == 0) {
+        if (!pubkey_hash_b64) {
+            fprintf(stderr, "Pubkey hash required for last mode\n");
+            free(buffer);
+            close(sock);
+            return 1;
+        }
+        len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", pubkey_hash_b64, mode, count);
     } else {
         if (pubkey_hash_b64) {
             len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
@@ -244,7 +284,7 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         }
     }
     if (len < 0 || (size_t)len >= needed_len) {
-        fprintf(stderr, "Ошибка: Сообщение слишком длинное\n");
+        fprintf(stderr, "Error: Message too long\n");
         free(buffer);
         close(sock);
         return 1;
@@ -254,7 +294,7 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         printf("Sending: %s\n", buffer);
     }
 
-    // Отправляем длину и данные
+    /* Send length and data */
     uint32_t msg_len_net = htonl(len);
     if (send(sock, &msg_len_net, sizeof(uint32_t), 0) != sizeof(uint32_t)) {
         perror("Send error (length)");
@@ -270,7 +310,8 @@ int listen_alerts(int argc, char *argv[], int verbose) {
     }
     free(buffer);
 
-    // Чтение ответов в цикле
+    /* Read responses in a loop */
+    int messages_received = 0;
     while (1) {
         uint32_t resp_len_net;
         int valread = read(sock, &resp_len_net, sizeof(uint32_t));
@@ -283,7 +324,7 @@ int listen_alerts(int argc, char *argv[], int verbose) {
 
         char *resp_buffer = malloc(resp_len + 1);
         if (!resp_buffer) {
-            fprintf(stderr, "Ошибка: Не удалось выделить память для ответа\n");
+            fprintf(stderr, "Error: Failed to allocate memory for response\n");
             break;
         }
 
@@ -292,7 +333,7 @@ int listen_alerts(int argc, char *argv[], int verbose) {
             valread = read(sock, resp_buffer + total_read, resp_len - total_read);
             if (valread <= 0) {
                 if (valread < 0) perror("Read error");
-                else fprintf(stderr, "Соединение закрыто сервером\n");
+                else fprintf(stderr, "Connection closed by server\n");
                 free(resp_buffer);
                 close(sock);
                 return 1;
@@ -309,11 +350,13 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         free(resp_buffer);
 
         if (strcmp(mode, "last") == 0) {
-            break;
+            messages_received++;
+            if (messages_received >= count) {
+                break;
+            }
         }
     }
 
     close(sock);
     return 0;
 }
-

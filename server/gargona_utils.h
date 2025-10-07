@@ -73,7 +73,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd);
 int alert_cmp(const void *a, const void *b);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
-void send_current_alerts(int sd, int mode, const char *single_hash_b64);
+void send_current_alerts(int sd, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
 
 #endif
