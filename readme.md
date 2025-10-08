@@ -18,7 +18,7 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 - **End-to-End Encryption**: Messages are encrypted on the client and decrypted only by the recipient with their private key.
 - **Time-Locked Delivery**: Messages unlock at a specified `unlock_at` time and expire at `expire_at`.
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
-- **Key Management**: Generates RSA key pairs named by the public key’s hash for secure sharing and local private key storage.
+- **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gargona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gargona/`, which must be securely shared by the user.
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
@@ -81,6 +81,8 @@ sudo dpkg -i ./gargonad_1.5.0_amd64.deb
 sudo gargona genkeys
 ```
 - Generates an RSA key pair in `/etc/gargona/`, creating `hash.pub` (public key) and `hash.key` (private key), where `hash` is the base64-encoded hash of the public key.
+- The `hash` in name file `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gargona/` are retrieved.
+- To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gargona/`, which must be securely shared by the user.
 - **Key Permissions**: Private keys (`*.key`) should be readable only by the owner (`chmod 600`). Public keys (`*.pub`) can be world-readable (`chmod 644`). Check permissions with:
   ```bash
   ls -la /etc/gargona
@@ -268,6 +270,8 @@ sudo dpkg -i ./gargonad_1.5.0_amd64.deb
 sudo gargona genkeys
 ```
 - Генерирует пару RSA-ключей в `/etc/gargona/`, создавая `hash.pub` (публичный ключ) и `hash.key` (приватный ключ), где `hash` — base64-кодированный хеш публичного ключа.
+- `hash` в имени файла `hash.pub` используется для указания в команде listen от кого получать сообщения, если не указать то будут получены сообщения для всех ключей `*.pub` из `/etc/gargona/`
+- для того чтобы получатель смог получить и расшифровать сообщение он должен иметь приватный ключ `hash.key` отпавителя в `/etc/gargona/`, передачу ключа вы должны осуществить сами.
 - **Права на ключи**: Приватные ключи (`*.key`) должны быть доступны только владельцу (`chmod 600`). Публичные ключи (`*.pub`) могут быть доступны для чтения (`chmod 644`). Проверьте права:
   ```bash
   ls -la /etc/gargona
@@ -378,3 +382,4 @@ nvme0n1     259:1    0 476.9G  0 disk
 ├─nvme0n1p2 259:3    0   512M  0 part  /boot/efi
 └─nvme0n1p3 259:4    0 279.4G  0 part  /mnt/backup
 ```
+
