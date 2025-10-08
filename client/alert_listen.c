@@ -162,7 +162,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     free(tag_dec);
 
     if (ret == 0 && plaintext) {
-        printf("Decrypted message: %s\n", plaintext);
+        printf("Decrypted message: \n%s\n\n", plaintext);
         free(plaintext);
     } else {
         fprintf(stderr, "Failed to decrypt message\n");
