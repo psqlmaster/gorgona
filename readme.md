@@ -158,6 +158,34 @@ Gargona works efficiently with a single server. Future plans include server mirr
 
 [contributing.md](contributing.md) 
 
+#### More examples:
+```sh
+# send
+lsblk | gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
+# get
+gargona listen last RWTPQzuhzBw=
+```
+```
+Received message: Pubkey_Hash=RWTPQzuhzBw=
+Metadata: Create=2025-10-08 08:39:52, Unlock=2025-09-28 18:44:00, Expire=2025-12-30 09:00:00
+Decrypted message: NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
+sda           8:0    0 931.5G  0 disk  
+└─sda1        8:1    0 931.5G  0 part  /mnt/share
+sdb           8:16   0  14.6T  0 disk  
+└─sdb1        8:17   0  14.6T  0 part  /mnt/megaraid
+nvme1n1     259:0    0 476.9G  0 disk  
+├─nvme1n1p1 259:5    0   512M  0 part  
+├─nvme1n1p2 259:6    0 197.1G  0 part  
+│ └─md0       9:0    0 196.9G  0 raid1 /
+├─nvme1n1p3 259:7    0  27.8G  0 part  [SWAP]
+└─nvme1n1p4 259:8    0 251.6G  0 part  /mnt/new_free
+nvme0n1     259:1    0 476.9G  0 disk  
+├─nvme0n1p1 259:2    0   197G  0 part  
+│ └─md0       9:0    0 196.9G  0 raid1 /
+├─nvme0n1p2 259:3    0   512M  0 part  /boot/efi
+└─nvme0n1p3 259:4    0 279.4G  0 part  /mnt/backup
+```
+
 ## Gargona: система зашифрованного алертинга с временной блокировкой
 
 ### Введение
@@ -310,3 +338,31 @@ max_message_size = 5242880
 Gargona эффективно работает с одним сервером. В планах — зеркалирование серверов (репликация) без внешних сервисов (Redis, PostgreSQL) для скорости, децентрализации и надёжности. Возможные подходы: протокол gossip для peer-to-peer синхронизации или лёгкий консенсус (например, адаптированный Raft). Также рассматриваются леджеры, вдохновлённые блокчейном (без майнинга), или CRDT для бесшовной синхронизации. Приветствуются предложения!
 
 [contributing.md](contributing.md) 
+
+#### More examples:
+```sh
+# send
+lsblk | gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
+# get
+gargona listen last RWTPQzuhzBw=
+```
+```
+Received message: Pubkey_Hash=RWTPQzuhzBw=
+Metadata: Create=2025-10-08 08:39:52, Unlock=2025-09-28 18:44:00, Expire=2025-12-30 09:00:00
+Decrypted message: NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
+sda           8:0    0 931.5G  0 disk  
+└─sda1        8:1    0 931.5G  0 part  /mnt/share
+sdb           8:16   0  14.6T  0 disk  
+└─sdb1        8:17   0  14.6T  0 part  /mnt/megaraid
+nvme1n1     259:0    0 476.9G  0 disk  
+├─nvme1n1p1 259:5    0   512M  0 part  
+├─nvme1n1p2 259:6    0 197.1G  0 part  
+│ └─md0       9:0    0 196.9G  0 raid1 /
+├─nvme1n1p3 259:7    0  27.8G  0 part  [SWAP]
+└─nvme1n1p4 259:8    0 251.6G  0 part  /mnt/new_free
+nvme0n1     259:1    0 476.9G  0 disk  
+├─nvme0n1p1 259:2    0   197G  0 part  
+│ └─md0       9:0    0 196.9G  0 raid1 /
+├─nvme0n1p2 259:3    0   512M  0 part  /boot/efi
+└─nvme0n1p3 259:4    0 279.4G  0 part  /mnt/backup
+```
