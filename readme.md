@@ -173,7 +173,8 @@ gargona listen last RWTPQzuhzBw=
 ```
 Received message: Pubkey_Hash=RWTPQzuhzBw=
 Metadata: Create=2025-10-08 08:39:52, Unlock=2025-09-28 18:44:00, Expire=2025-12-30 09:00:00
-Decrypted message: NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
+Decrypted message: 
+NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
 sda           8:0    0 931.5G  0 disk  
 └─sda1        8:1    0 931.5G  0 part  /mnt/share
 sdb           8:16   0  14.6T  0 disk  
@@ -359,7 +360,8 @@ gargona listen last RWTPQzuhzBw=
 ```
 Received message: Pubkey_Hash=RWTPQzuhzBw=
 Metadata: Create=2025-10-08 08:39:52, Unlock=2025-09-28 18:44:00, Expire=2025-12-30 09:00:00
-Decrypted message: NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
+Decrypted message: 
+NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
 sda           8:0    0 931.5G  0 disk  
 └─sda1        8:1    0 931.5G  0 part  /mnt/share
 sdb           8:16   0  14.6T  0 disk  
