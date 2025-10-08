@@ -162,6 +162,11 @@ Gargona works efficiently with a single server. Future plans include server mirr
 ```sh
 # send
 lsblk | gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
+```
+```
+Server response: Alert added successfully
+```
+```sh
 # get
 gargona listen last RWTPQzuhzBw=
 ```
@@ -343,6 +348,11 @@ Gargona эффективно работает с одним сервером. В
 ```sh
 # send
 lsblk | gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
+```
+```
+Server response: Alert added successfully
+```
+```sh
 # get
 gargona listen last RWTPQzuhzBw=
 ```
