@@ -76,5 +76,7 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
 void send_current_alerts(int sd, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
 
-#endif
+/* New: server loop */
+void run_server(int server_fd);
 
+#endif
