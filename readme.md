@@ -451,6 +451,7 @@ If we listen on that channel:
 
 ```bash
 gargona listen new RWTPQzuhzBw=
+gargona listen last RWTPQzuhzBw=
 ```
 
 we immediately get a reply:
