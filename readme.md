@@ -107,17 +107,20 @@ gargona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipie
 gargona listen <mode> [<count>] [pubkey_hash_b64]
 ```
 - Modes:
-  - `live`: Only active messages (`unlock_at <= now`).
-  - `all`: All non-expired messages, including locked.
-  - `lock`: Only locked messages (`unlock_at > now`).
+  - `live`:   Only active messages (`unlock_at <= now`).
+  - `all`:    All non-expired messages, including locked.
+  - `lock`:   Only locked messages (`unlock_at > now`).
   - `single`: Only active messages for the given `pubkey_hash_b64`.
-  - `last`: Most recent [<count>] message(s) for the given `pubkey_hash_b64` (count defaults to 1).
+  - `last`:   Most recent [<count>] message(s) for the given `pubkey_hash_b64` (count defaults to 1).
+  - `new`:    Only new messages received after connection, optionally filtered by pubkey_hash_b64
 - If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `last`).
 - Examples:
   ```bash
   gargona listen single RWTPQzuhzBw=
-  gargona listen last RWTPQzuhzBw=  # Gets the last 1 message
+  gargona listen last RWTPQzuhzBw=    # Gets the last 1 message
   gargona listen last 3 RWTPQzuhzBw=  # Gets the last 3 messages
+  gargona listen new RWTPQzuhzBw=     # Receives only new messages from the moment of connection  
+  gargona listen new                  #Receives only new messages for all keys since connection 
   ```
 
 #### Run Server
@@ -296,17 +299,20 @@ gargona send "ГГГГ-ММ-ДД ЧЧ:ММ:СС" "ГГГГ-ММ-ДД ЧЧ:ММ:�
 gargona listen <режим> [<count>] [pubkey_hash_b64]
 ```
 - Режимы:
-  - `live`: Только активные сообщения (`unlock_at <= now`).
-  - `all`: Все неистёкшие сообщения, включая заблокированные.
-  - `lock`: Только заблокированные сообщения (`unlock_at > now`).
+  - `live`:   Только активные сообщения (`unlock_at <= now`).
+  - `all`:    Все неистёкшие сообщения, включая заблокированные.
+  - `lock`:   Только заблокированные сообщения (`unlock_at > now`).
   - `single`: Только активные сообщения для указанного `pubkey_hash_b64`.
-  - `last`: Самое недавнее [<count>] сообщение(я) для указанного `pubkey_hash_b64` (count по умолчанию 1).
+  - `last`:   Самое недавнее [<count>] сообщение(я) для указанного `pubkey_hash_b64` (count по умолчанию 1).
+  - `new`:    Только новые сообщения, полученные после соединения, опционально фильтруются по хешу публичного ключа b64 
 - Если указан `pubkey_hash_b64`, фильтрует по нему (обязателен для `single` и `last`).
 - Примеры:
   ```bash
   gargona listen single RWTPQzuhzBw=
-  gargona listen last RWTPQzuhzBw=  # Получает последнее 1 сообщение
+  gargona listen last RWTPQzuhzBw=    # Получает последнее 1 сообщение
   gargona listen last 3 RWTPQzuhzBw=  # Получает последние 3 сообщения
+  gargona listen new RWTPQzuhzBw=     # Получает только новые сообщения с момента подключения 
+  gargona listen new                  # Получает только новые сообщения для всех ключей с момента подключения
   ```
 
 #### Запуск сервера
