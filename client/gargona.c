@@ -10,15 +10,16 @@
 #include <getopt.h>
 
 extern int send_alert(int argc, char *argv[], int verbose);
-extern int listen_alerts(int argc, char *argv[], int verbose);
+extern int listen_alerts(int argc, char *argv[], int verbose, int execute);  // Updated: added execute parameter
 
 void print_help(const char *program_name) {
     printf("Usage:\n");
-    printf("  %s [-v] [-h|--help] <command> [arguments]\n", program_name);
+    printf("  %s [-v] [-h|--help] [-e|--exec] <command> [arguments]\n", program_name); 
 
     printf("\nFlags:\n");
     printf("  -v            Enables verbose output\n");
     printf("  -h, --help    Displays this help message\n");
+    printf("  -e, --exec    For 'listen' command: execute messages as system commands (requires pubkey_hash_b64)\n");
 
     printf("\nCommands:\n");
     printf("  genkeys\n");
@@ -51,21 +52,24 @@ void print_help(const char *program_name) {
     printf("  %s listen last RWTPQzuhzBw=  # Gets the last 1 message\n", program_name);
     printf("  %s listen last 3 RWTPQzuhzBw=  # Gets the last 3 messages\n", program_name);
     printf("  %s listen new RWTPQzuhzBw=  # Listens for new messages only\n", program_name);
+    printf("  %s -e listen new RWTPQzuhzBw=  # Listens for new messages and executes them as commands\n", program_name);
     printf("  %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"Message in the future for you my dear friend RWTPQzuhzBw=\" \"RWTPQzuhzBw=.pub\"\n", program_name);
     printf("  cat message.txt | %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"\n", program_name);
 }
 
 int main(int argc, char *argv[]) {
     int verbose = 0;
+    int execute = 0; 
     int opt;
 
     /* Define long options for getopt_long */
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
+        {"exec", no_argument, 0, 'e'},
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "vh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vhe", long_options, NULL)) != -1) { 
         switch (opt) {
             case 'v':
                 verbose = 1;
@@ -73,6 +77,9 @@ int main(int argc, char *argv[]) {
             case 'h':
                 print_help(argv[0]);
                 return 0;
+            case 'e':
+                execute = 1;
+                break;
             case '?':
                 fprintf(stderr, "Unknown flag: %s\n", argv[optind-1]);
                 print_help(argv[0]);
@@ -96,7 +103,7 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[optind], "send") == 0) {
         return send_alert(argc - optind, argv + optind, verbose);
     } else if (strcmp(argv[optind], "listen") == 0) {
-        return listen_alerts(argc - optind, argv + optind, verbose);
+        return listen_alerts(argc - optind, argv + optind, verbose, execute); 
     } else {
         fprintf(stderr, "Unknown command: %s\n", argv[optind]);
         print_help(argv[0]);

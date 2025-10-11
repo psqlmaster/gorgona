@@ -44,7 +44,7 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
 }
 
 /* Parses server response and processes message */
-void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose) {
+void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute) {
     if (strncmp(response, "ALERT|", 6) != 0) {
         printf("Server response: %s\n", response);
         return;
@@ -126,35 +126,19 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
 
     if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
         fprintf(stderr, "Error decoding base64 data\n");
+        free(copy);
         free(encrypted);
         free(encrypted_key_dec);
         free(iv_dec);
         free(tag_dec);
-        free(copy);
         return;
-    }
-
-    /* Debug output */
-    if (verbose) {
-        printf("Before decryption: encrypted_len=%zu, encrypted_key_len=%zu, iv_len=%zu, tag_len=%zu\n",
-               encrypted_len, encrypted_key_len, iv_len, tag_len);
-        printf("encrypted_key (hex): ");
-        for (size_t i = 0; i < encrypted_key_len; i++) printf("%02x", encrypted_key_dec[i]);
-        printf("\n");
-        printf("iv (hex): ");
-        for (size_t i = 0; i < iv_len; i++) printf("%02x", iv_dec[i]);
-        printf("\n");
-        printf("tag (hex): ");
-        for (size_t i = 0; i < tag_len; i++) printf("%02x", tag_dec[i]);
-        printf("\n");
     }
 
     char priv_file[256];
     snprintf(priv_file, sizeof(priv_file), "/etc/gargona/%s.key", pubkey_hash_b64);
 
     char *plaintext = NULL;
-    int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
-                             iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
+    int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len, iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
 
     free(encrypted);
     free(encrypted_key_dec);
@@ -162,7 +146,17 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     free(tag_dec);
 
     if (ret == 0 && plaintext) {
-        printf("Decrypted message: \n%s\n\n", plaintext);
+        if (execute) {
+            printf("Executing command: %s\n", plaintext);
+            int sys_ret = system(plaintext);
+            if (sys_ret == -1) {
+                fprintf(stderr, "Failed to execute command\n");
+            } else {
+                printf("Command return code: %d\n", sys_ret);
+            }
+        } else {
+            printf("Decrypted message: %s\n", plaintext);
+        }
         free(plaintext);
     } else {
         fprintf(stderr, "Failed to decrypt message\n");
@@ -172,7 +166,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
 }
 
 /* Listens for messages from server in specified mode */
-int listen_alerts(int argc, char *argv[], int verbose) {
+int listen_alerts(int argc, char *argv[], int verbose, int execute) {
     if (argc < 2) {
         fprintf(stderr, "Usage: listen <mode> [<count>] [pubkey_hash_b64]\n");
         fprintf(stderr, "Modes: live, all, lock, single, last, new\n");
@@ -192,7 +186,7 @@ int listen_alerts(int argc, char *argv[], int verbose) {
                       strcmp(upper_mode, "LOCK") == 0 || 
                       strcmp(upper_mode, "SINGLE") == 0 ||
                       strcmp(upper_mode, "LAST") == 0 ||
-                      strcmp(upper_mode, "NEW") == 0);  // Добавлен режим new
+                      strcmp(upper_mode, "NEW") == 0);
     free(upper_mode);
     if (!valid_mode) {
         fprintf(stderr, "Invalid mode: %s\n", mode);
@@ -227,6 +221,11 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         if (argc > 2) {
             pubkey_hash_b64 = argv[2];
         }
+    }
+
+    if (execute && !pubkey_hash_b64) { 
+        fprintf(stderr, "Error: --exec requires pubkey_hash_b64\n");
+        return 1;
     }
 
     char server_ip[256];
@@ -346,7 +345,7 @@ int listen_alerts(int argc, char *argv[], int verbose) {
         if (verbose) {
             printf("Received response: %s\n", resp_buffer);
         }
-        parse_response(resp_buffer, pubkey_hash_b64, verbose);
+        parse_response(resp_buffer, pubkey_hash_b64, verbose, execute);
 
         free(resp_buffer);
 

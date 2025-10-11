@@ -20,6 +20,7 @@ The project includes a client (`gargona`) for key generation, sending messages, 
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
 - **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gargona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gargona/`, which must be securely shared by the user.
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
+- **Command Execution Mode**: Use the `-e/--exec` flag with `listen` to execute received messages as system commands (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
@@ -66,15 +67,18 @@ sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gargona/ && \
 
 ## Install Client
 ```bash
-sudo dpkg -i ./gargona_1.5.0_amd64.deb
+sudo dpkg -i ./gargona_1.7.0_amd64.deb
 ```
 
 ## Install Server
 ```bash
-sudo dpkg -i ./gargonad_1.5.0_amd64.deb
+sudo dpkg -i ./gargonad_1.7.0_amd64.deb
 ```
 
 ### Usage
+```sh
+gargona [-v] [-e|--exec] [-h|--help] <command> [arguments]
+```
 
 #### Generate Keys
 ```bash
@@ -104,7 +108,7 @@ gargona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipie
 
 #### Listen for Messages
 ```bash
-gargona listen <mode> [<count>] [pubkey_hash_b64]
+gargona listen  <mode> [<count>] [pubkey_hash_b64]
 ```
 - Modes:
   - `live`:   Only active messages (`unlock_at <= now`).
@@ -116,18 +120,20 @@ gargona listen <mode> [<count>] [pubkey_hash_b64]
 - If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `last`).
 - Examples:
   ```bash
-  gargona listen single RWTPQzuhzBw=
+  gargona listen single RWTPQzuhzBw=  # Gets the message from single key
   gargona listen last RWTPQzuhzBw=    # Gets the last 1 message
   gargona listen last 3 RWTPQzuhzBw=  # Gets the last 3 messages
   gargona listen new RWTPQzuhzBw=     # Receives only new messages from the moment of connection  
-  gargona listen new                  #Receives only new messages for all keys since connection 
+  gargona listen new                  # Receives only new messages for all keys since connection 
+  gargona -e listen new RWTPQzuhzBw=  # Listens for new messages and executes them as system commands
   ```
 
 #### Run Server
 ```bash
-gargonad [-h|--help]
+gargonad [-v] [-h|--help]
 ```
 - Use `-h` or `--help` for configuration help.
+- Use `-v` for verbose mode
 - The server reads settings from `/etc/gargona/gargonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
 
 ### Configuration
@@ -196,6 +202,25 @@ nvme0n1     259:1    0 476.9G  0 disk
 ├─nvme0n1p2 259:3    0   512M  0 part  /boot/efi
 └─nvme0n1p3 259:4    0 279.4G  0 part  /mnt/backup
 ```
+```sh
+# send command message
+gargona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "echo \$(date)" "RWTPQzuhzBw=.pub"
+```
+```
+Server response: Alert added successfully
+```
+```sh
+# listen execute command message
+gargona -e listen new RWTPQzuhzBw=
+```
+```
+Server response: Subscribed to new for the specified key
+Received message: Pubkey_Hash=RWTPQzuhzBw=
+Metadata: Create=2025-10-11 19:32:49, Unlock=2025-10-05 15:42:00, Expire=2026-10-09 06:00:00
+Executing command: echo $(date)
+Sat Oct 11 10:32:49 PM MSK 2025
+Command return code: 0
+```
 
 ## Gargona: система зашифрованного алертинга с временной блокировкой
 
@@ -212,6 +237,7 @@ Gargona — безопасная система сообщений для отп
 - **Приоритет конфиденциальности**: Сервер работает только с зашифрованными данными, без доступа к содержимому.
 - **Управление ключами**: Генерирует пары RSA-ключей, названные по хешу публичного ключа для безопасного обмена и локального хранения приватного ключа.
 - **Гибкие режимы подписки**: Прослушивание в "live" (разблокированные сообщения), "all" (неистёкшие сообщения, включая заблокированные), "lock" (только заблокированные), "single" (для конкретного получателя) или "last" (самое недавнее сообщение(я), с опциональным счётом).
+- **Режим выполнения команды**: Используйте `-e/--exec` флаг с `listen` чтобы выполнять полученные сообщения как системные команды (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
 - **Эффективное хранение**: Кольцевой буфер ограничивает алерты на получателя (по умолчанию: 1000), автоматически удаляя старые или истёкшие.
 - **Децентрализованный дизайн**: Пользователи контролируют ключи, сервер лёгкий и подходит для хостинга.
 - **Быстрота и лёгкость**: Использует OpenSSL с минимальными зависимостями.
@@ -258,16 +284,18 @@ sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gargona/ && \
 
 ## Установка клиента
 ```bash
-sudo dpkg -i ./gargona_1.5.0_amd64.deb
+sudo dpkg -i ./gargona_1.7.0_amd64.deb
 ```
 
 ## Установка сервера
 ```bash
-sudo dpkg -i ./gargonad_1.5.0_amd64.deb
+sudo dpkg -i ./gargonad_1.7.0_amd64.deb
 ```
 
 ### Использование
-
+```sh
+gargona [-v] [-e|--exec] [-h|--help] <command> [arguments]
+```
 #### Генерация ключей
 ```bash
 sudo gargona genkeys
@@ -313,11 +341,12 @@ gargona listen <режим> [<count>] [pubkey_hash_b64]
   gargona listen last 3 RWTPQzuhzBw=  # Получает последние 3 сообщения
   gargona listen new RWTPQzuhzBw=     # Получает только новые сообщения с момента подключения 
   gargona listen new                  # Получает только новые сообщения для всех ключей с момента подключения
+  gargona -e listen new RWTPQzuhzBw=  # Прослушивает новые сообщения и выполняет их как системные команды
   ```
 
 #### Запуск сервера
 ```bash
-gargonad [-h|--help]
+gargonad [-v] [-h|--help]
 ```
 - Используйте `-h` или `--help` для справки по настройке.
 - Сервер читает настройки из `/etc/gargona/gargonad.conf` или использует значения по умолчанию (порт: 5555, макс. алертов: 1024, макс. клиентов: 100).
@@ -387,5 +416,24 @@ nvme0n1     259:1    0 476.9G  0 disk
 │ └─md0       9:0    0 196.9G  0 raid1 /
 ├─nvme0n1p2 259:3    0   512M  0 part  /boot/efi
 └─nvme0n1p3 259:4    0 279.4G  0 part  /mnt/backup
+```
+```sh
+# send command message
+gargona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "echo \$(date)" "RWTPQzuhzBw=.pub"
+```
+```
+Server response: Alert added successfully
+```
+```sh
+# listen execute command message
+gargona -e listen new RWTPQzuhzBw=
+```
+```
+Server response: Subscribed to new for the specified key
+Received message: Pubkey_Hash=RWTPQzuhzBw=
+Metadata: Create=2025-10-11 19:32:49, Unlock=2025-10-05 15:42:00, Expire=2026-10-09 06:00:00
+Executing command: echo $(date)
+Sat Oct 11 10:32:49 PM MSK 2025
+Command return code: 0
 ```
 
