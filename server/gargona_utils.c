@@ -245,19 +245,18 @@ int alert_cmp(const void *a, const void *b) {
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     time_t now = time(NULL);
     if (new_alert->expire_at <= now) return;
-
     char *pubkey_hash_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     if (!pubkey_hash_b64) return;
-
     for (int i = 0; i < max_clients; i++) {
         if (subscribers[i].sock > 0 && subscribers[i].mode != 0) {
             if (subscribers[i].pubkey_hash[0] != '\0' && strcmp(subscribers[i].pubkey_hash, pubkey_hash_b64) != 0) continue;
-
             bool send_it = false;
             if (subscribers[i].mode == MODE_ALL || subscribers[i].mode == MODE_SINGLE) send_it = true;
             else if (subscribers[i].mode == MODE_LIVE) send_it = (new_alert->unlock_at <= now);
             else if (subscribers[i].mode == MODE_LOCK) send_it = (new_alert->unlock_at > now);
-
+            else if (subscribers[i].mode == MODE_NEW) {
+                send_it = (new_alert->create_at >= subscribers[i].connect_time);
+            }
             if (send_it) {
                 char *base64_text = base64_encode(new_alert->text, new_alert->text_len);
                 char *base64_encrypted_key = base64_encode(new_alert->encrypted_key, new_alert->encrypted_key_len);

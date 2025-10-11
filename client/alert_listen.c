@@ -175,7 +175,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
 int listen_alerts(int argc, char *argv[], int verbose) {
     if (argc < 2) {
         fprintf(stderr, "Usage: listen <mode> [<count>] [pubkey_hash_b64]\n");
-        fprintf(stderr, "Modes: live, all, lock, single, last\n");
+        fprintf(stderr, "Modes: live, all, lock, single, last, new\n");
         fprintf(stderr, "For last mode: listen last [<count>] <pubkey_hash_b64> (count defaults to 1)\n");
         return 1;
     }
@@ -191,7 +191,8 @@ int listen_alerts(int argc, char *argv[], int verbose) {
                       strcmp(upper_mode, "ALL") == 0 || 
                       strcmp(upper_mode, "LOCK") == 0 || 
                       strcmp(upper_mode, "SINGLE") == 0 ||
-                      strcmp(upper_mode, "LAST") == 0);
+                      strcmp(upper_mode, "LAST") == 0 ||
+                      strcmp(upper_mode, "NEW") == 0);  // Добавлен режим new
     free(upper_mode);
     if (!valid_mode) {
         fprintf(stderr, "Invalid mode: %s\n", mode);

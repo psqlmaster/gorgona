@@ -13,6 +13,7 @@
 #define MODE_SINGLE 3
 #define MODE_LOCK 4
 #define MODE_LAST 5
+#define MODE_NEW 6
 #define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
 #define MAX_LOG_SIZE (10 * 1024 * 1024) // 10 MB
@@ -46,6 +47,7 @@ typedef struct {
     int sock;
     char pubkey_hash[64]; // For single mode
     int mode; // 0 = not subscribed, 1 = live, 2 = all, 3 = single
+    time_t connect_time;
 } Subscriber;
 
 /* Global variables */

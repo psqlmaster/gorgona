@@ -71,6 +71,7 @@ void run_server(int server_fd) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
+                    subscribers[i].connect_time = time(NULL);
                     if (log_file) {
                         char time_str[32];
                         get_utc_time_str(time_str, sizeof(time_str));
@@ -429,7 +430,8 @@ void run_server(int server_fd) {
                     if (strcmp(upper_mode, "LIVE") == 0) sub_mode = MODE_LIVE;
                     else if (strcmp(upper_mode, "ALL") == 0) sub_mode = MODE_ALL;
                     else if (strcmp(upper_mode, "LOCK") == 0) sub_mode = MODE_LOCK;
-                    else if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;  /* New mode */
+                    else if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
+                    else if (strcmp(upper_mode, "NEW") == 0) sub_mode = MODE_NEW;
                     else {
                         char error_msg[256];
                         int err_len = snprintf(error_msg, sizeof(error_msg), "Error: Unknown mode %s", mode_str);
@@ -461,7 +463,9 @@ void run_server(int server_fd) {
                             break;
                         }
                     }
-                    send_current_alerts(sd, sub_mode, pubkey_hash_b64, 1);  /* Use default count for SUBSCRIBE */
+                    if (sub_mode != MODE_NEW) {  // Added: skip sending current alerts for 'new' mode
+                         send_current_alerts(sd, sub_mode, pubkey_hash_b64, 1);  /* Use default count for SUBSCRIBE */
+                    } 
                     char sub_msg[256];
                     int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s%s", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
                     uint32_t sub_len_net = htonl(sub_len);
