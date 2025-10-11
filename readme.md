@@ -437,3 +437,43 @@ Sat Oct 11 10:32:49 PM MSK 2025
 Command return code: 0
 ```
 
+**Hack for the most patient** — if you want not only to run a command on a remote host but also to receive its output, do it like this.
+Of course this won't work without your keys — security-wise that's fine.
+
+```bash
+gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" "iostat -d | \
+gargona send \"2025-09-28 21:44:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"" "IcUimbs6LZY=.pub"
+```
+
+In other words, we wrap execution and the return-send of the command output in a single message.
+
+If we listen on that channel:
+
+```bash
+gargona listen new RWTPQzuhzBw=
+```
+
+we immediately get a reply:
+
+```text
+Received message: Pubkey_Hash=RWTPQzuhzBw=
+Metadata: Create=2025-10-11 22:02:43, Unlock=2025-09-28 18:44:00, Expire=2025-12-30 09:00:00
+Decrypted message: Linux 6.5.11-8-pve     10/12/2025     _x86_64_    (32 CPU)
+
+Device             tps    kB_read/s    kB_wrtn/s    kB_dscd/s    kB_read    kB_wrtn    kB_dscd
+dm-0              0.00         0.00         0.00         0.00       3728        592          0
+dm-1              5.56         3.42        37.17        26.21    4600825   50070268   35299440
+dm-10             0.00         0.00         0.00         0.00       5252          0          0
+dm-2              0.01         0.05         0.00         0.00      66992          0          0
+dm-3              0.76        48.46         0.00         0.00   65274344          0          0
+dm-4              0.76        48.46         0.00         0.00   65273896          0          0
+dm-5              0.00         0.00         0.00         0.00        448          0          0
+dm-6              0.00         0.00         0.00         0.00        796          0          0
+dm-7              0.00         0.00         0.00         0.00       3580          0          0
+dm-8              0.00         0.00         0.00         0.00       1704          0          0
+dm-9              1.46        93.42         0.00         0.00  125833756          0          0
+nvme0n1           4.58       128.81        37.17        27.74  173499271   50070861   37368240
+sda             278.18      8538.20      1390.09         0.00 11500309619 1872349383          0
+```
+
+
