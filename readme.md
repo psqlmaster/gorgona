@@ -277,7 +277,7 @@ sda             278.18      8538.20      1390.09         0.00 11500309619 187234
 added service for listen messages in mode --exec
 ```sh
 echo "mkdir -p /test/test1/test2/test3" > /root/mkdir.sh; 
-sudo tee /etc/gargona/gargona.conf > /dev/null << 'EOF'
+sudo tee /etc/gargona/gargona.conf > /dev/null << EOF
 ip = 64.188.70.158
 port = 7777
 [exec_commands]
@@ -285,7 +285,7 @@ mkdir testdir = /root/mkdir.sh
 EOF
 ```
 ```sh
-sudo tee /etc/systemd/system/gargona.service > /dev/null << 'EOF'
+sudo tee /etc/systemd/system/gargona.service > /dev/null << EOF
 [Unit]
 Description=Gargona Message Listener
 After=network-online.target
