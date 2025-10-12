@@ -176,7 +176,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
                 }
             }
         } else {
-            printf("Decrypted message: %s\n", plaintext);
+            printf("Decrypted message: \n%s\n", plaintext);
         }
         free(plaintext);
     } else {
