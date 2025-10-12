@@ -276,12 +276,18 @@ sda             278.18      8538.20      1390.09         0.00 11500309619 187234
 
 added service for listen messages in mode --exec
 ```sh
-echo "mkdir -p /test/test1/test2/test3" > /root/mkdir.sh; 
+sudo tee /tmp/mkdir.sh > /dev/null << EOF
+mkdir -p /tmp/test/test1/test2/test3 && cd /tmp/test/test1/test2/test3 && pwd | \
+gargona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" - "RWTPQzuhzBw=.pub"
+EOF
+
+chmod +x /tmp/mkdir.sh
+
 sudo tee /etc/gargona/gargona.conf > /dev/null << EOF
 ip = 64.188.70.158
 port = 7777
 [exec_commands]
-mkdir testdir = /root/mkdir.sh 
+mkdir testdir = /tmp/mkdir.sh 
 EOF
 ```
 ```sh
@@ -300,10 +306,10 @@ StartLimitBurst=10
 StartLimitIntervalSec=300
 User=root
 StandardOutput=journal
-StandardError=append:/var/log/gargona_greengage.log
+StandardError=append:/var/log/gargona_service.log
 KillMode=mixed
 TimeoutStopSec=30
-Environment=GARGONA_LOG_FILE=/var/log/gargona_greengage.log
+Environment=GARGONA_LOG_FILE=/var/log/gargona_service.log
 
 [Install]
 WantedBy=multi-user.target
