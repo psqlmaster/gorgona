@@ -321,3 +321,8 @@ sudo systemctl daemon-reload && \
 sudo systemctl enable gargona && \
 sudo systemctl start gargona
 ```
+```sh
+gargona listen new RWTPQzuhzBw=
+# in new terminal
+gargona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "mkdir testdir" "RWTPQzuhzBw=.pub"
+```
