@@ -273,3 +273,45 @@ dm-9              1.46        93.42         0.00         0.00  125833756        
 nvme0n1           4.58       128.81        37.17        27.74  173499271   50070861   37368240
 sda             278.18      8538.20      1390.09         0.00 11500309619 1872349383          0
 ```
+
+added service for listen messages in mode --exec
+```sh
+echo "mkdir -p /test/test1/test2/test3" > /root/mkdir.sh; 
+sudo tee /etc/gargona/gargona.conf > /dev/null << 'EOF'
+ip = 64.188.70.158
+port = 7777
+[exec_commands]
+mkdir testdir = /root/mkdir.sh 
+EOF
+```
+```sh
+sudo tee /etc/systemd/system/gargona.service > /dev/null << 'EOF'
+[Unit]
+Description=Gargona Message Listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gargona -e listen new RWTPQzuhzBw= 
+Restart=always
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=300
+User=root
+StandardOutput=journal
+StandardError=append:/var/log/gargona_greengage.log
+KillMode=mixed
+TimeoutStopSec=30
+Environment=GARGONA_LOG_FILE=/var/log/gargona_greengage.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+```sh
+sudo chmod 644 /etc/systemd/system/gargona.service && \
+sudo systemctl daemon-reload && \
+sudo systemctl enable gargona && \
+sudo systemctl start gargona
+```
