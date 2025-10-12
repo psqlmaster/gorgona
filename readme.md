@@ -1,7 +1,3 @@
-# Gargona: Encrypted Time-Locked Messaging System
-
-[Русская версия](#gargona-система-зашифрованного-алертинга-с-временной-блокировкой) | English Version
-
 ---
 ![ ](gargona.png)
 
@@ -80,6 +76,14 @@ sudo dpkg -i ./gargonad_1.7.0_amd64.deb
 gargona [-v] [-e|--exec] [-h|--help] <command> [arguments]
 ```
 
+#### Flags
+- `-v, --verbose`: Enables verbose output for debugging.
+- `-e, --exec`: For 'listen' command: execute messages as system commands (requires `pubkey_hash_b64`). 
+   If the `[exec_commands]` section in `/etc/gargona/gargona.conf` is empty, all decrypted messages are executed. 
+   If `[exec_commands]` contains entries (e.g., `greengage start = /path/to/script.sh`), only messages matching a key are executed by running the corresponding script.
+- `-h, --help`: Displays help message.
+- **Note**: Flags `-v` and `-e` can be combined (e.g., `-ve`) for verbose output during command execution.
+
 #### Generate Keys
 ```bash
 sudo gargona genkeys
@@ -139,11 +143,19 @@ gargonad [-v] [-h|--help]
 ### Configuration
 
 #### Client Configuration
-The file `/etc/gargona/gargona.conf` contains server settings:
+The file `/etc/gargona/gargona.conf` contains server settings and optional execution mappings:
 ```ini
 [server]
 ip = 64.188.70.158
 port = 7777
+
+[exec_commands]
+<key> = <script_path>
+```
+Example:
+```ini
+[exec_commands]
+app start = /home/su/repository/c/gargona/test/lsblk.sh
 ```
 
 #### Server Configuration
@@ -166,221 +178,6 @@ Logs are written to `gargona.log` with rotation when exceeding 10 MB.
 ### Future Plans
 
 Gargona works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
-
-[contributing.md](contributing.md) 
-
-#### More examples:
-```sh
-# send
-lsblk | gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
-```
-```
-Server response: Alert added successfully
-```
-```sh
-# get
-gargona listen last RWTPQzuhzBw=
-```
-```
-Received message: Pubkey_Hash=RWTPQzuhzBw=
-Metadata: Create=2025-10-08 08:39:52, Unlock=2025-09-28 18:44:00, Expire=2025-12-30 09:00:00
-Decrypted message: 
-NAME        MAJ:MIN RM   SIZE RO TYPE  MOUNTPOINTS
-sda           8:0    0 931.5G  0 disk  
-└─sda1        8:1    0 931.5G  0 part  /mnt/share
-sdb           8:16   0  14.6T  0 disk  
-└─sdb1        8:17   0  14.6T  0 part  /mnt/megaraid
-nvme1n1     259:0    0 476.9G  0 disk  
-├─nvme1n1p1 259:5    0   512M  0 part  
-├─nvme1n1p2 259:6    0 197.1G  0 part  
-│ └─md0       9:0    0 196.9G  0 raid1 /
-├─nvme1n1p3 259:7    0  27.8G  0 part  [SWAP]
-└─nvme1n1p4 259:8    0 251.6G  0 part  /mnt/new_free
-nvme0n1     259:1    0 476.9G  0 disk  
-├─nvme0n1p1 259:2    0   197G  0 part  
-│ └─md0       9:0    0 196.9G  0 raid1 /
-├─nvme0n1p2 259:3    0   512M  0 part  /boot/efi
-└─nvme0n1p3 259:4    0 279.4G  0 part  /mnt/backup
-```
-```sh
-# send command message
-gargona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "echo \$(date)" "RWTPQzuhzBw=.pub"
-```
-```
-Server response: Alert added successfully
-```
-```sh
-# listen execute command message
-gargona -e listen new RWTPQzuhzBw=
-```
-```
-Server response: Subscribed to new for the specified key
-Received message: Pubkey_Hash=RWTPQzuhzBw=
-Metadata: Create=2025-10-11 19:32:49, Unlock=2025-10-05 15:42:00, Expire=2026-10-09 06:00:00
-Executing command: echo $(date)
-Sat Oct 11 10:32:49 PM MSK 2025
-Command return code: 0
-```
-
-## Gargona: система зашифрованного алертинга с временной блокировкой
-
-### Введение
-
-Gargona — безопасная система сообщений для отправки зашифрованных сообщений, которые разблокируются в указанное время и истекают после заданного периода. Используя RSA для обмена ключами и AES-GCM для шифрования содержимого, Gargona обеспечивает конфиденциальность от начала до конца. Сервер хранит только зашифрованные сообщения, не имея доступа к их содержимому, что идеально для конфиденциальных коммуникаций, запланированных уведомлений или отложенного раскрытия сообщений (например, временные капсулы или обмен данными в чрезвычайных ситуациях).
-
-Проект включает клиент (`gargona`) для генерации ключей, отправки сообщений и прослушивания алертов, и сервер (`gargonad`) для их безопасного хранения и доставки.
-
-### Возможности
-
-- **Шифрование от конца до конца**: Сообщения шифруются на клиенте и расшифровываются только получателем с приватным ключом.
-- **Временная блокировка доставки**: Сообщения разблокируются в указанное время `unlock_at` и истекают в `expire_at`.
-- **Приоритет конфиденциальности**: Сервер работает только с зашифрованными данными, без доступа к содержимому.
-- **Управление ключами**: Генерирует пары RSA-ключей, названные по хешу публичного ключа для безопасного обмена и локального хранения приватного ключа.
-- **Гибкие режимы подписки**: Прослушивание в "live" (разблокированные сообщения), "all" (неистёкшие сообщения, включая заблокированные), "lock" (только заблокированные), "single" (для конкретного получателя) или "last" (самое недавнее сообщение(я), с опциональным счётом).
-- **Режим выполнения команды**: Используйте `-e/--exec` флаг с `listen` чтобы выполнять полученные сообщения как системные команды (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
-- **Эффективное хранение**: Кольцевой буфер ограничивает алерты на получателя (по умолчанию: 1000), автоматически удаляя старые или истёкшие.
-- **Децентрализованный дизайн**: Пользователи контролируют ключи, сервер лёгкий и подходит для хостинга.
-- **Быстрота и лёгкость**: Использует OpenSSL с минимальными зависимостями.
-- **Защита от подделки**: Теги GCM и RSA-OAEP предотвращают вмешательство.
-
-**Преимущества**:
-- **Безопасность**: Сообщения конфиденциальны даже при компрометации сервера.
-- **Универсальность**: Подходит для напоминаний, уведомлений, инструментов для информаторов или автоматической отправки данных.
-- **Масштабируемость**: TCP-сервер поддерживает множество клиентов (по умолчанию: 100) и может быть расширен.
-- **Без внешних сервисов**: Работает локально или через прямое взаимодействие клиент-сервер.
-- **Креативные сценарии**: Временные капсулы, игровые сообщения или безопасные резервные копии.
-
-## Быстрый старт
-```bash
-git clone https://github.com/psqlmaster/gargona.git && \
-cd gargona && \
-make clean && make && \
-sudo mkdir -p /etc/gargona && \
-printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gargona/gargona.conf >/dev/null && \
-sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gargona/ && \
-./gargona listen last 4 RWTPQzuhzBw=
-```
-
-### Установка
-
-1. Клонируйте репозиторий:
-   ```bash
-   git clone https://github.com/psqlmaster/gargona.git
-   cd gargona
-   ```
-
-2. Установите зависимости (требуется OpenSSL):
-   - На Debian/Ubuntu: `sudo apt install libssl-dev`
-   - На Fedora: `sudo dnf install openssl-devel`
-   - На REDOS: `sudo yum install openssl11 openssl11-devel`
-   - На macOS: `brew install openssl`
-   - **Примечание**: Протестировано на Debian, Fedora и RED OS.
-
-3. Соберите проект:
-   ```bash
-   make clean && make
-   ```
-   Собирает `gargona` (клиент) и `gargonad` (сервер). Очистка: `make clean`. Пересборка: `make rebuild`.
-
-## Установка клиента
-```bash
-sudo dpkg -i ./gargona_1.7.0_amd64.deb
-```
-
-## Установка сервера
-```bash
-sudo dpkg -i ./gargonad_1.7.0_amd64.deb
-```
-
-### Использование
-```sh
-gargona [-v] [-e|--exec] [-h|--help] <command> [arguments]
-```
-#### Генерация ключей
-```bash
-sudo gargona genkeys
-```
-- Генерирует пару RSA-ключей в `/etc/gargona/`, создавая `hash.pub` (публичный ключ) и `hash.key` (приватный ключ), где `hash` — base64-кодированный хеш публичного ключа.
-- `hash` в имени файла `hash.pub` используется для указания в команде listen от кого получать сообщения, если не указать то будут получены сообщения для всех ключей `*.pub` из `/etc/gargona/`
-- для того чтобы получатель смог получить и расшифровать сообщение он должен иметь приватный ключ `hash.key` отправителя в `/etc/gargona/`, передачу ключа вы должны осуществить сами.
-- **Права на ключи**: Приватные ключи (`*.key`) должны быть доступны только владельцу (`chmod 600`). Публичные ключи (`*.pub`) могут быть доступны для чтения (`chmod 644`). Проверьте права:
-  ```bash
-  ls -la /etc/gargona
-  ```
-
-#### Отправка сообщения
-```bash
-gargona send "ГГГГ-ММ-ДД ЧЧ:ММ:СС" "ГГГГ-ММ-ДД ЧЧ:ММ:СС" "Ваше сообщение" "recipient.pub"
-```
-- Используйте `-` для `<message>`, чтобы читать из stdin.
-- Файл публичного ключа — имя файла в `/etc/gargona/`, например, `RWTPQzuhzBw=.pub`.
-- Примеры:
-  ```bash
-  gargona send "2025-09-30 23:55:00" "2025-12-30 12:00:00" "Секретное сообщение для RWTPQzuhzBw=" "RWTPQzuhzBw=.pub"
-  ```
-  ```bash
-  cat message.txt | gargona send "2025-09-30 23:55:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
-  ```
-
-#### Прослушивание сообщений
-```bash
-gargona listen <режим> [<count>] [pubkey_hash_b64]
-```
-- Режимы:
-  - `live`:   Только активные сообщения (`unlock_at <= now`).
-  - `all`:    Все неистёкшие сообщения, включая заблокированные.
-  - `lock`:   Только заблокированные сообщения (`unlock_at > now`).
-  - `single`: Только активные сообщения для указанного `pubkey_hash_b64`.
-  - `last`:   Самое недавнее [<count>] сообщение(я) для указанного `pubkey_hash_b64` (count по умолчанию 1).
-  - `new`:    Только новые сообщения, полученные после соединения, опционально фильтруются по хешу публичного ключа b64 
-- Если указан `pubkey_hash_b64`, фильтрует по нему (обязателен для `single` и `last`).
-- Примеры:
-  ```bash
-  gargona listen single RWTPQzuhzBw=
-  gargona listen last RWTPQzuhzBw=    # Получает последнее 1 сообщение
-  gargona listen last 3 RWTPQzuhzBw=  # Получает последние 3 сообщения
-  gargona listen new RWTPQzuhzBw=     # Получает только новые сообщения с момента подключения 
-  gargona listen new                  # Получает только новые сообщения для всех ключей с момента подключения
-  gargona -e listen new RWTPQzuhzBw=  # Прослушивает новые сообщения и выполняет их как системные команды
-  ```
-
-#### Запуск сервера
-```bash
-gargonad [-v] [-h|--help]
-```
-- Используйте `-h` или `--help` для справки по настройке.
-- Сервер читает настройки из `/etc/gargona/gargonad.conf` или использует значения по умолчанию (порт: 5555, макс. алертов: 1024, макс. клиентов: 100).
-
-### Конфигурация
-
-#### Конфигурация клиента
-Файл `/etc/gargona/gargona.conf` содержит настройки сервера:
-```ini
-[server]
-ip = 64.188.70.158
-port = 7777
-```
-
-#### Конфигурация сервера
-Отредактируйте `/etc/gargona/gargonad.conf`:
-```ini
-[server]
-port = 7777
-MAX_ALERTS = 2000
-MAX_CLIENTS = 100
-max_message_size = 5242880
-```
-- **port**: TCP-порт (по умолчанию: 5555).
-- **MAX_ALERTS**: Макс. алертов на получателя (по умолчанию: 1024).
-- **MAX_CLIENTS**: Макс. одновременных подключений (по умолчанию: 100).
-- **max_message_size**: Макс. размер сообщения в байтах (по умолчанию: 5242880, 5 МБ).
-- Если файл отсутствует, используются значения по умолчанию.
-
-Логи записываются в `gargona.log` с ротацией при превышении 10 МБ.
-
-### Планы на будущее
-
-Gargona эффективно работает с одним сервером. В планах — зеркалирование серверов (репликация) без внешних сервисов (Redis, PostgreSQL) для скорости, децентрализации и надёжности. Возможные подходы: протокол gossip для peer-to-peer синхронизации или лёгкий консенсус (например, адаптированный Raft). Также рассматриваются леджеры, вдохновлённые блокчейном (без майнинга), или CRDT для бесшовной синхронизации. Приветствуются предложения!
 
 [contributing.md](contributing.md) 
 
@@ -476,5 +273,3 @@ dm-9              1.46        93.42         0.00         0.00  125833756        
 nvme0n1           4.58       128.81        37.17        27.74  173499271   50070861   37368240
 sda             278.18      8538.20      1390.09         0.00 11500309619 1872349383          0
 ```
-
-

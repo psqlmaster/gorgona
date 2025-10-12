@@ -168,9 +168,8 @@ int send_alert(int argc, char *argv[], int verbose) {
     }
 
     /* Load config */
-    char server_ip[256];
-    int server_port;
-    read_config(server_ip, &server_port);
+    Config config;
+    read_config(&config, verbose);
 
     /* Create socket */
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -190,8 +189,8 @@ int send_alert(int argc, char *argv[], int verbose) {
         return 1;
     }
 
-    struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(server_port) };
-    if (inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) <= 0) {
+    struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
+    if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
         perror("Invalid address");
         close(sock);
         free(pubkey_hash);

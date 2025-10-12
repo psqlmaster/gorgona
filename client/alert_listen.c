@@ -8,7 +8,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <ctype.h>
-#include <stdint.h>  // Добавлено для uint32_t
+#include <stdint.h>   /* added for uint32_t */
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -44,7 +44,7 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
 }
 
 /* Parses server response and processes message */
-void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute) {
+void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute, Config *config) {
     if (strncmp(response, "ALERT|", 6) != 0) {
         printf("Server response: %s\n", response);
         return;
@@ -147,12 +147,51 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
 
     if (ret == 0 && plaintext) {
         if (execute) {
-            printf("Executing command: %s\n", plaintext);
-            int sys_ret = system(plaintext);
-            if (sys_ret == -1) {
-                fprintf(stderr, "Failed to execute command\n");
+            char *script_to_run = NULL;
+
+            // Проверяем exec_commands
+            if (config->exec_count == 0) {
+                // Секция пуста — выполняем plaintext
+                script_to_run = plaintext;
             } else {
-                printf("Command return code: %d\n", sys_ret);
+                // Ищем exact match
+                for (int i = 0; i < config->exec_count; i++) {
+                    if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
+                        script_to_run = config->exec_commands[i].value;
+                        break;
+                    }
+                }
+            }
+
+            if (script_to_run) {
+                printf("Executing command: %s\n", script_to_run);
+
+                // Логируем
+                FILE *log_fp = fopen("/var/log/gargona_exec.log", "a");
+                if (log_fp) {
+                    char time_buf[32];
+                    time_to_utc_string(time(NULL), time_buf, sizeof(time_buf));
+                    fprintf(log_fp, "[%s] Pubkey: %s, Command: %s, Script: %s\n", time_buf, pubkey_hash_b64, plaintext, script_to_run);
+                    fclose(log_fp);
+                }
+
+                int sys_ret = system(script_to_run);
+                if (sys_ret == -1) {
+                    fprintf(stderr, "Failed to execute command\n");
+                } else {
+                    printf("Command return code: %d\n", sys_ret);
+                }
+            } else {
+                fprintf(stderr, "Command not allowed: %s\n", plaintext);
+
+                // Логируем отказ
+                FILE *log_fp = fopen("/var/log/gargona_exec.log", "a");
+                if (log_fp) {
+                    char time_buf[32];
+                    time_to_utc_string(time(NULL), time_buf, sizeof(time_buf));
+                    fprintf(log_fp, "[%s] Pubkey: %s, Denied: %s\n", time_buf, pubkey_hash_b64, plaintext);
+                    fclose(log_fp);
+                }
             }
         } else {
             printf("Decrypted message: %s\n", plaintext);
@@ -228,9 +267,8 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         return 1;
     }
 
-    char server_ip[256];
-    int server_port;
-    read_config(server_ip, &server_port);
+    Config config;
+    read_config(&config, verbose);
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -238,8 +276,8 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         return 1;
     }
 
-    struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(server_port) };
-    if (inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) <= 0) {
+    struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
+    if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
         perror("Invalid address");
         close(sock);
         return 1;
@@ -345,7 +383,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         if (verbose) {
             printf("Received response: %s\n", resp_buffer);
         }
-        parse_response(resp_buffer, pubkey_hash_b64, verbose, execute);
+        parse_response(resp_buffer, pubkey_hash_b64, verbose, execute, &config);
 
         free(resp_buffer);
 
