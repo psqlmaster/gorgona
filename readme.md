@@ -137,10 +137,13 @@ gargona listen  <mode> [<count>] [pubkey_hash_b64]
 gargonad [-v] [-h|--help]
 ```
 - Use `-h` or `--help` for configuration help.
-- Use `-v` for verbose mode
+- Use `-v` for verbose mode, example:
+  ```sh
+  strace -e network gargona -v listen new RWTPQzuhzBw=
+  ```
 - The server reads settings from `/etc/gargona/gargonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
 
-### Configuration
+    ### Configuration
 
 #### Client Configuration
 The file `/etc/gargona/gargona.conf` contains server settings and optional execution mappings:

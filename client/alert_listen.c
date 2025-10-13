@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <sys/time.h> 
+#include <netinet/tcp.h>
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -265,7 +266,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         
         // Установка таймаута на сокет
         struct timeval timeout;
-        timeout.tv_sec = 30;
+        timeout.tv_sec = 60;
         timeout.tv_usec = 0;
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
@@ -284,6 +285,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             continue;
         }
         
+        // После connect(sock, ...)
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
             fprintf(stderr, "Connection failed to %s:%d: %s\n", config.server_ip, config.server_port, strerror(errno));
             close(sock);
@@ -292,7 +294,44 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                              (reconnect_delay + reconnect_increment) : max_reconnect_delay;
             continue;
         }
-        
+
+        // Enable TCP keepalive
+        int opt = 1;
+        if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) < 0) {
+            fprintf(stderr, "setsockopt SO_KEEPALIVE failed: %s\n", strerror(errno));
+            close(sock);
+            sleep(reconnect_delay);
+            continue;
+        }
+
+        // Platform-specific keepalive settings
+        #ifdef __linux__
+            int idle = 60;  // Start probing after 60 sec of idle
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
+            }
+
+            int interval = 10;  // Probe every 10 sec
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
+            }
+
+            int count = 3;  // Max 3 probes before closing
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
+            }
+        #elif defined(__APPLE__)
+            int keepalive_time = 60;  // macOS uses TCP_KEEPALIVE (in seconds)
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
+                    fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
+                }
+        #else
+                // Fallback for other platforms (e.g., FreeBSD, Windows)
+                if (verbose) {
+                    printf("Warning: Platform-specific TCP keepalive settings not implemented, using SO_KEEPALIVE only\n");
+                }
+        #endif
+
         // Сброс задержки при успешном подключении
         reconnect_delay = 5;
         
@@ -362,8 +401,20 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         /* Read responses with improved reconnection logic */
         int messages_received = 0;
         int connection_ok = 1;
-        
+        struct timeval start_time;
+        gettimeofday(&start_time, NULL);
+
         while (connection_ok) {
+            // Проверка времени для периодического переподключения
+            struct timeval current_time;
+            gettimeofday(&current_time, NULL);
+            long elapsed_sec = current_time.tv_sec - start_time.tv_sec;
+            if (elapsed_sec > 1200) {  // Reconnect every 5 minutes
+                if (verbose) printf("Periodic reconnect after %ld seconds\n", elapsed_sec);
+                connection_ok = 0;  // Force reconnect
+                break;
+            }
+
             uint32_t resp_len_net;
             ssize_t valread;
             
