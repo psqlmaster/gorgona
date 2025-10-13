@@ -59,12 +59,13 @@ extern int client_sockets[MAX_CLIENTS];
 extern Subscriber subscribers[MAX_CLIENTS];
 extern int max_alerts;
 extern int max_clients;
-extern size_t max_message_size;  // Новый параметр
+extern size_t max_message_size;
+extern int verbose; // Добавляем объявление verbose
 
 /* Function declarations */
 int is_http_request(const char *buffer);
 void trim_string(char *str);
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size);  // Изменено: добавлен параметр
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);
@@ -77,8 +78,7 @@ int alert_cmp(const void *a, const void *b);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
 void send_current_alerts(int sd, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
-
-/* New: server loop */
+void get_utc_time_str(char *buffer, size_t buffer_size); // Добавляем прототип
 void run_server(int server_fd);
 
 #endif

@@ -287,6 +287,7 @@ EOF
 chmod +x /tmp/mkdir.sh
 
 sudo tee /etc/gargona/gargona.conf > /dev/null << EOF
+[server]
 ip = 64.188.70.158
 port = 7777
 [exec_commands]

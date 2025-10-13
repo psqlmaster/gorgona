@@ -17,13 +17,6 @@ extern size_t max_message_size;
 extern int client_sockets[];
 extern Subscriber subscribers[];
 
-/* Get current UTC time as string (duplicated from gargonad.c if needed, or extern) */
-static void get_utc_time_str(char *buffer, size_t buffer_size) {
-    time_t now = time(NULL);
-    struct tm *utc_time = gmtime(&now);
-    strftime(buffer, buffer_size, "[%Y-%m-%d %H:%M:%S UTC]", utc_time);
-}
-
 void run_server(int server_fd) {
     int new_socket, activity, valread, sd;
     int max_sd;

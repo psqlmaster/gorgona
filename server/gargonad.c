@@ -18,13 +18,6 @@ All rights reserved. */
 
 int verbose = 0;
 
-/* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ss UTC] */
-static void get_utc_time_str(char *buffer, size_t buffer_size) {
-    time_t now = time(NULL);
-    struct tm *utc_time = gmtime(&now);
-    strftime(buffer, buffer_size, "[%Y-%m-%d %H:%M:%S UTC]", utc_time);
-}
-
 /* Shutdown handler for graceful exit */
 void shutdown_handler(int sig) {
     if (log_file) {

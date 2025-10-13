@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <sys/socket.h>
-#include <sys/time.h> 
+#include <sys/time.h>
 #include <netinet/tcp.h>
 
 /* Removes trailing spaces, \n, \r from a string */
@@ -40,7 +40,7 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
     snprintf(priv_file, sizeof(priv_file), "/etc/gargona/%s.key", pubkey_hash_b64);
     FILE *priv_fp = fopen(priv_file, "rb");
     if (!priv_fp) {
-        if (verbose) fprintf(stderr, "Private key not found: /etc/gargona/%s\n", priv_file);
+        if (verbose) fprintf(stderr, "Private key not found: %s\n", priv_file);
         return 0;
     }
     fclose(priv_fp);
@@ -136,12 +136,9 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     if (ret == 0 && plaintext) {
         if (execute) {
             char *script_to_run = NULL;
-            // Проверяем exec_commands
             if (config->exec_count == 0) {
-                // Секция пуста — выполняем plaintext
                 script_to_run = plaintext;
             } else {
-                // Ищем exact match
                 for (int i = 0; i < config->exec_count; i++) {
                     if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
                         script_to_run = config->exec_commands[i].value;
@@ -150,38 +147,20 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
                 }
             }
             if (script_to_run) {
-                printf("Executing command: %s\n", script_to_run);
-                // Логируем
-                FILE *log_fp = fopen("/var/log/gargona_exec.log", "a");
-                if (log_fp) {
-                    char time_buf[32];
-                    time_to_utc_string(time(NULL), time_buf, sizeof(time_buf));
-                    fprintf(log_fp, "[%s] Pubkey: %s, Command: %s, Script: %s\n", time_buf, pubkey_hash_b64, plaintext, script_to_run);
-                    fclose(log_fp);
+                if (verbose) {
+                    printf("Executing command: %s\n", script_to_run);
                 }
-                int sys_ret = system(script_to_run);
-                if (sys_ret == -1) {
-                    fprintf(stderr, "Failed to execute command\n");
-                } else {
-                    printf("Command return code: %d\n", sys_ret);
+                int ret = system(script_to_run);
+                if (ret != 0) {
+                    fprintf(stderr, "Command execution failed: %s\n", script_to_run);
                 }
-            } else {
-                fprintf(stderr, "Command not allowed: %s\n", plaintext);
-                // Логируем отказ
-                FILE *log_fp = fopen("/var/log/gargona_exec.log", "a");
-                if (log_fp) {
-                    char time_buf[32];
-                    time_to_utc_string(time(NULL), time_buf, sizeof(time_buf));
-                    fprintf(log_fp, "[%s] Pubkey: %s, Denied: %s\n", time_buf, pubkey_hash_b64, plaintext);
-                    fclose(log_fp);
-                }
+            } else if (verbose) {
+                printf("No matching script found for message: %s\n", plaintext);
             }
         } else {
-            printf("Decrypted message: \n%s\n", plaintext);
+            printf("Decrypted message:\n%s\n", plaintext);
         }
         free(plaintext);
-    } else {
-        fprintf(stderr, "Failed to decrypt message\n");
     }
     free(copy);
 }
@@ -196,10 +175,10 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
     }
     
     char *mode = argv[1];
-    int count = 1;
+    int count = 1; // Default count
     char *pubkey_hash_b64 = NULL;
     
-    /* Mode validation (existing code) */
+    /* Mode validation */
     char *upper_mode = strdup(mode);
     for (char *p = upper_mode; *p; p++) *p = toupper((unsigned char)*p);
     int valid_mode = (strcmp(upper_mode, "LIVE") == 0 ||
@@ -214,7 +193,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         return 1;
     }
     
-    /* Parse arguments (existing code) */
+    /* Parse arguments */
     if (strcmp(mode, "last") == 0) {
         if (argc == 3) {
             pubkey_hash_b64 = argv[2];
@@ -222,60 +201,52 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             char *endptr;
             count = strtol(argv[2], &endptr, 10);
             if (*endptr != '\0' || count <= 0) {
-                fprintf(stderr, "Invalid count: %s (must be a positive integer)\n", argv[2]);
+                fprintf(stderr, "Invalid count: %s\n", argv[2]);
                 return 1;
             }
             pubkey_hash_b64 = argv[3];
         } else {
-            fprintf(stderr, "Usage for last mode: listen last [<count>] <pubkey_hash_b64>\n");
+            fprintf(stderr, "Usage for last: listen last [<count>] <pubkey_hash_b64>\n");
             return 1;
         }
     } else if (strcmp(mode, "single") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Pubkey hash required for single mode\n");
+        if (argc != 3) {
+            fprintf(stderr, "Usage for single: listen single <pubkey_hash_b64>\n");
             return 1;
         }
         pubkey_hash_b64 = argv[2];
     } else {
-        if (argc > 2) {
+        if (argc == 3) {
             pubkey_hash_b64 = argv[2];
+        } else if (argc != 2) {
+            fprintf(stderr, "Usage for %s: listen %s [pubkey_hash_b64]\n", mode, mode);
+            return 1;
         }
     }
     
-    if (execute && !pubkey_hash_b64) {
-        fprintf(stderr, "Error: --exec requires pubkey_hash_b64\n");
-        return 1;
+    // Debug: Print parsed arguments
+    if (verbose) {
+        printf("Debug: Parsed mode='%s', count=%d, pubkey_hash_b64='%s'\n", mode, count, pubkey_hash_b64 ? pubkey_hash_b64 : "NULL");
     }
-    
+
     Config config;
     read_config(&config, verbose);
-    
-    int reconnect_delay = 5; // начальная задержка переподключения
-    const int max_reconnect_delay = 60; // максимальная задержка
-    const int reconnect_increment = 5; // шаг увеличения задержки
-    
+
+    int reconnect_delay = 5;
+    int reconnect_increment = 10;
+    int max_reconnect_delay = 60;
+
     while (1) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock < 0) {
-            fprintf(stderr, "Socket creation error: %s\n", strerror(errno));
+            perror("Socket creation error");
             sleep(reconnect_delay);
             reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ? 
                              (reconnect_delay + reconnect_increment) : max_reconnect_delay;
             continue;
         }
-        
-        // Установка таймаута на сокет
-        struct timeval timeout;
-        timeout.tv_sec = 60;
-        timeout.tv_usec = 0;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-        
-        struct sockaddr_in serv_addr = { 
-            .sin_family = AF_INET, 
-            .sin_port = htons(config.server_port) 
-        };
-        
+
+        struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
         if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
             fprintf(stderr, "Invalid address: %s\n", config.server_ip);
             close(sock);
@@ -284,10 +255,9 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                              (reconnect_delay + reconnect_increment) : max_reconnect_delay;
             continue;
         }
-        
-        // После connect(sock, ...)
+
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-            fprintf(stderr, "Connection failed to %s:%d: %s\n", config.server_ip, config.server_port, strerror(errno));
+            fprintf(stderr, "Connection failed: %s\n", strerror(errno));
             close(sock);
             sleep(reconnect_delay);
             reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ? 
@@ -316,30 +286,29 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                 fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
             }
 
-            int count = 3;  // Max 3 probes before closing
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count)) < 0) {
+            int keep_count = 3;  // Max 3 probes before closing (renamed to avoid shadowing)
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count)) < 0) {
                 fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
             }
         #elif defined(__APPLE__)
             int keepalive_time = 60;  // macOS uses TCP_KEEPALIVE (in seconds)
             if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
-                    fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
-                }
+                fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
+            }
         #else
-                // Fallback for other platforms (e.g., FreeBSD, Windows)
-                if (verbose) {
-                    printf("Warning: Platform-specific TCP keepalive settings not implemented, using SO_KEEPALIVE only\n");
-                }
+            if (verbose) {
+                printf("Warning: Platform-specific TCP keepalive settings not implemented, using SO_KEEPALIVE only\n");
+            }
         #endif
 
-        // Сброс задержки при успешном подключении
+        // Reset reconnect delay on successful connection
         reconnect_delay = 5;
         
         if (verbose) {
             printf("Connected to %s:%d\n", config.server_ip, config.server_port);
         }
         
-        /* Form request (existing code) */
+        /* Form request */
         size_t needed_len = 256;
         char *buffer = malloc(needed_len);
         if (!buffer) {
@@ -354,6 +323,9 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             len = snprintf(buffer, needed_len, "LISTEN|%s|%s", pubkey_hash_b64, mode);
         } else if (strcmp(mode, "last") == 0) {
             len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", pubkey_hash_b64, mode, count);
+            if (verbose) {
+                printf("Debug: Forming request with count=%d\n", count);
+            }
         } else {
             if (pubkey_hash_b64) {
                 len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
@@ -374,7 +346,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             printf("Sending: %s\n", buffer);
         }
         
-        /* Send request (existing code with improved error handling) */
+        /* Send request */
         uint32_t msg_len_net = htonl(len);
         ssize_t send_result;
         
@@ -398,20 +370,23 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         
         free(buffer);
         
-        /* Read responses with improved reconnection logic */
+        /* Read responses */
         int messages_received = 0;
         int connection_ok = 1;
         struct timeval start_time;
         gettimeofday(&start_time, NULL);
 
+        // Set shorter periodic timeout for one-time modes (last, single)
+        int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1200;
+
         while (connection_ok) {
-            // Проверка времени для периодического переподключения
+            // Check time for periodic reconnection
             struct timeval current_time;
             gettimeofday(&current_time, NULL);
             long elapsed_sec = current_time.tv_sec - start_time.tv_sec;
-            if (elapsed_sec > 1200) {  // Reconnect every 5 minutes
+            if (elapsed_sec > periodic_reconnect_sec) {
                 if (verbose) printf("Periodic reconnect after %ld seconds\n", elapsed_sec);
-                connection_ok = 0;  // Force reconnect
+                connection_ok = 0;
                 break;
             }
 
@@ -420,7 +395,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             
             valread = recv(sock, &resp_len_net, sizeof(uint32_t), MSG_WAITALL);
             if (valread == 0) {
-                fprintf(stderr, "Connection closed by server\n");
+                if (verbose) fprintf(stderr, "Debug: Connection closed by server\n");
                 connection_ok = 0;
                 break;
             } else if (valread < 0) {
@@ -454,7 +429,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             while (total_read < resp_len && connection_ok) {
                 valread = recv(sock, resp_buffer + total_read, resp_len - total_read, 0);
                 if (valread == 0) {
-                    fprintf(stderr, "Connection closed by server during data read\n");
+                    if (verbose) fprintf(stderr, "Debug: Connection closed by server during data read\n");
                     connection_ok = 0;
                     break;
                 } else if (valread < 0) {
@@ -485,21 +460,35 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                 printf("Received response: %s\n", resp_buffer);
             }
             
+            // Process the response
             parse_response(resp_buffer, pubkey_hash_b64, verbose, execute, &config);
-            free(resp_buffer);
             
-            if (strcmp(mode, "last") == 0) {
+            // Increment messages_received only for ALERT messages and break if count reached in last mode
+            if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
                 messages_received++;
+                if (verbose) {
+                    printf("Debug: Processed ALERT message %d of %d\n", messages_received, count);
+                }
                 if (messages_received >= count) {
+                    free(resp_buffer);
                     close(sock);
-                    return 0;
+                    if (verbose) {
+                        printf("Debug: Reached requested count (%d), exiting\n", count);
+                    }
+                    return 0; // Exit after receiving the requested number of messages
                 }
             }
+
+            free(resp_buffer);
         }
         
         close(sock);
         
-        if (strcmp(mode, "last") == 0 && messages_received >= count) {
+        // Always return for 'last' and 'single' modes to prevent reconnect
+        if (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) {
+            if (verbose && messages_received == 0) {
+                printf("Debug: No messages received, exiting\n");
+            }
             return 0;
         }
         

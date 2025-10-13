@@ -6,6 +6,13 @@
 #include <sys/stat.h>
 #include <stdbool.h>
 
+/* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ss UTC] */
+void get_utc_time_str(char *buffer, size_t buffer_size) {
+    time_t now = time(NULL);
+    struct tm *utc_time = gmtime(&now);
+    strftime(buffer, buffer_size, "[%Y-%m-%d %H:%M:%S UTC]", utc_time);
+}
+
 /* Global variables */
 FILE *log_file = NULL;
 Recipient *recipients = NULL;
@@ -247,6 +254,7 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     if (new_alert->expire_at <= now) return;
     char *pubkey_hash_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     if (!pubkey_hash_b64) return;
+
     for (int i = 0; i < max_clients; i++) {
         if (subscribers[i].sock > 0 && subscribers[i].mode != 0) {
             if (subscribers[i].pubkey_hash[0] != '\0' && strcmp(subscribers[i].pubkey_hash, pubkey_hash_b64) != 0) continue;
@@ -264,8 +272,7 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                 char *base64_tag = base64_encode(new_alert->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    // Вычисляем длину
-                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;  // Запас
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
                     char *response = malloc(needed_len);
                     if (!response) {
                         free(base64_text);
@@ -283,8 +290,25 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                     free(base64_tag);
                     if (len > 0 && (size_t)len < needed_len) {
                         uint32_t len_net = htonl(len);
-                        send(subscribers[i].sock, &len_net, sizeof(uint32_t), 0);
-                        send(subscribers[i].sock, response, len, 0);
+                        if (send(subscribers[i].sock, &len_net, sizeof(uint32_t), 0) != sizeof(uint32_t) ||
+                            send(subscribers[i].sock, response, len, 0) != len) {
+                            if (verbose) {
+                                char time_str[32];
+                                get_utc_time_str(time_str, sizeof(time_str));
+                                fprintf(log_file, "%s Failed to send ALERT to socket %d: %s\n", time_str, subscribers[i].sock, strerror(errno));
+                                fflush(log_file);
+                            }
+                            close(subscribers[i].sock);
+                            client_sockets[i] = 0;
+                            subscribers[i].sock = 0;
+                            subscribers[i].mode = 0;
+                            subscribers[i].pubkey_hash[0] = '\0';
+                        } else if (verbose) {
+                            char time_str[32];
+                            get_utc_time_str(time_str, sizeof(time_str));
+                            fprintf(log_file, "%s Sent ALERT to socket %d\n", time_str, subscribers[i].sock);
+                            fflush(log_file);
+                        }
                     }
                     free(response);
                 }
