@@ -4,23 +4,23 @@ CFLAGS = -g -Wall -Icommon
 LDFLAGS = -lssl -lcrypto
 
 # Source files
-GARGONA_SRC = client/gargona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c
-GARGONAD_SRC = server/gargonad.c server/gargona_utils.c server/server_handler.c common/encrypt.c
+gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c
+gorgonaD_SRC = server/gorgonad.c server/gorgona_utils.c server/server_handler.c common/encrypt.c
 
 # Object files
-GARGONA_OBJ = $(GARGONA_SRC:.c=.o)
-GARGONAD_OBJ = $(GARGONAD_SRC:.c=.o)
+gorgona_OBJ = $(gorgona_SRC:.c=.o)
+gorgonaD_OBJ = $(gorgonaD_SRC:.c=.o)
 
 # Targets
-all: gargona gargonad
+all: gorgona gorgonad
 
-# Build gargona
-gargona: $(GARGONA_OBJ)
-	$(CC) $(GARGONA_OBJ) -o gargona $(LDFLAGS)
+# Build gorgona
+gorgona: $(gorgona_OBJ)
+	$(CC) $(gorgona_OBJ) -o gorgona $(LDFLAGS)
 
-# Build gargonad
-gargonad: $(GARGONAD_OBJ)
-	$(CC) $(GARGONAD_OBJ) -o gargonad $(LDFLAGS)
+# Build gorgonad
+gorgonad: $(gorgonaD_OBJ)
+	$(CC) $(gorgonaD_OBJ) -o gorgonad $(LDFLAGS)
 
 # Compile source files to object files
 %.o: %.c
@@ -28,7 +28,7 @@ gargonad: $(GARGONAD_OBJ)
 
 # Clean up
 clean:
-	rm -f $(GARGONA_OBJ) $(GARGONAD_OBJ) gargona gargonad
+	rm -f $(gorgona_OBJ) $(gorgonaD_OBJ) gorgona gorgonad
 
 # Rebuild everything
 rebuild: clean all
