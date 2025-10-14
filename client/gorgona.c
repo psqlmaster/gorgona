@@ -18,14 +18,14 @@ void print_help(const char *program_name) {
     printf("\nFlags:\n");
     printf(" -v, --verbose  Enables verbose output for debugging\n");
     printf(" -e, --exec     For 'listen' command: execute messages as system commands (requires pubkey_hash_b64). "
-           "If [exec_commands] in /etc/gargona/gargona.conf is empty, all decrypted messages are executed. "
+           "If [exec_commands] in /etc/gorgona/gorgona.conf is empty, all decrypted messages are executed. "
            "If [exec_commands] contains entries (e.g., 'greengage start = /path/to/script.sh'), only messages "
            "matching a key are executed by running the corresponding script.\n");
     printf(" -h, --help     Displays this help message\n");
     printf(" Note: Flags -v and -e can be combined (e.g., -ve) for verbose output during command execution.\n");
     printf("\nCommands:\n");
     printf(" genkeys\n");
-    printf(" Generates an RSA key pair in /etc/gargona/ (Example: sudo %s genkeys)\n", program_name);
+    printf(" Generates an RSA key pair in /etc/gorgona/ (Example: sudo %s genkeys)\n", program_name);
     printf("\n");
     printf(" send <unlock_time> <expire_time> <message> <public_key_file>\n");
     printf(" Sends an encrypted message\n");
@@ -42,13 +42,13 @@ void print_help(const char *program_name) {
     printf(" new    - only new messages received after connection, optionally filtered by pubkey_hash_b64\n");
     printf(" If pubkey_hash_b64 is provided, filters by it (mandatory for single and last modes)\n");
     printf("\nConfiguration:\n");
-    printf(" The file /etc/gargona/gargona.conf contains server settings and optional execution mappings.\n");
+    printf(" The file /etc/gorgona/gorgona.conf contains server settings and optional execution mappings.\n");
     printf(" Format:\n");
     printf(" [server]\n");
     printf(" ip = <IP_address> (example: 64.188.70.158)\n");
     printf(" port = <port> (example: 7777)\n");
     printf(" [exec_commands]\n");
-    printf(" <key> = <script_path> (example: app start = /home/su/repository/c/gargona/test/lsblk.sh)\n");
+    printf(" <key> = <script_path> (example: app start = /home/su/repository/c/gorgona/test/lsblk.sh)\n");
     printf("\nExamples:\n");
     printf(" %s listen single RWTPQzuhzBw=\n", program_name);
     printf(" %s listen last RWTPQzuhzBw= # Gets the last 1 message\n", program_name);
@@ -56,7 +56,7 @@ void print_help(const char *program_name) {
     printf(" %s listen new RWTPQzuhzBw= # Listens for new messages only\n", program_name);
     printf(" %s -e listen new RWTPQzuhzBw= # Listens for new messages and executes them as commands\n", program_name);
     printf(" %s -ve listen new RWTPQzuhzBw= # Listens for new messages, executes them, and shows verbose output\n", program_name);
-    printf(" %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"app start\" \"RWTPQzuhzBw=.pub\" # Executes /home/su/repository/c/gargona/test/lsblk.sh if configured\n", program_name);
+    printf(" %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"app start\" \"RWTPQzuhzBw=.pub\" # Executes /home/su/repository/c/gorgona/test/lsblk.sh if configured\n", program_name);
     printf(" cat message.txt | %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"\n", program_name);
 }
 

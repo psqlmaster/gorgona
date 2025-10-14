@@ -49,14 +49,14 @@ void trim_string(char *str) {
     }
 }
 
-/* Reads configuration from gargonad.conf */
+/* Reads configuration from gorgonad.conf */
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size) {
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 
-    FILE *conf_fp = fopen("/etc/gargona/gargonad.conf", "r");
+    FILE *conf_fp = fopen("/etc/gorgona/gorgonad.conf", "r");
     if (!conf_fp) {
         return;
     }
@@ -482,12 +482,12 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
 /* Helper: Rotate log if too large */
 void rotate_log() {
     struct stat st;
-    if (stat("gargona.log", &st) == 0 && st.st_size > MAX_LOG_SIZE) {
+    if (stat("gorgona.log", &st) == 0 && st.st_size > MAX_LOG_SIZE) {
         if (log_file) fclose(log_file);
-        rename("gargona.log", "gargona.log.1");
-        log_file = fopen("gargona.log", "a");
+        rename("gorgona.log", "gorgona.log.1");
+        log_file = fopen("gorgona.log", "a");
         if (!log_file) {
-            perror("Failed to open new gargona.log after rotation");
+            perror("Failed to open new gorgona.log after rotation");
         } else {
             fprintf(log_file, "[%ld] Log rotated\n", (long)time(NULL));
         }

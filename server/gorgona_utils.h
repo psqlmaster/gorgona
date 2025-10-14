@@ -1,5 +1,5 @@
-#ifndef GARGONA_UTILS_H
-#define GARGONA_UTILS_H
+#ifndef GORGONA_UTILS_H
+#define GORGONA_UTILS_H
 
 #include "encrypt.h"
 #include <stdio.h>

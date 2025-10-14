@@ -84,7 +84,7 @@ int send_alert(int argc, char *argv[], int verbose) {
 
     /* Read recipient's public key */
     char full_pubkey_file[256];
-    snprintf(full_pubkey_file, sizeof(full_pubkey_file), "/etc/gargona/%s", pubkey_file);
+    snprintf(full_pubkey_file, sizeof(full_pubkey_file), "/etc/gorgona/%s", pubkey_file);
     FILE *pub_fp = fopen(full_pubkey_file, "rb");
     if (!pub_fp) {
         fprintf(stderr, "Failed to open public key file: %s\n", full_pubkey_file);

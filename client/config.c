@@ -8,9 +8,9 @@ void read_config(Config *config, int verbose) {
     config->server_port = DEFAULT_SERVER_PORT;
     config->exec_count = 0;
 
-    FILE *conf_fp = fopen("/etc/gargona/gargona.conf", "r");
+    FILE *conf_fp = fopen("/etc/gorgona/gorgona.conf", "r");
     if (!conf_fp) {
-        if (verbose) fprintf(stderr, "Warning: Failed to open config file /etc/gargona/gargona.conf\n");
+        if (verbose) fprintf(stderr, "Warning: Failed to open config file /etc/gorgona/gorgona.conf\n");
         return;
     }
 

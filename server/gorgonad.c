@@ -37,16 +37,16 @@ void shutdown_handler(int sig) {
 }
 
 void print_server_help(const char *program_name) {
-    printf("Gargona Server\n");
+    printf("gorgona Server\n");
     printf("Usage: %s [-h|--help] [-v|--verbose]\n", program_name);
     printf("\nDescription:\n");
-    printf(" The Gargona server handles encrypted alerts, allowing clients to send and subscribe to messages.\n");
+    printf(" The gorgona server handles encrypted alerts, allowing clients to send and subscribe to messages.\n");
     printf(" It listens for TCP connections and processes commands: SEND, LISTEN, SUBSCRIBE.\n");
     printf("\nFlags:\n");
     printf(" -h, --help Displays this help message\n");
     printf(" -v, --verbose Enables verbose output (e.g., received messages in console)\n");
     printf("\nConfiguration:\n");
-    printf(" The file /etc/gargona/gargonad.conf contains server settings.\n");
+    printf(" The file /etc/gorgona/gorgonad.conf contains server settings.\n");
     printf(" Format:\n");
     printf(" [server]\n");
     printf(" port = <port> (default: 5555, example: 7777)\n");
@@ -54,14 +54,14 @@ void print_server_help(const char *program_name) {
     printf(" MAX_CLIENTS = <number> (default: 100, example: 100)\n");
     printf(" max_message_size = <bytes> (default: 5242880 for 5 MB, example: 10485760 for 10 MB)\n");
     printf("\nLogging:\n");
-    printf(" Logs are written to ./gargonad.log. The log rotates when it exceeds %d bytes (10 MB).\n", MAX_LOG_SIZE);
+    printf(" Logs are written to ./gorgonad.log. The log rotates when it exceeds %d bytes (10 MB).\n", MAX_LOG_SIZE);
     printf("\nLimits:\n");
     printf(" - Maximum simultaneous clients: MAX_CLIENTS (default: 100 or from config).\n");
     printf(" - Maximum alerts per recipient: MAX_ALERTS (default: 1024 or from config).\n");
     printf(" - Recipient capacity expands dynamically starting from %d.\n", INITIAL_RECIPIENT_CAPACITY);
     printf("\nExample:\n");
     printf(" %s\n", program_name);
-    printf(" Starts the server using settings from ./gargonad.conf or defaults.\n");
+    printf(" Starts the server using settings from ./gorgonad.conf or defaults.\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -110,9 +110,9 @@ int main(int argc, char *argv[]) {
 
     /* Initialize logging */
     if (log_file == NULL) {
-        log_file = fopen("gargonad.log", "a");
+        log_file = fopen("gorgonad.log", "a");
         if (!log_file) {
-            perror("Failed to open gargonad.log");
+            perror("Failed to open gorgonad.log");
             exit(EXIT_FAILURE);
         } else {
             rotate_log();
