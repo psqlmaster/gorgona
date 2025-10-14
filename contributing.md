@@ -1,8 +1,8 @@
-# Contributing to Gargona
+# Contributing to gorgona
 
-[Русская версия](#вклад-в-gargona) | English Version
+[Русская версия](#вклад-в-gorgona) | English Version
 
-Thank you for your interest in contributing to **Gargona**, an encrypted time-locked messaging system! We welcome contributions from the community to improve security, performance, documentation, and usability. This guide outlines how you can contribute, from submitting bug reports to proposing new features.
+Thank you for your interest in contributing to **gorgona**, an encrypted time-locked messaging system! We welcome contributions from the community to improve security, performance, documentation, and usability. This guide outlines how you can contribute, from submitting bug reports to proposing new features.
 
 ## Table of Contents
 
@@ -27,13 +27,13 @@ By participating in this project, you agree to abide by the [Contributor Covenan
 
 If you find a bug, please report it via GitHub Issues:
 
-1. Check if the issue already exists in the [issue tracker](https://github.com/psqlmaster/gargona/issues).
+1. Check if the issue already exists in the [issue tracker](https://github.com/psqlmaster/gorgona/issues).
 2. Create a new issue with a clear title (e.g., "Server crashes on invalid SEND command").
 3. Include:
    - Steps to reproduce the bug.
    - Expected and actual behavior.
    - Environment details (OS, OpenSSL version, compiler).
-   - Relevant logs (e.g., from `gargonad.log`).
+   - Relevant logs (e.g., from `gorgonad.log`).
 4. Use the provided issue template if available.
 
 ### Suggesting Features
@@ -60,8 +60,8 @@ To set up the development environment:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/psqlmaster/gargona.git
-   cd gargona
+   git clone https://github.com/psqlmaster/gorgona.git
+   cd gorgona
    ```
 2. Install dependencies (OpenSSL required):
    - Debian/Ubuntu: `sudo apt install libssl-dev`
@@ -74,8 +74,8 @@ To set up the development environment:
    ```
 4. Test your setup by running:
    ```bash
-   ./gargonad -h
-   ./gargona genkeys
+   ./gorgonad -h
+   ./gorgona genkeys
    ```
 
 ## Coding Guidelines
@@ -86,9 +86,9 @@ To maintain code quality and consistency:
 - **Style**: Follow the [Linux Kernel Coding Style](https://www.kernel.org/doc/html/latest/process/coding-style.html) (tabs, 80-column limit, clear function names).
   - Run `clang-format` with the provided `.clang-format` file (if available) or use `indent -kr`.
 - **Comments**: Use `/* */` for comments, in English, with clear explanations (e.g., `/* Parse SEND command, validate format */`).
-- **Error Handling**: Always check return values (e.g., `fopen`, `malloc`) and log errors to `gargona.log`.
+- **Error Handling**: Always check return values (e.g., `fopen`, `malloc`) and log errors to `gorgona.log`.
 - **Security**: Avoid buffer overflows, use `strncpy` over `strcpy`, and validate all inputs.
-- **Logging**: Use UTC timestamps (`[YYYY-MM-DDThh:mm:ssZ]`) via `get_utc_time_str` in `gargonad.c`.
+- **Logging**: Use UTC timestamps (`[YYYY-MM-DDThh:mm:ssZ]`) via `get_utc_time_str` in `gorgonad.c`.
 
 Example:
 ```c
@@ -112,13 +112,13 @@ We aim for robust code with high test coverage:
    make test
    ```
 3. Test manually:
-   - Generate keys: `./gargona genkeys`
-   - Send a message: `./gargona send "2025-10-03 12:00:00" "2026-10-03 12:00:00" "Test" "hash.pub"`
-   - Listen: `./gargona listen single hash`
-   - Check logs: `tail -f gargona.log`
+   - Generate keys: `./gorgona genkeys`
+   - Send a message: `./gorgona send "2025-10-03 12:00:00" "2026-10-03 12:00:00" "Test" "hash.pub"`
+   - Listen: `./gorgona listen single hash`
+   - Check logs: `tail -f gorgona.log`
 4. Ensure no memory leaks (use `valgrind`):
    ```bash
-   valgrind --leak-check=full ./gargonad
+   valgrind --leak-check=full ./gorgonad
    ```
 
 ## Pull Request Process
@@ -135,17 +135,17 @@ We aim for robust code with high test coverage:
 For questions or discussions:
 - Open an issue on GitHub.
 - Reach out to the maintainer: [psqlmaster](https://github.com/psqlmaster).
-- Join discussions in the [Issues](https://github.com/psqlmaster/gargona/issues) section.
+- Join discussions in the [Issues](https://github.com/psqlmaster/gorgona/issues) section.
 
-Thank you for contributing to Gargona’s mission of secure, time-locked messaging!
+Thank you for contributing to gorgona’s mission of secure, time-locked messaging!
 
 ---
 
-# Вклад в Gargona
+# Вклад в gorgona
 
-[English Version](#contributing-to-gargona) | Русская версия
+[English Version](#contributing-to-gorgona) | Русская версия
 
-Спасибо за ваш интерес к проекту **Gargona**, системе зашифрованного алертинга с временной блокировкой! Мы приветствуем вклад сообщества в улучшение безопасности, производительности, документации и удобства использования. Это руководство описывает, как вы можете внести свой вклад: от сообщений об ошибках до предложений новых функций.
+Спасибо за ваш интерес к проекту **gorgona**, системе зашифрованного алертинга с временной блокировкой! Мы приветствуем вклад сообщества в улучшение безопасности, производительности, документации и удобства использования. Это руководство описывает, как вы можете внести свой вклад: от сообщений об ошибках до предложений новых функций.
 
 ## Содержание
 
@@ -170,13 +170,13 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
 
 Если вы нашли ошибку, сообщите о ней через GitHub Issues:
 
-1. Проверьте, нет ли уже такого вопроса в [трекере](https://github.com/psqlmaster/gargona/issues).
+1. Проверьте, нет ли уже такого вопроса в [трекере](https://github.com/psqlmaster/gorgona/issues).
 2. Создайте новый issue с понятным заголовком (например, «Сервер падает при неверной команде SEND»).
 3. Укажите:
    - Шаги для воспроизведения ошибки.
    - Ожидаемое и фактическое поведение.
    - Детали окружения (ОС, версия OpenSSL, компилятор).
-   - Соответствующие логи (например, из `gargonad.log`).
+   - Соответствующие логи (например, из `gorgonad.log`).
 4. Используйте шаблон issue, если он доступен.
 
 ### Предложение функций
@@ -201,8 +201,8 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/psqlmaster/gargona.git
-   cd gargona
+   git clone https://github.com/psqlmaster/gorgona.git
+   cd gorgona
    ```
 2. Установите зависимости (требуется OpenSSL):
    - Debian/Ubuntu: `sudo apt install libssl-dev`
@@ -215,8 +215,8 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
    ```
 4. Проверьте настройку, запустив:
    ```bash
-   ./gargonad -h
-   ./gargona genkeys
+   ./gorgonad -h
+   ./gorgona genkeys
    ```
 
 ## Правила оформления кода
@@ -227,9 +227,9 @@ Thank you for contributing to Gargona’s mission of secure, time-locked messagi
 - **Стиль**: Следуйте [стилю кодирования ядра Linux](https://www.kernel.org/doc/html/latest/process/coding-style.html) (табы, лимит 80 символов, понятные имена функций).
   - Используйте `clang-format` с файлом `.clang-format` (если есть) или `indent -kr`.
 - **Комментарии**: Используйте `/* */` на английском с ясными пояснениями (например, `/* Парсинг команды SEND, проверка формата */`).
-- **Обработка ошибок**: Проверяйте возвращаемые значения (например, `fopen`, `malloc`) и логируйте ошибки в `gargona.log`.
+- **Обработка ошибок**: Проверяйте возвращаемые значения (например, `fopen`, `malloc`) и логируйте ошибки в `gorgona.log`.
 - **Безопасность**: Избегайте переполнений буфера, используйте `strncpy` вместо `strcpy`, валидируйте все входные данные.
-- **Логирование**: Используйте UTC-метки времени (`[ГГГГ-ММ-ДДTчч:мм:ссZ]`) через `get_utc_time_str` в `gargonad.c`.
+- **Логирование**: Используйте UTC-метки времени (`[ГГГГ-ММ-ДДTчч:мм:ссZ]`) через `get_utc_time_str` в `gorgonad.c`.
 
 Пример:
 ```c
@@ -253,13 +253,13 @@ if (strncmp(buffer, "SEND|", 5) != 0) {
    make test
    ```
 3. Тестируйте вручную:
-   - Генерация ключей: `./gargona genkeys`
-   - Отправка сообщения: `./gargona send "2025-10-03 12:00:00" "2026-10-03 12:00:00" "Тест" "hash.pub"`
-   - Прослушивание: `./gargona listen single hash`
-   - Проверка логов: `tail -f gargona.log`
+   - Генерация ключей: `./gorgona genkeys`
+   - Отправка сообщения: `./gorgona send "2025-10-03 12:00:00" "2026-10-03 12:00:00" "Тест" "hash.pub"`
+   - Прослушивание: `./gorgona listen single hash`
+   - Проверка логов: `tail -f gorgona.log`
 4. Проверяйте утечки памяти с помощью `valgrind`:
    ```bash
-   valgrind --leak-check=full ./gargonad
+   valgrind --leak-check=full ./gorgonad
    ```
 
 ## Процесс Pull Request
@@ -276,6 +276,6 @@ if (strncmp(buffer, "SEND|", 5) != 0) {
 Для вопросов или обсуждений:
 - Откройте issue на GitHub.
 - Свяжитесь с мейнтейнером: [psqlmaster](https://github.com/psqlmaster).
-- Присоединяйтесь к обсуждениям в разделе [Issues](https://github.com/psqlmaster/gargona/issues).
+- Присоединяйтесь к обсуждениям в разделе [Issues](https://github.com/psqlmaster/gorgona/issues).
 
-Спасибо за ваш вклад в миссию Gargona — безопасный обмен сообщениями с временной блокировкой!
+Спасибо за ваш вклад в миссию gorgona — безопасный обмен сообщениями с временной блокировкой!
