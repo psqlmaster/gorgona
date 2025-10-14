@@ -63,12 +63,12 @@ sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gargona/ && \
 
 ## Install Client
 ```bash
-sudo dpkg -i ./gargona_1.7.0_amd64.deb
+sudo dpkg -i ./gargona_1.8.3_amd64.deb
 ```
 
 ## Install Server
 ```bash
-sudo dpkg -i ./gargonad_1.7.0_amd64.deb
+sudo dpkg -i ./gargonad_1.8.3_amd64.deb
 ```
 
 ### Usage
