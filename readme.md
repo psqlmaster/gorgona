@@ -329,6 +329,6 @@ sudo systemctl start gargona
 gargona listen new RWTPQzuhzBw=
 # in new terminal, only mkdir
 gargona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "mkdir testdir" "RWTPQzuhzBw=.pub"
-# mkdiк & output message
+# mkdir & output message
 gargona listen new RWTPQzuhzBw= & pid=$!; gargona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" "mkdir testdir" "RWTPQzuhzBw=.pub"; sleep 2; kill $pid
 ```
