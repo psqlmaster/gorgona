@@ -17,7 +17,7 @@
 #define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
 #define MAX_LOG_SIZE (10 * 1024 * 1024) // 10 MB
-#define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) // 5 MB по умолчанию
+#define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) // 5 MB by default
 
 /* Structure for storing an alert */
 typedef struct {
@@ -37,7 +37,7 @@ typedef struct {
 /* Structure for alerts by recipient */
 typedef struct {
     unsigned char hash[PUBKEY_HASH_LEN];
-    Alert *alerts; // Динамический массив
+    Alert *alerts; // Dynamic array
     int count;
     int capacity;
 } Recipient;
@@ -60,7 +60,7 @@ extern Subscriber subscribers[MAX_CLIENTS];
 extern int max_alerts;
 extern int max_clients;
 extern size_t max_message_size;
-extern int verbose; // Добавляем объявление verbose
+extern int verbose; // Declare verbose
 
 /* Function declarations */
 int is_http_request(const char *buffer);
@@ -72,13 +72,13 @@ Recipient *find_recipient(const unsigned char *hash);
 Recipient *add_recipient(const unsigned char *hash);
 void clean_expired_alerts(Recipient *rec);
 void remove_oldest_alert(Recipient *rec);
-void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock_at, time_t expire_at,
+void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd);
 int alert_cmp(const void *a, const void *b);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
 void send_current_alerts(int sd, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
-void get_utc_time_str(char *buffer, size_t buffer_size); // Добавляем прототип
+void get_utc_time_str(char *buffer, size_t buffer_size); // Add prototype
 void run_server(int server_fd);
 
 #endif

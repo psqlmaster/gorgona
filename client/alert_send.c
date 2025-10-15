@@ -9,15 +9,40 @@
 #include <unistd.h>
 #include <stdint.h>
 
-/* Parses date and time in format "YYYY-MM-DD HH:MM:SS" */
+/* Parses date and time in format "YYYY-MM-DD HH:MM:SS"
+   Interprets the supplied datetime string as UTC (not localtime). */
 time_t parse_datetime(const char *datetime) {
     struct tm tm = {0};
     if (strptime(datetime, "%Y-%m-%d %H:%M:%S", &tm) == NULL) {
         fprintf(stderr, "Error: Invalid time format: %s\n", datetime);
         return -1;
     }
-    return mktime(&tm);
+    tm.tm_isdst = -1; /* don't try to guess DST */
+
+#if defined(_GNU_SOURCE) || defined(__USE_MISC) || defined(_BSD_SOURCE) || defined(__APPLE__)
+    /* timegm converts tm interpreted as UTC into time_t */
+    return timegm(&tm);
+#else
+    /* Portable fallback: temporarily force TZ=UTC, call mktime, then restore */
+    char *old_tz = getenv("TZ");
+    if (old_tz) old_tz = strdup(old_tz);
+
+    setenv("TZ", "UTC", 1);
+    tzset();
+
+    time_t t = mktime(&tm);
+
+    if (old_tz) {
+        setenv("TZ", old_tz, 1);
+        free(old_tz);
+    } else {
+        unsetenv("TZ");
+    }
+    tzset();
+    return t;
+#endif
 }
+
 
 /* Reads input from stdin into a dynamically allocated buffer */
 char *read_from_stdin(size_t *out_len) {
@@ -134,8 +159,7 @@ int send_alert(int argc, char *argv[], int verbose) {
 
     /* Check data sizes */
     if (tag_len != GCM_TAG_LEN || iv_len != 12) {
-        fprintf(stderr, "Invalid data sizes: tag_len=%zu (expected %d), iv_len=%zu (expected 12)\n", 
-                tag_len, GCM_TAG_LEN, iv_len);
+        fprintf(stderr, "Invalid encryption data sizes\n");
         free(pubkey_hash);
         free(pubkey_hash_b64);
         free(encrypted);
@@ -146,13 +170,13 @@ int send_alert(int argc, char *argv[], int verbose) {
         return 1;
     }
 
-    /* Encode data to base64 */
+    /* Encode to base64 */
     char *encrypted_b64 = base64_encode(encrypted, encrypted_len);
     char *encrypted_key_b64 = base64_encode(encrypted_key, encrypted_key_len);
     char *iv_b64 = base64_encode(iv, iv_len);
     char *tag_b64 = base64_encode(tag, tag_len);
     if (!encrypted_b64 || !encrypted_key_b64 || !iv_b64 || !tag_b64) {
-        fprintf(stderr, "Failed to encode data to base64\n");
+        fprintf(stderr, "Failed to encode encrypted data to base64\n");
         free(pubkey_hash);
         free(pubkey_hash_b64);
         free(encrypted);
@@ -167,49 +191,32 @@ int send_alert(int argc, char *argv[], int verbose) {
         return 1;
     }
 
-    /* Load config */
     Config config;
     read_config(&config, verbose);
 
-    /* Create socket */
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("Socket creation error");
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
-
-    struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
-    if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
-        perror("Invalid address");
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
-
     /* Connect to server */
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection failed");
+    int sock = 0;
+    struct sockaddr_in serv_addr;
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        fprintf(stderr, "Socket creation error\n");
+        free(pubkey_hash);
+        free(pubkey_hash_b64);
+        free(encrypted);
+        free(encrypted_key);
+        free(iv);
+        free(tag);
+        free(encrypted_b64);
+        free(encrypted_key_b64);
+        free(iv_b64);
+        free(tag_b64);
+        free(message);
+        return 1;
+    }
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(config.server_port);
+    if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
+        fprintf(stderr, "Invalid address/ Address not supported\n");
         close(sock);
         free(pubkey_hash);
         free(pubkey_hash_b64);
@@ -225,10 +232,25 @@ int send_alert(int argc, char *argv[], int verbose) {
         return 1;
     }
 
-    /* Form message to server */
-    time_t create_at = time(NULL);
-    // Calculate required buffer length
-    size_t needed_len = strlen("SEND|") + strlen(pubkey_hash_b64) + 3*20 + strlen(encrypted_b64) + strlen(encrypted_key_b64) + strlen(iv_b64) + strlen(tag_b64) + 8;  // + for | and margin
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        fprintf(stderr, "Connection failed\n");
+        close(sock);
+        free(pubkey_hash);
+        free(pubkey_hash_b64);
+        free(encrypted);
+        free(encrypted_key);
+        free(iv);
+        free(tag);
+        free(encrypted_b64);
+        free(encrypted_key_b64);
+        free(iv_b64);
+        free(tag_b64);
+        free(message);
+        return 1;
+    }
+
+    /* Format message */
+    size_t needed_len = strlen("SEND|") + strlen(pubkey_hash_b64) + 2*20 + strlen(encrypted_b64) + strlen(encrypted_key_b64) + strlen(iv_b64) + strlen(tag_b64) + 8;
     char *buffer = malloc(needed_len + 1);
     if (!buffer) {
         fprintf(stderr, "Error: Failed to allocate memory for message\n");
@@ -246,8 +268,8 @@ int send_alert(int argc, char *argv[], int verbose) {
         free(message);
         return 1;
     }
-    int len = snprintf(buffer, needed_len + 1, "SEND|%s|%ld|%ld|%ld|%s|%s|%s|%s",
-             pubkey_hash_b64, create_at, unlock_at, expire_at,
+    int len = snprintf(buffer, needed_len + 1, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+             pubkey_hash_b64, unlock_at, expire_at,
              encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
     if (len < 0 || (size_t)len > needed_len) {
         fprintf(stderr, "Error: Failed to format message\n");
@@ -394,3 +416,4 @@ int send_alert(int argc, char *argv[], int verbose) {
     free(message);
     return 0;
 }
+

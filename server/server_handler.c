@@ -175,12 +175,12 @@ void run_server(int server_fd) {
                         subscribers[i].sock = 0;
                         subscribers[i].mode = 0;
                         subscribers[i].pubkey_hash[0] = '\0';
-                        break;  // Fixed: break instead of continue to exit while loop
+                        break;
                     }
                     total_read += valread;
                 }
                 if (read_error) {
-                    continue;  // Skip processing for this client
+                    continue;
                 }
                 buffer[msg_len] = '\0';
 
@@ -225,7 +225,6 @@ void run_server(int server_fd) {
                         continue;
                     }
                     char *pubkey_hash_b64 = strtok(rest, "|");
-                    char *create_at_str = strtok(NULL, "|");
                     char *unlock_at_str = strtok(NULL, "|");
                     char *expire_at_str = strtok(NULL, "|");
                     char *base64_text = strtok(NULL, "|");
@@ -233,7 +232,7 @@ void run_server(int server_fd) {
                     char *base64_iv = strtok(NULL, "|");
                     char *base64_tag = strtok(NULL, "|");
 
-                    if (!pubkey_hash_b64 || !create_at_str || !unlock_at_str || !expire_at_str || !base64_text || !base64_encrypted_key || !base64_iv || !base64_tag) {
+                    if (!pubkey_hash_b64 || !unlock_at_str || !expire_at_str || !base64_text || !base64_encrypted_key || !base64_iv || !base64_tag) {
                         char *error_msg = "Error: Incomplete data in SEND";
                         uint32_t error_len_net = htonl(strlen(error_msg));
                         send(sd, &error_len_net, sizeof(uint32_t), 0);
@@ -285,11 +284,10 @@ void run_server(int server_fd) {
                         continue;
                     }
 
-                    time_t create_at = atol(create_at_str);
                     time_t unlock_at = atol(unlock_at_str);
                     time_t expire_at = atol(expire_at_str);
 
-                    add_alert(pubkey_hash, create_at, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
+                    add_alert(pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
 
                     char *success_msg = "Alert added successfully";
                     uint32_t success_len_net = htonl(strlen(success_msg));
@@ -315,7 +313,7 @@ void run_server(int server_fd) {
                     }
                     char *pubkey_hash_b64 = strtok(rest, "|");
                     char *mode_str = strtok(NULL, "|");
-                    char *count_str = strtok(NULL, "|");  /* New: third token for count */
+                    char *count_str = strtok(NULL, "|");
                     trim_string(pubkey_hash_b64);
                     if (strlen(pubkey_hash_b64) == 0) {
                         char *error_msg = "Error: Empty pubkey hash in LISTEN";
@@ -334,7 +332,7 @@ void run_server(int server_fd) {
                         client_sockets[i] = 0;
                         continue;
                     }
-                    int sub_mode = MODE_SINGLE;  /* Default to single */
+                    int sub_mode = MODE_SINGLE;
                     if (mode_str) {
                         trim_string(mode_str);
                         char upper_mode[16];
@@ -343,7 +341,7 @@ void run_server(int server_fd) {
                         for (char *p = upper_mode; *p; p++) *p = toupper(*p);
                         if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
                     }
-                    int count = 1;  /* Default count */
+                    int count = 1;
                     if (count_str) {
                         trim_string(count_str);
                         char *endptr;
@@ -368,7 +366,7 @@ void run_server(int server_fd) {
                             break;
                         }
                     }
-                    send_current_alerts(sd, sub_mode, pubkey_hash_b64, count);  /* Pass count */
+                    send_current_alerts(sd, sub_mode, pubkey_hash_b64, count);
                     char sub_msg[256];
                     int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s for %s", (sub_mode == MODE_LAST ? "LAST" : "SINGLE"), pubkey_hash_b64);
                     uint32_t sub_len_net = htonl(sub_len);
@@ -376,7 +374,6 @@ void run_server(int server_fd) {
                     send(sd, sub_msg, sub_len, 0);
                     free(rest);
                     if (sub_mode == MODE_LAST) {
-                        /* Close connection for last mode after sending */
                         close(sd);
                         client_sockets[i] = 0;
                         subscribers[i].sock = 0;
@@ -456,9 +453,9 @@ void run_server(int server_fd) {
                             break;
                         }
                     }
-                    if (sub_mode != MODE_NEW) {  // Added: skip sending current alerts for 'new' mode
-                         send_current_alerts(sd, sub_mode, pubkey_hash_b64, 1);  /* Use default count for SUBSCRIBE */
-                    } 
+                    if (sub_mode != MODE_NEW) {
+                        send_current_alerts(sd, sub_mode, pubkey_hash_b64, 1);
+                    }
                     char sub_msg[256];
                     int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s%s", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
                     uint32_t sub_len_net = htonl(sub_len);
@@ -466,7 +463,6 @@ void run_server(int server_fd) {
                     send(sd, sub_msg, sub_len, 0);
                     free(rest);
                     if (sub_mode == MODE_LAST) {
-                        /* Close connection for last mode after sending */
                         close(sd);
                         client_sockets[i] = 0;
                         subscribers[i].sock = 0;

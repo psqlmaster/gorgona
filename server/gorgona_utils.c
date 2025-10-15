@@ -22,7 +22,7 @@ int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
 int max_alerts = DEFAULT_MAX_ALERTS;
 int max_clients = MAX_CLIENTS;
-size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;  // Новый глобальный параметр
+size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 
 /* Function to check for HTTP request */
 int is_http_request(const char *buffer) {
@@ -76,7 +76,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_messa
                 *max_alerts = atoi(value);
             } else if (strcmp(key, "MAX_CLIENTS") == 0) {
                 *max_clients = atoi(value);
-            } else if (strcmp(key, "max_message_size") == 0) {  // Новый параметр
+            } else if (strcmp(key, "max_message_size") == 0) {
                 *max_message_size = atol(value);
             }
         }
@@ -117,7 +117,7 @@ Recipient *add_recipient(const unsigned char *hash) {
         recipient_capacity += INITIAL_RECIPIENT_CAPACITY;
         recipients = realloc(recipients, sizeof(Recipient) * recipient_capacity);
         if (!recipients) {
-            perror("Не удалось выделить память для recipients");
+            perror("Failed to allocate memory for recipients");
             exit(1);
         }
     }
@@ -127,7 +127,7 @@ Recipient *add_recipient(const unsigned char *hash) {
     rec->capacity = max_alerts;
     rec->alerts = malloc(sizeof(Alert) * rec->capacity);
     if (!rec->alerts) {
-        perror("Не удалось выделить память для alerts");
+        perror("Failed to allocate memory for alerts");
         exit(1);
     }
     recipient_count++;
@@ -165,7 +165,7 @@ void remove_oldest_alert(Recipient *rec) {
 }
 
 /* Adds a new alert for a recipient */
-void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock_at, time_t expire_at,
+void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd) {
     trim_string(base64_text);
     trim_string(base64_encrypted_key);
@@ -184,7 +184,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     }
 
     if (rec->count >= max_alerts) {
-        char *error_msg = "Ошибка: Не удалось добавить алерт, лимит достигнут даже после очистки";
+        char *error_msg = "Error: Failed to add alert, limit reached even after cleanup";
         uint32_t error_len_net = htonl(strlen(error_msg));
         send(client_fd, &error_len_net, sizeof(uint32_t), 0);
         send(client_fd, error_msg, strlen(error_msg), 0);
@@ -194,7 +194,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     Alert *alert = &rec->alerts[rec->count];
     alert->text = base64_decode(base64_text, &alert->text_len);
     if (!alert->text) {
-        char *error_msg = "Ошибка: Не удалось декодировать base64_text";
+        char *error_msg = "Error: Failed to decode base64_text";
         uint32_t error_len_net = htonl(strlen(error_msg));
         send(client_fd, &error_len_net, sizeof(uint32_t), 0);
         send(client_fd, error_msg, strlen(error_msg), 0);
@@ -202,7 +202,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     }
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     if (!alert->encrypted_key) {
-        char *error_msg = "Ошибка: Не удалось декодировать base64_encrypted_key";
+        char *error_msg = "Error: Failed to decode base64_encrypted_key";
         uint32_t error_len_net = htonl(strlen(error_msg));
         send(client_fd, &error_len_net, sizeof(uint32_t), 0);
         send(client_fd, error_msg, strlen(error_msg), 0);
@@ -211,7 +211,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     }
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     if (!alert->iv) {
-        char *error_msg = "Ошибка: Не удалось декодировать base64_iv";
+        char *error_msg = "Error: Failed to decode base64_iv";
         uint32_t error_len_net = htonl(strlen(error_msg));
         send(client_fd, &error_len_net, sizeof(uint32_t), 0);
         send(client_fd, error_msg, strlen(error_msg), 0);
@@ -222,7 +222,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     size_t tag_len;
     unsigned char *tag_dec = base64_decode(base64_tag, &tag_len);
     if (!tag_dec || tag_len != GCM_TAG_LEN) {
-        char *error_msg = "Ошибка: Не удалось декодировать base64_tag или неверный размер";
+        char *error_msg = "Error: Failed to decode base64_tag or invalid size";
         uint32_t error_len_net = htonl(strlen(error_msg));
         send(client_fd, &error_len_net, sizeof(uint32_t), 0);
         send(client_fd, error_msg, strlen(error_msg), 0);
@@ -234,7 +234,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t create_at, time_t unlock
     }
     memcpy(alert->tag, tag_dec, GCM_TAG_LEN);
     free(tag_dec);
-    alert->create_at = create_at;
+    alert->create_at = time(NULL); // Set creation time on server
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
@@ -493,4 +493,3 @@ void rotate_log() {
         }
     }
 }
-
