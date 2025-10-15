@@ -37,7 +37,8 @@ make clean && make && \
 sudo mkdir -p /etc/gorgona && \
 printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
 sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && \
-./gorgona listen last 4 RWTPQzuhzBw=
+sudo cp ./gorgona /usr/bin && \
+gorgona listen last 4 RWTPQzuhzBw=
 ```
 
 ### Installation
