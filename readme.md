@@ -1,7 +1,7 @@
 ---
 ![ ](gorgona.png)
 
-## gorgona: Encrypted Time-Locked Messaging System
+## Gorgona: Encrypted Time-Locked Messaging System
 
 ### Introduction
 
@@ -159,7 +159,7 @@ port = 7777
 Example:
 ```ini
 [exec_commands]
-app start = /home/su/repository/c/gorgona/test/lsblk.sh
+app start = /home/su/repository/c/gorgona/test/script.sh
 ```
 
 #### Server Configuration
@@ -178,6 +178,76 @@ max_message_size = 5242880
 - If the file is missing, defaults are used.
 
 Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
+
+##### Flowchart of Server Operation
+```ini
+[Server Start]
+   |
+   v
+[Initialization]
+   - Read configuration (/etc/gorgona/gorgonad.conf)
+   - Initialize client_sockets and subscribers arrays
+   - Allocate memory for recipients (INITIAL_RECIPIENT_CAPACITY)
+   - Open log file (gorgonad.log)
+   |
+   v
+[Socket Creation]
+   - socket(), setsockopt(SO_REUSEADDR), bind(), listen()
+   - Register signal handlers (SIGINT, SIGTERM)
+   |
+   v
+[Main Loop (run_server)]
+   |
+   v
+[select: Wait for Activity]
+   |
+   |----> [New Client (accept)]
+   |         - Check max_clients limit
+   |         - Add to client_sockets and subscribers
+   |         - Log connection
+   |
+   |----> [Client Data]
+            |
+            v
+         [Read Message Length]
+            - Check for errors/disconnection
+            - Verify max_message_size
+            |
+            v
+         [Read Message]
+            - Check for HTTP request (reject with 400)
+            - Parse command (SEND, LISTEN, SUBSCRIBE)
+            |
+            |----> [SEND]
+            |       - Parse: pubkey_hash, unlock_at, expire_at, text, key, iv, tag
+            |       - add_alert:
+            |          - Find/create Recipient
+            |          - Clean expired alerts
+            |          - Remove oldest alert if count >= max_alerts
+            |          - Decode base64 and add Alert
+            |       - Send response to client
+            |       - notify_subscribers (for matching subscribers)
+            |
+            |----> [LISTEN]
+            |       - Parse: pubkey_hash, mode (SINGLE/LAST), count
+            |       - Set mode in subscribers
+            |       - send_current_alerts:
+            |          - SINGLE: alerts with unlock_at <= now
+            |          - LAST: last count alerts (sorted by create_at)
+            |       - Close connection (for LAST)
+            |
+            |----> [SUBSCRIBE]
+                    - Parse: mode (LIVE/ALL/LOCK/LAST/NEW), pubkey_hash
+                    - Set mode in subscribers
+                    - send_current_alerts (except for MODE_NEW)
+                    - Close connection (for LAST)
+                    - Wait for new alerts (for LIVE/ALL/LOCK/NEW)
+
+[Cleanup on Shutdown]
+   - Free memory for recipients and alerts
+   - Close sockets
+   - Close log file
+```
 
 ### Future Plans
 
