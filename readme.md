@@ -374,7 +374,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/gorgona -e listen new RWTPQzuhzBw= 
+# if not use key in gargona -e listen new, then will be get all messages for keys /etc/gorgona/*.key 
+ExecStart=/usr/bin/gorgona -e listen new RWTPQzuhzBw=
 Restart=always
 RestartSec=5
 StartLimitBurst=10
