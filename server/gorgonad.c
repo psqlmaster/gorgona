@@ -12,7 +12,7 @@ All rights reserved. */
 #include <errno.h>
 #include <ctype.h>
 #include <signal.h>
-#include <time.h>  
+#include <time.h>
 #include <stdint.h>
 #include <getopt.h>
 
@@ -37,14 +37,15 @@ void shutdown_handler(int sig) {
 }
 
 void print_server_help(const char *program_name) {
-    printf("gorgona Server\n");
-    printf("Usage: %s [-h|--help] [-v|--verbose]\n", program_name);
+    printf("Gorgona Server (Version %s)\n", VERSION);
+    printf("Usage: %s [-h|--help] [-v|--verbose] [-V|--version]\n", program_name);
     printf("\nDescription:\n");
     printf(" The gorgona server handles encrypted alerts, allowing clients to send and subscribe to messages.\n");
     printf(" It listens for TCP connections and processes commands: SEND, LISTEN, SUBSCRIBE.\n");
     printf("\nFlags:\n");
-    printf(" -h, --help Displays this help message\n");
-    printf(" -v, --verbose Enables verbose output (e.g., received messages in console)\n");
+    printf(" -h, --help     Displays this help message\n");
+    printf(" -v, --verbose  Enables verbose output (e.g., received messages in console)\n");
+    printf(" -V, --version  Displays version information\n");
     printf("\nConfiguration:\n");
     printf(" The file /etc/gorgona/gorgonad.conf contains server settings.\n");
     printf(" Format:\n");
@@ -65,19 +66,23 @@ void print_server_help(const char *program_name) {
 }
 
 int main(int argc, char *argv[]) {
-    int i, opt;
+    int opt;
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
         {"verbose", no_argument, 0, 'v'},
+        {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0}
     };
-    while ((opt = getopt_long(argc, argv, "vh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vhV", long_options, NULL)) != -1) {
         switch (opt) {
             case 'v':
                 verbose = 1;
                 break;
             case 'h':
                 print_server_help(argv[0]);
+                return 0;
+            case 'V':
+                printf("Gorgona Server Version %s\n", VERSION);
                 return 0;
             case '?':
                 fprintf(stderr, "Unknown option: %s. Use -h for help.\n", argv[optind-1]);
@@ -101,7 +106,7 @@ int main(int argc, char *argv[]) {
     max_message_size = max_message_size_config;
 
     /* Initialize arrays */
-    for (i = 0; i < max_clients; i++) {
+    for (int i = 0; i < max_clients; i++) {
         client_sockets[i] = 0;
         subscribers[i].sock = 0;
         subscribers[i].mode = 0;

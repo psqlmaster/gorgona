@@ -1,6 +1,6 @@
 # Compiler and flags
 CC = gcc
-CFLAGS = -g -Wall -Icommon
+CFLAGS = -g -Wall -Icommon -DVERSION=\"1.8.6\"
 LDFLAGS = -lssl -lcrypto
 
 # Source files

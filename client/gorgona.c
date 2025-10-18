@@ -10,19 +10,21 @@
 #include <getopt.h>
 
 extern int send_alert(int argc, char *argv[], int verbose);
-extern int listen_alerts(int argc, char *argv[], int verbose, int execute);  // Updated: added execute parameter
+extern int listen_alerts(int argc, char *argv[], int verbose, int execute);
 
 void print_help(const char *program_name) {
+    printf("Gorgona Client (Version %s)\n", VERSION);
     printf("Usage:\n");
-    printf(" %s [-v] [-e] [-h|--help] <command> [arguments]\n", program_name);
+    printf(" %s [-v] [-e] [-V|--version] [-h|--help] <command> [arguments]\n", program_name);
     printf("\nFlags:\n");
     printf(" -v, --verbose  Enables verbose output for debugging\n");
     printf(" -e, --exec     For 'listen' command: execute messages as system commands (requires pubkey_hash_b64). "
            "If [exec_commands] in /etc/gorgona/gorgona.conf is empty, all decrypted messages are executed. "
            "If [exec_commands] contains entries (e.g., 'greengage start = /path/to/script.sh'), only messages "
            "matching a key are executed by running the corresponding script.\n");
+    printf(" -V, --version  Displays version information\n");
     printf(" -h, --help     Displays this help message\n");
-    printf(" Note: Flags -v and -e can be combined (e.g., -ve) for verbose output during command execution.\n");
+    printf(" Note: Flags -v, -e, and -V can be combined (e.g., -veV) for verbose output during command execution.\n");
     printf("\nCommands:\n");
     printf(" genkeys\n");
     printf(" Generates an RSA key pair in /etc/gorgona/ (Example: sudo %s genkeys)\n", program_name);
@@ -62,17 +64,19 @@ void print_help(const char *program_name) {
 
 int main(int argc, char *argv[]) {
     int verbose = 0;
-    int execute = 0; 
+    int execute = 0;
     int opt;
 
     /* Define long options for getopt_long */
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
+        {"verbose", no_argument, 0, 'v'},
         {"exec", no_argument, 0, 'e'},
+        {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "vhe", long_options, NULL)) != -1) { 
+    while ((opt = getopt_long(argc, argv, "vheV", long_options, NULL)) != -1) {
         switch (opt) {
             case 'v':
                 verbose = 1;
@@ -83,6 +87,9 @@ int main(int argc, char *argv[]) {
             case 'e':
                 execute = 1;
                 break;
+            case 'V':
+                printf("Gorgona Client Version %s\n", VERSION);
+                return 0;
             case '?':
                 fprintf(stderr, "Unknown flag: %s\n", argv[optind-1]);
                 print_help(argv[0]);
@@ -106,7 +113,7 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[optind], "send") == 0) {
         return send_alert(argc - optind, argv + optind, verbose);
     } else if (strcmp(argv[optind], "listen") == 0) {
-        return listen_alerts(argc - optind, argv + optind, verbose, execute); 
+        return listen_alerts(argc - optind, argv + optind, verbose, execute);
     } else {
         fprintf(stderr, "Unknown command: %s\n", argv[optind]);
         print_help(argv[0]);
