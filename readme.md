@@ -1,8 +1,7 @@
-#### Gorgona 
----
+### Gorgona 
 ![ ](gorgona.png)
 ---
-##### End-to-End Encrypted Time-Locked Messaging with Remote Command Execution 
+#### End-to-End Encrypted Time-Locked Messaging with Remote Command Execution 
 - [Introduction](#introduction)
 - [Features](#features)
 - [Advantages](#advantages)
