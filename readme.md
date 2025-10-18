@@ -159,12 +159,12 @@ gorgona listen <mode> [<count>] [pubkey_hash_b64]
 ```
 
 **Modes**:
-- `live`: Only active messages (`unlock_at <= now`).
-- `all`: All non-expired messages, including locked.
-- `lock`: Only locked messages (`unlock_at > now`).
+- `live`:   Only active messages (`unlock_at <= now`).
+- `all`:    All non-expired messages, including locked.
+- `lock`:   Only locked messages (`unlock_at > now`).
 - `single`: Only active messages for the given `pubkey_hash_b64`.
-- `last`: Most recent [] message(s) for the given `pubkey_hash_b64` (count defaults to 1).
-- `new`: Only new messages received after connection, optionally filtered by `pubkey_hash_b64`.
+- `last`:   the most recent [<count>] message(s), (count defaults to 1), optionally filtered by pubkey_hash_b64
+- `new`:    Only new messages received after connection, optionally filtered by `pubkey_hash_b64`.
 
 If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `last`).
 
