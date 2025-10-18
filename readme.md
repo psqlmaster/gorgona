@@ -74,7 +74,7 @@ sudo dpkg -i ./gorgonad_1.8.3_amd64.deb
 
 ### Usage
 ```sh
-gorgona [-v] [-e|--exec] [-h|--help] <command> [arguments]
+gorgona [-v] [-e|--exec] [-h|--help] [-V|--version] <command> [arguments]
 ```
 
 #### Flags
@@ -83,6 +83,7 @@ gorgona [-v] [-e|--exec] [-h|--help] <command> [arguments]
    If the `[exec_commands]` section in `/etc/gorgona/gorgona.conf` is empty, all decrypted messages are executed. 
    If `[exec_commands]` contains entries (e.g., `greengage start = /path/to/script.sh`), only messages matching a key are executed by running the corresponding script.
 - `-h, --help`: Displays help message.
+- `-V, --version`: Current version.
 - **Note**: Flags `-v` and `-e` can be combined (e.g., `-ve`) for verbose output during command execution.
 
 #### Generate Keys
@@ -254,6 +255,12 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
 gorgona works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
 
 [contributing.md](contributing.md) 
+
+#### Testing
+```sh
+# To run the test suite, use the following command:
+make clean && make test
+```
 
 #### More examples:
 ```sh

@@ -25,16 +25,16 @@ time_t parse_datetime(const char *datetime) {
 #else
     /* Portable fallback: temporarily force TZ=UTC, call mktime, then restore */
     char *old_tz = getenv("TZ");
-    if (old_tz) old_tz = strdup(old_tz);
+    char *old_tz_copy = old_tz ? strdup(old_tz) : NULL;
 
     setenv("TZ", "UTC", 1);
     tzset();
 
     time_t t = mktime(&tm);
 
-    if (old_tz) {
-        setenv("TZ", old_tz, 1);
-        free(old_tz);
+    if (old_tz_copy) {
+        setenv("TZ", old_tz_copy, 1);
+        free(old_tz_copy);
     } else {
         unsetenv("TZ");
     }

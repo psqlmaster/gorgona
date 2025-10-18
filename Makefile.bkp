@@ -1,9 +1,12 @@
 # Compiler and flags
 CC = gcc
-CFLAGS = -g -Wall -Icommon -Iclient -DVERSION=\"$(VERSION)\"
-LDFLAGS = -lssl -lcrypto
-TEST_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags check) -D_XOPEN_SOURCE=700
+CFLAGS = -g -Wall -Icommon -DVERSION=\"$(VERSION)\"
+
+TEST_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags check) -D_XOPEN_SOURCE=700 
 TEST_LDFLAGS = $(LDFLAGS) $(shell pkg-config --libs check)
+
+LDFLAGS = -lssl -lcrypto
+#TEST_LDFLAGS = $(LDFLAGS) -lcheck -lm -pthread -lrt -lsubunit
 
 # Version definition from Git tag
 VERSION = $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' | tr -d '\n' || echo "0.0.0")
@@ -37,32 +40,26 @@ gorgonad: $(gorgonaD_OBJ)
 
 # Compile source files to object files
 %.o: %.c
-	$(CC) $(TEST_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Test targets
+# sudo apt-get install check
 test: $(TEST_EXEC)
-	@echo "Running all tests..."
 	@for test in $(TEST_EXEC); do \
-		if [ -f "$$test" ]; then \
-			echo "Running $$test..."; \
-			./$$test || { echo "$$test failed"; exit 1; }; \
-		else \
-			echo "Test $$test not found!"; \
-			exit 1; \
-		fi; \
+		echo "Running $$test..."; \
+		./$$test; \
 	done
-	@echo "All tests completed successfully."
 
 test/test_config: test/test_config.o $(filter-out client/gorgona.o, $(gorgona_OBJ))
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
-test/test_alert_send: test/test_alert_send.o client/alert_send.o client/alert_listen.o
+test/test_alert_send: test/test_alert_send.o $(filter-out client/gorgona.o, $(gorgona_OBJ))
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
-test/test_alert_listen: test/test_alert_listen.o $(filter-out client/gorgona.o common/encrypt.o, $(gorgona_OBJ))
+test/test_alert_listen: test/test_alert_listen.o $(filter-out client/gorgona.o, $(gorgona_OBJ))
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
-test/test_gorgona: test/test_gorgona.o
+test/test_gorgona: test/test_gorgona.o $(gorgona_OBJ)
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
 # Update debian/changelog with commit messages
@@ -85,6 +82,9 @@ deb-changelog:
 	mv debian/changelog.new debian/changelog; \
 	echo "Changelog updated manually without dch"
 
+
+
+
 # Build Debian packages
 build-packages: deb-changelog
 	@echo "Running build_packages.sh to build Debian packages with version $(VERSION)"
@@ -92,7 +92,7 @@ build-packages: deb-changelog
 
 # Clean up
 clean:
-	rm -f $(gorgona_OBJ) $(gorgonaD_OBJ) $(TEST_OBJ) gorgona gorgonad $(TEST_EXEC)
+	rm -f $(gorgona_OBJ) $(gorgonaD_OBJ) gorgona gorgonad
 
 # Rebuild everything
 rebuild: clean all
