@@ -368,10 +368,12 @@ void run_server(int server_fd) {
                     }
                     send_current_alerts(sd, sub_mode, pubkey_hash_b64, count);
                     char sub_msg[256];
-                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s for %s", (sub_mode == MODE_LAST ? "LAST" : "SINGLE"), pubkey_hash_b64);
-                    uint32_t sub_len_net = htonl(sub_len);
-                    send(sd, &sub_len_net, sizeof(uint32_t), 0);
-                    send(sd, sub_msg, sub_len, 0);
+                    if (sub_mode == MODE_SINGLE) {
+                        int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to SINGLE for %s", pubkey_hash_b64);
+                        uint32_t sub_len_net = htonl(sub_len);
+                        send(sd, &sub_len_net, sizeof(uint32_t), 0);
+                        send(sd, sub_msg, sub_len, 0);
+                    }
                     free(rest);
                     if (sub_mode == MODE_LAST) {
                         close(sd);

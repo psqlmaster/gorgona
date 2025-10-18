@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/tcp.h>
+#include <dirent.h>
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -44,6 +45,52 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
     }
     fclose(priv_fp);
     return 1;
+}
+
+/* Collects all private key hashes from /etc/gorgona/ */
+int collect_key_hashes(char ***key_hashes, int *key_count, int verbose) {
+    *key_hashes = NULL;
+    *key_count = 0;
+    DIR *dir = opendir("/etc/gorgona");
+    if (!dir) {
+        if (verbose) fprintf(stderr, "Failed to open directory /etc/gorgona: %s\n", strerror(errno));
+        return 0;
+    }
+    struct dirent *entry;
+    int capacity = 10;
+    *key_hashes = malloc(capacity * sizeof(char *));
+    if (!*key_hashes) {
+        closedir(dir);
+        return 0;
+    }
+    while ((entry = readdir(dir))) {
+        if (strstr(entry->d_name, ".key")) {
+            char *hash = strdup(entry->d_name);
+            if (!hash) continue;
+            hash[strlen(hash) - 4] = '\0'; // Remove .key extension
+            if (*key_count >= capacity) {
+                capacity *= 2;
+                char **new_hashes = realloc(*key_hashes, capacity * sizeof(char *));
+                if (!new_hashes) {
+                    free(hash);
+                    continue;
+                }
+                *key_hashes = new_hashes;
+            }
+            (*key_hashes)[*key_count] = hash;
+            (*key_count)++;
+        }
+    }
+    closedir(dir);
+    return 1;
+}
+
+/* Frees key hashes array */
+void free_key_hashes(char **key_hashes, int key_count) {
+    for (int i = 0; i < key_count; i++) {
+        free(key_hashes[i]);
+    }
+    free(key_hashes);
 }
 
 /* Parses server response and processes message */
@@ -128,21 +175,21 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     printf("Metadata (local): Create=%s, Unlock=%s, Expire=%s\n",
            buf_create_local, buf_unlock_local, buf_expire_local);
 
-/* Now check expiry / lock BEFORE any base64 decode or decryption */
-if (expire_at <= now) {
-    printf("Message expired\n");
-    free(copy);
-    return;
-}
-if (unlock_at > now) {
-    printf("Locked message until %s (UTC) / %s (local)\n",
-           buf_unlock_utc, buf_unlock_local);
-    free(copy);
-    return;
-}
+    /* Now check expiry / lock BEFORE any base64 decode or decryption */
+    if (expire_at <= now) {
+        printf("Message expired\n");
+        free(copy);
+        return;
+    }
+    if (unlock_at > now) {
+        printf("Locked message until %s (UTC) / %s (local)\n",
+               buf_unlock_utc, buf_unlock_local);
+        free(copy);
+        return;
+    }
 
-/* At this point the message is valid to attempt decoding / decryption.
-   Perform base64 decode and RSA/AES decryption here. */
+    /* At this point the message is valid to attempt decoding / decryption.
+       Perform base64 decode and RSA/AES decryption here. */
     /* Decode base64 data */
     size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
     unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
@@ -207,7 +254,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
     if (argc < 2) {
         fprintf(stderr, "Usage: listen <mode> [<count>] [pubkey_hash_b64]\n");
         fprintf(stderr, "Modes: live, all, lock, single, last, new\n");
-        fprintf(stderr, "For last mode: listen last [<count>] <pubkey_hash_b64>\n");
+        fprintf(stderr, "For last mode: listen last [<count>] [pubkey_hash_b64]\n");
         return 1;
     }
 
@@ -232,8 +279,15 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
 
     /* Parse arguments */
     if (strcmp(mode, "last") == 0) {
-        if (argc == 3) {
-            pubkey_hash_b64 = argv[2];
+        if (argc == 2) {
+            // No pubkey_hash_b64, will fetch for all keys
+        } else if (argc == 3) {
+            char *endptr;
+            count = strtol(argv[2], &endptr, 10);
+            if (*endptr != '\0' || count <= 0) {
+                pubkey_hash_b64 = argv[2]; // Treat as pubkey_hash_b64 if not a valid count
+                count = 1;
+            }
         } else if (argc == 4) {
             char *endptr;
             count = strtol(argv[2], &endptr, 10);
@@ -243,7 +297,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
             }
             pubkey_hash_b64 = argv[3];
         } else {
-            fprintf(stderr, "Usage for last: listen last [<count>] <pubkey_hash_b64>\n");
+            fprintf(stderr, "Usage for last: listen last [<count>] [pubkey_hash_b64]\n");
             return 1;
         }
     } else if (strcmp(mode, "single") == 0) {
@@ -271,7 +325,28 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
     int max_reconnect_delay = 60;
     int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1200;
 
-    while (1) {
+    char **key_hashes = NULL;
+    int key_count = 0;
+    if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
+        if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
+            fprintf(stderr, "Failed to collect key hashes\n");
+            return 1;
+        }
+        if (verbose) {
+            printf("Debug: Found %d keys in /etc/gorgona\n", key_count);
+        }
+    } else {
+        key_hashes = malloc(sizeof(char *));
+        key_hashes[0] = pubkey_hash_b64 ? strdup(pubkey_hash_b64) : NULL;
+        key_count = pubkey_hash_b64 ? 1 : 0;
+    }
+
+    for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
+        char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
+        if (verbose && current_pubkey_hash) {
+            printf("Debug: Processing key %s\n", current_pubkey_hash);
+        }
+
         int sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock < 0) {
             perror("Socket creation error");
@@ -345,15 +420,15 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
 
         int len;
         if (strcmp(mode, "single") == 0) {
-            len = snprintf(buffer, needed_len, "LISTEN|%s|%s", pubkey_hash_b64, mode);
+            len = snprintf(buffer, needed_len, "LISTEN|%s|%s", current_pubkey_hash, mode);
         } else if (strcmp(mode, "last") == 0) {
-            len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", pubkey_hash_b64, mode, count);
+            len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", current_pubkey_hash ? current_pubkey_hash : "", mode, count);
             if (verbose) {
                 printf("Debug: Forming request with count=%d\n", count);
             }
         } else {
-            if (pubkey_hash_b64) {
-                len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, pubkey_hash_b64);
+            if (current_pubkey_hash) {
+                len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, current_pubkey_hash);
             } else {
                 len = snprintf(buffer, needed_len, "SUBSCRIBE %s", mode);
             }
@@ -480,7 +555,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                 printf("Received response: %s\n", resp_buffer);
             }
 
-            parse_response(resp_buffer, pubkey_hash_b64, verbose, execute, &config);
+            parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config);
 
             if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
                 messages_received++;
@@ -489,30 +564,27 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                 }
                 if (messages_received >= count) {
                     free(resp_buffer);
-                    close(sock);
-                    if (verbose) {
-                        printf("Debug: Reached requested count (%d), exiting\n", count);
-                    }
-                    return 0;
+                    break;
                 }
             }
             free(resp_buffer);
         }
 
         close(sock);
-
-        if (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) {
-            if (verbose && messages_received == 0) {
-                printf("Debug: No messages received, exiting\n");
-            }
-            return 0;
-        }
-
-        fprintf(stderr, "Connection lost, reconnecting in %d seconds...\n", reconnect_delay);
-        sleep(reconnect_delay);
-        reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                         (reconnect_delay + reconnect_increment) : max_reconnect_delay;
     }
+
+    if (key_hashes) {
+        free_key_hashes(key_hashes, key_count);
+    }
+
+    if (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) {
+        return 0;
+    }
+
+    fprintf(stderr, "Connection lost, reconnecting in %d seconds...\n", reconnect_delay);
+    sleep(reconnect_delay);
+    reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
+                     (reconnect_delay + reconnect_increment) : max_reconnect_delay;
 
     return 0;
 }
