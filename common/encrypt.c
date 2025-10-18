@@ -80,7 +80,7 @@ int generate_rsa_keys(int verbose) {
 
     FILE *pub_fp = fopen(pub_file, "wb");
     if (!pub_fp) {
-        fprintf(stderr, "Не удалось открыть файл для публичного ключа: %s\n", pub_file);
+        fprintf(stderr, "Could not open file for public key, use sudo to generate new keys: %s\n", pub_file);
         free(pubkey_hash_b64);
         EVP_PKEY_free(pkey);
         return -1;
@@ -110,9 +110,9 @@ int generate_rsa_keys(int verbose) {
     }
     fclose(priv_fp);
 
-    if (verbose) {
-        printf("Сгенерированы ключи: %s (публичный), %s (приватный)\n", pub_file, priv_file);
-    }
+    //if (verbose) {
+    printf("Keys generated:\n%s (public)\n%s (private)\n", pub_file, priv_file);
+    //}
 
     free(pubkey_hash_b64);
     EVP_PKEY_free(pkey);
