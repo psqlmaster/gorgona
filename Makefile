@@ -3,8 +3,11 @@ CC = gcc
 CFLAGS = -g -Wall -Icommon -DVERSION=\"$(VERSION)\"
 LDFLAGS = -lssl -lcrypto
 
-# Version definition
-VERSION = 1.8.7
+# Version definition from Git tag
+VERSION = $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' | tr -d '\n' || echo "0.0.0")
+
+# Default changelog message (used if no commits or CHANGELOG_MSG is not set)
+DEFAULT_CHANGELOG_MSG = New release of gorgona client and server.
 
 # Source files
 gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c
@@ -29,17 +32,32 @@ gorgonad: $(gorgonaD_OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Update debian/changelog
+# Update debian/changelog with commit messages
 deb-changelog:
 	@echo "Updating debian/changelog with version $(VERSION)"
-	@dch --package gorgona --newversion $(VERSION) --distribution stable --urgency high \
-		--force-distribution --controlmaint \
-		"New release of gorgona client and server." \
-		--maintainer "Aleksandr Scheglov <globalalek@gmail.com>"
+	@CURRENT_TAG=$$(git --no-pager describe --tags --abbrev=0 2>/dev/null); \
+	CURRENT_TAG_OUT=$$(echo "$$CURRENT_TAG" | sed 's/^v//' | tr -d '\n' || echo "0.0.0"); \
+	PREV_TAG=$$(git --no-pager tag --sort=-v:refname | grep -A 1 "$$CURRENT_TAG" | tail -n 1); \
+	CHANGELOG_MESSAGE=$$(git --no-pager log --pretty="* %s" "$$PREV_TAG..$$CURRENT_TAG" 2>/dev/null | sort -u); \
+	if [ -z "$$CHANGELOG_MESSAGE" ]; then CHANGELOG_MESSAGE="$(DEFAULT_CHANGELOG_MSG)"; fi; \
+	{ \
+		echo "gorgona ($$CURRENT_TAG_OUT) stable; urgency=medium"; \
+		echo ""; \
+		echo "$$CHANGELOG_MESSAGE" | sed 's/^/  /'; \
+		echo ""; \
+		echo " -- Aleksandr Scheglov <globalalek@gmail.com> $$(date -R)"; \
+		echo ""; \
+		cat debian/changelog; \
+	} > debian/changelog.new; \
+	mv debian/changelog.new debian/changelog; \
+	echo "Changelog updated manually without dch"
+
+
+
 
 # Build Debian packages
 build-packages: deb-changelog
-	@echo "Running build_packages.sh to build Debian packages"
+	@echo "Running build_packages.sh to build Debian packages with version $(VERSION)"
 	@./build_packages.sh
 
 # Clean up
