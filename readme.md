@@ -74,13 +74,13 @@ cd gorgona
 
 Install dependencies (OpenSSL required):
 
-- On Debian/Ubuntu: `sudo apt install libssl-dev`
+- On Debian/Ubuntu: `sudo apt install -y libssl-dev git gcc make`
 - On Fedora: `sudo dnf install openssl-devel`
 - On REDOS: `sudo yum install openssl11 openssl11-devel`
-- On centos: `sudo yum install -y gcc make && sudo yum install -y openssl-devel`
+- On centos: `sudo yum install -y git gcc make pkgconfig check check-devel openssl-devel`
 - On macOS: `brew install openssl`
 
-> Note: Tested on Debian, Fedora, and RED OS.
+> Note: Tested on Debian, Fedora, Centos and RED OS.
 
 Build the project:
 
