@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#define EVP_MD_CTX_new() ({ EVP_MD_CTX *ctx = malloc(sizeof(EVP_MD_CTX)); EVP_MD_CTX_init(ctx); ctx; })
+#define EVP_MD_CTX_free(ctx) do { EVP_MD_CTX_cleanup(ctx); free(ctx); } while (0)
+#endif
 
 /* Проверяет наличие файлов public.pem и private.pem (для обратной совместимости) */
 int check_key_files(int verbose) {

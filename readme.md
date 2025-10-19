@@ -77,6 +77,7 @@ Install dependencies (OpenSSL required):
 - On Debian/Ubuntu: `sudo apt install libssl-dev`
 - On Fedora: `sudo dnf install openssl-devel`
 - On REDOS: `sudo yum install openssl11 openssl11-devel`
+- On centos: `sudo yum install -y gcc make && sudo yum install -y openssl-devel`
 - On macOS: `brew install openssl`
 
 > Note: Tested on Debian, Fedora, and RED OS.

@@ -1,6 +1,6 @@
 # Compiler and flags
 CC = gcc
-CFLAGS = -g -Wall -Icommon -Iclient -DVERSION=\"$(VERSION)\"
+CFLAGS = -g -std=c99 -Wall -Icommon -Iclient -DVERSION=\"$(VERSION)\"
 LDFLAGS = -lssl -lcrypto
 TEST_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags check) -D_XOPEN_SOURCE=700
 TEST_LDFLAGS = $(LDFLAGS) $(shell pkg-config --libs check)
