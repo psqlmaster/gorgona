@@ -14,6 +14,8 @@
 #include <sys/time.h>
 #include <netinet/tcp.h>
 #include <dirent.h>
+#include <inttypes.h>
+#define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 января 2025 в ms (из snowflake.h) */
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -110,20 +112,26 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
         free(copy);
         return;
     }
-    char *create_at_str = strtok(NULL, "|");
+
+    // REPLACE START: Добавляем парсинг id_str вместо create_at_str
+    char *id_str = strtok(NULL, "|");
     char *unlock_at_str = strtok(NULL, "|");
     char *expire_at_str = strtok(NULL, "|");
     char *encrypted_text = strtok(NULL, "|");
     char *encrypted_key = strtok(NULL, "|");
     char *iv = strtok(NULL, "|");
     char *tag = strtok(NULL, "|");
-    if (!unlock_at_str || !expire_at_str || !encrypted_text ||
+    if (!id_str || !unlock_at_str || !expire_at_str || !encrypted_text ||
         !encrypted_key || !iv || !tag) {
         fprintf(stderr, "Error: Incomplete data in ALERT\n");
         free(copy);
         return;
     }
-    time_t create_at = atol(create_at_str);
+    // Вычисляем create_at из id
+    uint64_t id = strtoull(id_str, NULL, 10);
+    time_t create_at = ((id >> 12) + SNOWFLAKE_EPOCH) / 1000;
+    // REPLACE END
+
     time_t unlock_at = atol(unlock_at_str);
     time_t expire_at = atol(expire_at_str);
     time_t now = time(NULL);
@@ -140,7 +148,12 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
         free(copy);
         return;
     }
+
+    // BEGIN INSERT: Добавляем вывод ID
     printf("Received message: Pubkey_Hash=%s\n", pubkey_hash_b64);
+    printf("ID: %" PRIu64 "\n", id);
+    // END INSERT
+
     /* Use separate buffers to avoid overwriting static buffer */
     
     /* format and show both UTC and localtime to avoid confusion */
@@ -175,7 +188,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     printf("Metadata (local): Create=%s, Unlock=%s, Expire=%s\n",
            buf_create_local, buf_unlock_local, buf_expire_local);
 
-    /* Now check expiry / lock BEFORE any base64 decode or decryption */
+    /* Now check expiry / lock BEFORE an expensive decryption */
     if (expire_at <= now) {
         printf("Message expired\n");
         free(copy);

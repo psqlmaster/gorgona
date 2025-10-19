@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <stdbool.h>
+#include <inttypes.h>
 
 /* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ss UTC] */
 void get_utc_time_str(char *buffer, size_t buffer_size) {
@@ -152,13 +153,13 @@ void clean_expired_alerts(Recipient *rec) {
 void remove_oldest_alert(Recipient *rec) {
     if (rec->count == 0) return;
     int oldest = 0;
-    time_t min_create = rec->alerts[0].create_at;
+    uint64_t min_id = rec->alerts[0].id;  // BEGIN INSERT: Сравниваем по id вместо create_at
     for (int i = 1; i < rec->count; i++) {
-        if (rec->alerts[i].create_at < min_create) {
-            min_create = rec->alerts[i].create_at;
+        if (rec->alerts[i].id < min_id) {
+            min_id = rec->alerts[i].id;
             oldest = i;
         }
-    }
+    }  // END INSERT
     free_alert(&rec->alerts[oldest]);
     memmove(&rec->alerts[oldest], &rec->alerts[oldest + 1], sizeof(Alert) * (rec->count - oldest - 1));
     rec->count--;
@@ -235,17 +236,12 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
     memcpy(alert->tag, tag_dec, GCM_TAG_LEN);
     free(tag_dec);
     alert->create_at = time(NULL); // Set creation time on server
+    alert->id = generate_snowflake_id();  // BEGIN INSERT: Генерируем Snowflake ID
+                                          // END INSERT
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
     rec->count++;
-}
-
-/* Comparator for sorting alerts by create_at */
-int alert_cmp(const void *a, const void *b) {
-    Alert *alert_a = (Alert *)a;
-    Alert *alert_b = (Alert *)b;
-    return (alert_a->create_at > alert_b->create_at) - (alert_a->create_at < alert_b->create_at);
 }
 
 /* Notifies subscribers about a new alert */
@@ -272,7 +268,7 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                 char *base64_tag = base64_encode(new_alert->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 4*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
                     char *response = malloc(needed_len);
                     if (!response) {
                         free(base64_text);
@@ -281,9 +277,11 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                         free(base64_tag);
                         continue;
                     }
-                    int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
-                                       pubkey_hash_b64, new_alert->create_at, new_alert->unlock_at, new_alert->expire_at,
+                    // REPLACE START: Исправляем формат для id
+                    int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                       pubkey_hash_b64, new_alert->id, new_alert->unlock_at, new_alert->expire_at,
                                        base64_text, base64_encrypted_key, base64_iv, base64_tag);
+                    // REPLACE END
                     free(base64_text);
                     free(base64_encrypted_key);
                     free(base64_iv);
@@ -318,18 +316,18 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     free(pubkey_hash_b64);
 }
 
-/* Comparator for sorting alerts by create_at descending */
-int alert_cmp_desc(const void *a, const void *b) {
-    Alert *alert_a = (Alert *)a;
-    Alert *alert_b = (Alert *)b;
-    return (alert_b->create_at > alert_a->create_at) - (alert_b->create_at < alert_a->create_at);  /* Descending order */
+/* Comparator for sorting alerts by id ascending */
+int alert_cmp_asc(const void *a, const void *b) {
+    uint64_t id_a = ((Alert *)a)->id;
+    uint64_t id_b = ((Alert *)b)->id;
+    return (id_a > id_b) - (id_a < id_b);
 }
 
-/* Comparator for sorting alerts by create_at ascending */
-int alert_cmp_asc(const void *a, const void *b) {
-    Alert *alert_a = (Alert *)a;
-    Alert *alert_b = (Alert *)b;
-    return (alert_a->create_at > alert_b->create_at) - (alert_a->create_at < alert_b->create_at);  /* Ascending order */
+/* Comparator for sorting alerts by id descending */
+int alert_cmp_desc(const void *a, const void *b) {
+    uint64_t id_a = ((Alert *)a)->id;
+    uint64_t id_b = ((Alert *)b)->id;
+    return (id_b > id_a) - (id_b < id_a);
 }
 
 /* Sends current alerts to a subscriber based on mode */
@@ -357,7 +355,7 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
             return;  /* No messages */
         }
 
-        /* Sort by create_at descending to get the most recent messages */
+        /* Sort by id descending to get the most recent messages */
         qsort(target_rec->alerts, target_rec->count, sizeof(Alert), alert_cmp_desc);
 
         /* Create a temporary array for the most recent 'count' messages */
@@ -377,7 +375,7 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
         }
         messages_to_send = sent;  /* Update with actual number of valid messages */
 
-        /* Sort the selected messages by create_at ascending for sending */
+        /* Sort the selected messages by id ascending for sending */
         if (messages_to_send > 0) {
             qsort(recent_alerts, messages_to_send, sizeof(Alert), alert_cmp_asc);
 
@@ -393,12 +391,14 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
                 char *base64_tag = base64_encode(a->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 4*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
                     char *response = malloc(needed_len);
                     if (response) {
-                        int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
-                                           pubkey_hash_b64, a->create_at, a->unlock_at, a->expire_at,
+                        // REPLACE START: Исправляем формат для id
+                        int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                           pubkey_hash_b64, a->id, a->unlock_at, a->expire_at,
                                            base64_text, base64_encrypted_key, base64_iv, base64_tag);
+                        // REPLACE END
                         if (len > 0 && (size_t)len < needed_len) {
                             uint32_t len_net = htonl(len);
                             send(sd, &len_net, sizeof(uint32_t), 0);
@@ -422,7 +422,7 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
         Recipient *rec = &recipients[r];
         clean_expired_alerts(rec);
         if (rec->count > 0) {
-            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp);
+            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_asc);
         }
 
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
@@ -449,7 +449,7 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
                 char *base64_tag = base64_encode(a->tag, GCM_TAG_LEN);
 
                 if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 3*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
+                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 4*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
                     char *response = malloc(needed_len);
                     if (!response) {
                         free(base64_text);
@@ -459,9 +459,11 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
                         free(pubkey_hash_b64);
                         return;
                     }
-                    int len = snprintf(response, needed_len, "ALERT|%s|%ld|%ld|%ld|%s|%s|%s|%s",
-                                       pubkey_hash_b64, a->create_at, a->unlock_at, a->expire_at,
+                    // REPLACE START: Исправляем формат для id
+                    int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                       pubkey_hash_b64, a->id, a->unlock_at, a->expire_at,
                                        base64_text, base64_encrypted_key, base64_iv, base64_tag);
+                    // REPLACE END
                     free(base64_text);
                     free(base64_encrypted_key);
                     free(base64_iv);
@@ -493,3 +495,4 @@ void rotate_log() {
         }
     }
 }
+
