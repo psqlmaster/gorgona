@@ -3,6 +3,7 @@ Copyright (c) 2025, Alexander Shcheglov
 All rights reserved. */
 
 #include "gorgona_utils.h"
+#include "alert_db.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,7 +106,12 @@ int main(int argc, char *argv[]) {
     max_clients = max_clients_config;
     max_message_size = max_message_size_config;
 
-    /* Initialize arrays */
+    /* Initialize recipients - ДОЛЖНО БЫТЬ ПЕРВЫМ! */
+    recipients = NULL;
+    recipient_count = 0;
+    recipient_capacity = 0;
+
+    /* Initialize arrays for clients */
     for (int i = 0; i < max_clients; i++) {
         client_sockets[i] = 0;
         subscribers[i].sock = 0;
@@ -128,22 +134,17 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Initialize recipients */
-    recipient_capacity = INITIAL_RECIPIENT_CAPACITY;
-    recipients = malloc(sizeof(Recipient) * recipient_capacity);
-    if (!recipients) {
-        if (log_file) {
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Failed to allocate memory for recipients\n", time_str);
-            fflush(log_file);
-            fclose(log_file);
-            log_file = NULL;
-        }
-        perror("Failed to allocate memory for recipients");
-        exit(EXIT_FAILURE);
+    if (alert_db_init() != 0) {
+        fprintf(stderr, "Failed to initialize alert database\n");
+        fclose(log_file);
+        return 1;
     }
-    recipient_count = 0;
+
+    if (alert_db_load_recipients() != 0) {
+        fprintf(stderr, "Failed to load recipients from database\n");
+        fclose(log_file);
+        return 1;
+    }
 
     /* Create socket */
     int server_fd;

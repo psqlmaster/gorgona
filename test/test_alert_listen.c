@@ -42,11 +42,10 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     return -1;
 }
 
-
 int close(int fd) { return 0; }
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) { return 0; }
 
-// Mock file and encryption functions
+// Mock file functions
 FILE *fopen(const char *path, const char *mode) {
     static FILE *mock_fp = NULL;
     if (strstr(path, ".key") || strstr(path, ".pub")) {
@@ -55,39 +54,10 @@ FILE *fopen(const char *path, const char *mode) {
     }
     return NULL;
 }
-unsigned char *base64_decode(const char *base64, size_t *out_len) {
-    *out_len = 10;
-    return (unsigned char *)strdup("decoded");
-}
-char *decrypt_message(const unsigned char *encrypted, size_t encrypted_len,
-                     const unsigned char *encrypted_key, size_t encrypted_key_len,
-                     const unsigned char *iv, size_t iv_len, const unsigned char *tag,
-                     char **plaintext, const char *priv_file, int verbose) {
-    *plaintext = strdup("test message");
-    return 0;
-}
-unsigned char *compute_pubkey_hash(EVP_PKEY *pubkey, size_t *hash_len, int verbose) {
-    static unsigned char hash[] = {1, 2, 3, 4};
-    *hash_len = 4;
-    return hash;
-}
-char *base64_encode(const unsigned char *data, size_t data_len) {
-    return strdup("mock_base64");
-}
-int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *encrypted_len,
-                    unsigned char **encrypted_key, size_t *encrypted_key_len,
-                    unsigned char **iv, size_t *iv_len, unsigned char **tag, size_t *tag_len,
-                    const char *pubkey_file, int verbose) {
-    *encrypted = (unsigned char *)strdup("encrypted");
-    *encrypted_len = 9;
-    *encrypted_key = (unsigned char *)strdup("key");
-    *encrypted_key_len = 3;
-    *iv = (unsigned char *)strdup("iv");
-    *iv_len = 2;
-    *tag = (unsigned char *)strdup("tag");
-    *tag_len = 3;
-    return 0;
-}
+
+// УДАЛИТЬ ВСЕ ЭТИ ФУНКЦИИ - они уже определены в encrypt.c
+// НЕ ОСТАВЛЯТЬ их в файле!
+
 void ERR_print_errors_fp(FILE *fp) {}
 
 // Test parse_response

@@ -383,6 +383,7 @@ void run_server(int server_fd) {
                         subscribers[i].pubkey_hash[0] = '\0';
                     }
                 } else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
+                    fprintf(stderr, "Processing SUBSCRIBE request: %s\n", buffer);
                     char *rest = strdup(buffer + 10);
                     if (!rest) {
                         char *error_msg = "Error: Memory allocation failed";
@@ -477,3 +478,4 @@ void run_server(int server_fd) {
         }
     }
 }
+

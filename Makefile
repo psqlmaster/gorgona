@@ -1,8 +1,8 @@
 # Compiler and flags
 CC = gcc
-CFLAGS = -g -std=c99 -Wall -Icommon -Iclient -DVERSION=\"$(VERSION)\"
+CFLAGS = -g -std=c99 -Wall -Icommon -Iclient -DVERSION=\"$(VERSION)\" -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
 LDFLAGS = -lssl -lcrypto
-TEST_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags check) -D_XOPEN_SOURCE=700
+TEST_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags check)
 TEST_LDFLAGS = $(LDFLAGS) $(shell pkg-config --libs check)
 
 # Version definition from Git tag
@@ -13,13 +13,19 @@ DEFAULT_CHANGELOG_MSG = New release of gorgona client and server.
 
 # Source files
 gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c
-gorgonaD_SRC = server/gorgonad.c server/gorgona_utils.c server/server_handler.c common/encrypt.c server/snowflake.c
+gorgonaD_SRC = server/gorgonad.c server/gorgona_utils.c server/server_handler.c server/snowflake.c server/alert_db.c common/encrypt.c
 TEST_SRC = test/test_config.c test/test_alert_send.c test/test_alert_listen.c test/test_gorgona.c
 
 # Object files
 gorgona_OBJ = $(gorgona_SRC:.c=.o)
 gorgonaD_OBJ = $(gorgonaD_SRC:.c=.o)
 TEST_OBJ = $(TEST_SRC:.c=.o)
+
+# Test object files (без дублирующих модулей)
+TEST_CONFIG_OBJ = test/test_config.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
+TEST_ALERT_SEND_OBJ = test/test_alert_send.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
+TEST_ALERT_LISTEN_OBJ = test/test_alert_listen.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
+TEST_GORGONA_OBJ = test/test_gorgona.o
 
 # Test executables
 TEST_EXEC = test/test_config test/test_alert_send test/test_alert_listen test/test_gorgona
@@ -37,7 +43,7 @@ gorgonad: $(gorgonaD_OBJ)
 
 # Compile source files to object files
 %.o: %.c
-	$(CC) $(TEST_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Test targets
 test: $(TEST_EXEC)
@@ -53,16 +59,16 @@ test: $(TEST_EXEC)
 	done
 	@echo "All tests completed successfully."
 
-test/test_config: test/test_config.o $(filter-out client/gorgona.o, $(gorgona_OBJ))
+test/test_config: $(TEST_CONFIG_OBJ)
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
-test/test_alert_send: test/test_alert_send.o client/alert_send.o client/alert_listen.o
+test/test_alert_send: $(TEST_ALERT_SEND_OBJ)
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
-test/test_alert_listen: test/test_alert_listen.o $(filter-out client/gorgona.o common/encrypt.o, $(gorgona_OBJ))
+test/test_alert_listen: $(TEST_ALERT_LISTEN_OBJ)
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
-test/test_gorgona: test/test_gorgona.o
+test/test_gorgona: $(TEST_GORGONA_OBJ)
 	$(CC) $^ -o $@ $(TEST_LDFLAGS)
 
 # Update debian/changelog with commit messages

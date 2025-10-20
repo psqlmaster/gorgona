@@ -1,12 +1,10 @@
 #ifndef GORGONA_UTILS_H
 #define GORGONA_UTILS_H
-
-#include "encrypt.h"
-#include "snowflake.h"  // BEGIN INSERT: Добавляем новый модуль
-                        // END INSERT
 #include <stdio.h>
 #include <time.h>
 #include <sys/socket.h>
+#include "encrypt.h"
+#include "snowflake.h"
 
 #define DEFAULT_MAX_ALERTS 1000
 #define MAX_CLIENTS 100
@@ -31,8 +29,7 @@ typedef struct {
     size_t iv_len;
     unsigned char tag[GCM_TAG_LEN]; // GCM authentication tag
     time_t create_at; // Creation time
-    uint64_t id;      // BEGIN INSERT: Snowflake ID для сортировки и уникальности
-                      // END INSERT
+    uint64_t id;      // Snowflake ID для сортировки и уникальности
     time_t unlock_at; // Unlock time
     time_t expire_at; // Expiration time
     int active; // Active flag
@@ -84,9 +81,14 @@ void rotate_log(void);
 void get_utc_time_str(char *buffer, size_t buffer_size);
 void run_server(int server_fd);
 
-// REPLACE START: Обновляем компараторы для сортировки по id
+// Предварительные объявления функций из alert_db.h
+int alert_db_init(void);
+int alert_db_load_recipients(void);
+int alert_db_save_alert(const Recipient *rec, const Alert *alert);
+int alert_db_clean_expired(const Recipient *rec);
+
+// Обновляем компараторы для сортировки по id
 int alert_cmp_asc(const void *a, const void *b);
 int alert_cmp_desc(const void *a, const void *b);
-// REPLACE END
 
 #endif
