@@ -114,6 +114,10 @@ Recipient *find_recipient(const unsigned char *hash) {
 
 /* Adds a new recipient */
 Recipient *add_recipient(const unsigned char *hash) {
+    Recipient *existing = find_recipient(hash);
+    if (existing) {
+        return existing;
+    }
     if (recipient_count >= recipient_capacity) {
         recipient_capacity += INITIAL_RECIPIENT_CAPACITY;
         recipients = realloc(recipients, sizeof(Recipient) * recipient_capacity);
@@ -235,13 +239,22 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
     }
     memcpy(alert->tag, tag_dec, GCM_TAG_LEN);
     free(tag_dec);
-    alert->create_at = time(NULL); // Set creation time on server
-    alert->id = generate_snowflake_id();  // BEGIN INSERT: Генерируем Snowflake ID
-                                          // END INSERT
+    alert->create_at = time(NULL);
+    alert->id = generate_snowflake_id();
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
     rec->count++;
+    if (alert_db_save_alert(rec, alert) != 0) {
+            fprintf(stderr, "Failed to save alert to database\n");
+            free_alert(alert);
+            rec->count--;
+            char *error_msg = "Error: Failed to save alert to database";
+            uint32_t error_len_net = htonl(strlen(error_msg));
+            send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+            send(client_fd, error_msg, strlen(error_msg), 0);
+            return;
+    }
 }
 
 /* Notifies subscribers about a new alert */
@@ -333,26 +346,57 @@ int alert_cmp_desc(const void *a, const void *b) {
 /* Sends current alerts to a subscriber based on mode */
 void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
+    if (verbose) {
+        fprintf(stderr, "=== DEBUG send_current_alerts ===\n");
+        fprintf(stderr, "mode: %d, filter: %s, count: %d\n", 
+                mode, pubkey_hash_b64_filter ? pubkey_hash_b64_filter : "NULL", count);
+        fprintf(stderr, "recipient_count: %d\n", recipient_count);
+    }   
     if (mode == MODE_LAST) {
         Recipient *target_rec = NULL;
         for (int r = 0; r < recipient_count; r++) {
             Recipient *rec = &recipients[r];
-            clean_expired_alerts(rec);
-
+            if (verbose) {
+                fprintf(stderr, "Checking recipient %d: alerts count=%d\n", r, rec->count);
+            }
             char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
-            if (!pubkey_hash_b64) continue;
+            if (!pubkey_hash_b64) {
+                continue;
+            }
+            if (verbose)  {
+                fprintf(stderr, "Recipient %d hash: %s\n", r, pubkey_hash_b64);
+            }
             if (pubkey_hash_b64_filter && strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
                 free(pubkey_hash_b64);
                 continue;
             }
             free(pubkey_hash_b64);
-
             target_rec = rec;
-            break;  /* Found the target recipient (assuming hash uniqueness) */
+            break;
         }
 
-        if (!target_rec || target_rec->count == 0) {
-            return;  /* No messages */
+        if (!target_rec) {
+            if (verbose) {
+                fprintf(stderr, "ERROR: No target recipient found for filter: %s\n", pubkey_hash_b64_filter ? pubkey_hash_b64_filter : "NULL");
+            }
+            return;
+        }
+
+        if (verbose) {
+            fprintf(stderr, "Target recipient has %d alerts\n", target_rec->count);
+            for (int j = 0; j < target_rec->count; j++) {
+                Alert *a = &target_rec->alerts[j];
+                fprintf(stderr, "Alert %d: id=%" PRIu64 ", active=%d, unlock_at=%ld, expire_at=%ld, now=%ld\n",
+                        j, a->id, a->active, a->unlock_at, a->expire_at, now);
+            }
+        }
+        clean_expired_alerts(target_rec);
+        if (verbose)  {
+            fprintf(stderr, "After clean_expired_alerts: %d alerts\n", target_rec->count);
+        }
+        if (target_rec->count == 0) {
+            fprintf(stderr, "No alerts after cleanup\n");
+            return;
         }
 
         /* Sort by id descending to get the most recent messages */
@@ -362,28 +406,40 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
         int messages_to_send = (target_rec->count < count) ? target_rec->count : count;
         Alert *recent_alerts = malloc(messages_to_send * sizeof(Alert));
         if (!recent_alerts) {
-            return;  /* Memory allocation failed */
+            fprintf(stderr, "Failed to allocate memory for recent_alerts\n");
+            return;
         }
 
         /* Copy the most recent messages (already sorted descending) */
         int sent = 0;
         for (int j = 0; j < target_rec->count && sent < messages_to_send; j++) {
             Alert *a = &target_rec->alerts[j];
-            if (!a->active || a->expire_at <= now) continue;  /* Skip inactive/expired */
-            recent_alerts[sent] = *a;  /* Copy the alert */
+            if (!a->active || a->expire_at <= now) {
+                fprintf(stderr, "Skipping alert %" PRIu64 ": active=%d, expire_at=%ld, now=%ld\n",
+                        a->id, a->active, a->expire_at, now);
+                continue;
+            }
+            recent_alerts[sent] = *a;
+            if (verbose) {
+                fprintf(stderr, "Including alert %" PRIu64 " in recent_alerts[%d]\n", a->id, sent);
+            }
             sent++;
         }
-        messages_to_send = sent;  /* Update with actual number of valid messages */
+        messages_to_send = sent;
 
-        /* Sort the selected messages by id ascending for sending */
         if (messages_to_send > 0) {
+            /* Sort the selected messages by id ascending for sending */
             qsort(recent_alerts, messages_to_send, sizeof(Alert), alert_cmp_asc);
-
-            /* Send the messages in ascending order */
+            if (verbose) {
+                fprintf(stderr, "Sending %d messages in ascending order:\n", messages_to_send);
+            }
             for (int j = 0; j < messages_to_send; j++) {
                 Alert *a = &recent_alerts[j];
                 char *pubkey_hash_b64 = base64_encode(target_rec->hash, PUBKEY_HASH_LEN);
-                if (!pubkey_hash_b64) continue;
+                if (!pubkey_hash_b64) {
+                    fprintf(stderr, "Failed to encode hash for sending\n");
+                    continue;
+                }
 
                 char *base64_text = base64_encode(a->text, a->text_len);
                 char *base64_encrypted_key = base64_encode(a->encrypted_key, a->encrypted_key_len);
@@ -394,25 +450,33 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
                     size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 4*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
                     char *response = malloc(needed_len);
                     if (response) {
-                        // REPLACE START: Исправляем формат для id
                         int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
                                            pubkey_hash_b64, a->id, a->unlock_at, a->expire_at,
                                            base64_text, base64_encrypted_key, base64_iv, base64_tag);
-                        // REPLACE END
                         if (len > 0 && (size_t)len < needed_len) {
                             uint32_t len_net = htonl(len);
                             send(sd, &len_net, sizeof(uint32_t), 0);
                             send(sd, response, len, 0);
+                            if (verbose)  {
+                                fprintf(stderr, "Successfully sent alert %" PRIu64 " to client\n", a->id);
+                            }
+                        } else {
+                            fprintf(stderr, "Failed to format response for alert %" PRIu64 "\n", a->id);
                         }
                         free(response);
                     }
+                } else {
+                    fprintf(stderr, "Failed to base64 encode alert %" PRIu64 " data\n", a->id);
                 }
+                
                 free(base64_text);
                 free(base64_encrypted_key);
                 free(base64_iv);
                 free(base64_tag);
                 free(pubkey_hash_b64);
             }
+        } else {
+            fprintf(stderr, "No messages to send after filtering\n");
         }
         free(recent_alerts);
         return;
