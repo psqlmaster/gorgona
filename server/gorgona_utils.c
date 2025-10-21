@@ -25,6 +25,7 @@ Subscriber subscribers[MAX_CLIENTS];
 int max_alerts = DEFAULT_MAX_ALERTS;
 int max_clients = MAX_CLIENTS;
 size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
+int use_disk_db = 0;
 
 /* Function to check for HTTP request */
 int is_http_request(const char *buffer) {
@@ -52,11 +53,12 @@ void trim_string(char *str) {
 }
 
 /* Reads configuration from gorgonad.conf */
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size) {
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size, int *use_disk_db) {
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
+    *use_disk_db = 0; // По умолчанию false
 
     FILE *conf_fp = fopen("/etc/gorgona/gorgonad.conf", "r");
     if (!conf_fp) {
@@ -80,6 +82,8 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_messa
                 *max_clients = atoi(value);
             } else if (strcmp(key, "max_message_size") == 0) {
                 *max_message_size = atol(value);
+            } else if (strcmp(key, "use_disk_db") == 0) {
+                *use_disk_db = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
             }
         }
     }
@@ -143,7 +147,7 @@ Recipient *add_recipient(const unsigned char *hash) {
 /* Removes expired alerts for a recipient */
 void clean_expired_alerts(Recipient *rec) {
     time_t now = time(NULL);
-    int original_count = rec->count;  // Track for sync
+    int original_count = rec->count;
     for (int i = 0; i < rec->count; ) {
         if (rec->alerts[i].expire_at <= now && rec->alerts[i].active) {
             free_alert(&rec->alerts[i]);
@@ -153,7 +157,7 @@ void clean_expired_alerts(Recipient *rec) {
             i++;
         }
     }
-    if (rec->count < original_count) {  // Sync if anything was removed
+    if (use_disk_db && rec->count < original_count) { // Условно синхронизируем
         if (alert_db_sync(rec) != 0) {
             fprintf(stderr, "Failed to sync after cleaning expired alerts\n");
         }
@@ -174,8 +178,10 @@ void remove_oldest_alert(Recipient *rec) {
     free_alert(&rec->alerts[oldest]);
     memmove(&rec->alerts[oldest], &rec->alerts[oldest + 1], sizeof(Alert) * (rec->count - oldest - 1));
     rec->count--;
-    if (alert_db_sync(rec) != 0) {  // Always sync after removal
-        fprintf(stderr, "Failed to sync after removing oldest alert\n");
+    if (use_disk_db) { // Условно синхронизируем
+        if (alert_db_sync(rec) != 0) {
+            fprintf(stderr, "Failed to sync after removing oldest alert\n");
+        }
     }
 }
 
@@ -192,10 +198,10 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
         rec = add_recipient(pubkey_hash);
     }
 
-    clean_expired_alerts(rec);  // Handles sync if needed
+    clean_expired_alerts(rec); // Уже включает sync при необходимости
 
     if (rec->count >= max_alerts) {
-        remove_oldest_alert(rec);  // Handles sync
+        remove_oldest_alert(rec); // Уже включает sync при необходимости
     }
 
     if (rec->count >= max_alerts) {
@@ -234,37 +240,40 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
         free(alert->encrypted_key);
         return;
     }
-    size_t tag_len;
-    unsigned char *tag_dec = base64_decode(base64_tag, &tag_len);
-    if (!tag_dec || tag_len != GCM_TAG_LEN) {
-        char *error_msg = "Error: Failed to decode base64_tag or invalid size";
+    size_t decoded_tag_len;
+    unsigned char *decoded_tag = base64_decode(base64_tag, &decoded_tag_len);
+    if (!decoded_tag || decoded_tag_len != GCM_TAG_LEN) {
+        char *error_msg = "Error: Failed to decode base64_tag or invalid tag length";
         uint32_t error_len_net = htonl(strlen(error_msg));
         send(client_fd, &error_len_net, sizeof(uint32_t), 0);
         send(client_fd, error_msg, strlen(error_msg), 0);
+        free(decoded_tag);
         free(alert->text);
         free(alert->encrypted_key);
         free(alert->iv);
-        free(tag_dec);
         return;
     }
-    memcpy(alert->tag, tag_dec, GCM_TAG_LEN);
-    free(tag_dec);
+    memcpy(alert->tag, decoded_tag, GCM_TAG_LEN); // Копируем декодированный тег в массив tag
+    free(decoded_tag); // Освобождаем временный буфер
+
     alert->create_at = time(NULL);
     alert->id = generate_snowflake_id();
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
     rec->count++;
-    if (alert_db_save_alert(rec, alert) != 0) {
-            fprintf(stderr, "Failed to save alert to database\n");
-            free_alert(alert);
-            rec->count--;
-            char *error_msg = "Error: Failed to save alert to database";
-            uint32_t error_len_net = htonl(strlen(error_msg));
-            send(client_fd, &error_len_net, sizeof(uint32_t), 0);
-            send(client_fd, error_msg, strlen(error_msg), 0);
-            return;
+
+    if (use_disk_db && alert_db_save_alert(rec, alert) != 0) { // Условно сохраняем
+        fprintf(stderr, "Failed to save alert to database\n");
+        free_alert(alert);
+        rec->count--;
+        char *error_msg = "Error: Failed to save alert to database";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        return;
     }
+/*     notify_subscribers(pubkey_hash, alert); */
 }
 
 /* Notifies subscribers about a new alert */

@@ -61,12 +61,13 @@ extern Subscriber subscribers[MAX_CLIENTS];
 extern int max_alerts;
 extern int max_clients;
 extern size_t max_message_size;
-extern int verbose; // Declare verbose
+extern int verbose;
+extern int use_disk_db;
 
 /* Function declarations */
 int is_http_request(const char *buffer);
 void trim_string(char *str);
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size);
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size, int *use_disk_db);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);
