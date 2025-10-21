@@ -57,7 +57,7 @@ git clone https://github.com/psqlmaster/gorgona.git && \
 cd gorgona && \
 make clean && make && \
 sudo mkdir -p /etc/gorgona && \
-printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
+printf "[server]\nip = 46.138.247.148\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
 sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && \
 sudo cp ./gorgona /usr/bin && \
 gorgona listen last 4 RWTPQzuhzBw=
@@ -203,7 +203,7 @@ The file `/etc/gorgona/gorgona.conf` contains server settings and optional execu
 
 ```ini
 [server]
-ip = 64.188.70.158
+ip = 46.138.247.148 
 port = 7777
 
 [exec_commands]
