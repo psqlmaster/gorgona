@@ -210,6 +210,18 @@ int alert_db_load_recipients(void) {
         }
         fprintf(stderr, "Loaded %d recipients\n", recipient_count);
     }        
+    // Enforce limits and cleanup after loading
+    for (int i = 0; i < recipient_count; i++) {
+        Recipient *rec = &recipients[i];
+        int original_count = rec->count;
+        clean_expired_alerts(rec);  // Cleans memory and syncs disk if changed
+        while (rec->count > max_alerts) {  // Enforce MAX_ALERTS if excess loaded
+            remove_oldest_alert(rec);  // Removes from memory and syncs disk
+        }
+        if (verbose && rec->count < original_count) {
+            fprintf(stderr, "Cleaned and enforced limits for recipient %d: now %d alerts\n", i, rec->count);
+        }
+    }
     closedir(dir);
     return 0;
 }
@@ -225,7 +237,6 @@ int alert_db_save_alert(const Recipient *rec, const Alert *alert) {
     snprintf(filename, sizeof(filename), "%s%s.alerts", ALERT_DB_DIR, pubkey_hash_b64);
     free(pubkey_hash_b64);
 
-    fprintf(stderr, "Saving alert to %s\n", filename);
     FILE *file = fopen(filename, "ab");
     if (!file) {
         fprintf(stderr, "Failed to open %s: %s\n", filename, strerror(errno));
@@ -276,7 +287,9 @@ int alert_db_save_alert(const Recipient *rec, const Alert *alert) {
 
     flock(fileno(file), LOCK_UN);
     fclose(file);
-    fprintf(stderr, "Successfully saved alert to %s\n", filename);
+    if (verbose) {
+        fprintf(stderr, "DEBUG: Saved alert id=%lu to %s\n", alert->id, filename);
+    }
     return 0;
 }
 
@@ -440,3 +453,78 @@ cleanup:
     return -1;
 }
 
+int alert_db_sync(const Recipient *rec) {
+    char filename[512];
+    char temp_filename[512];
+    char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
+    if (!pubkey_hash_b64) {
+        fprintf(stderr, "Failed to encode pubkey_hash\n");
+        return -1;
+    }
+    snprintf(filename, sizeof(filename), "%s%s.alerts", ALERT_DB_DIR, pubkey_hash_b64);
+    snprintf(temp_filename, sizeof(temp_filename), "%s%s.alerts.tmp", ALERT_DB_DIR, pubkey_hash_b64);
+    free(pubkey_hash_b64);
+
+    FILE *out_file = fopen(temp_filename, "wb");
+    if (!out_file) {
+        fprintf(stderr, "Failed to open %s: %s\n", temp_filename, strerror(errno));
+        return -1;
+    }
+
+    if (flock(fileno(out_file), LOCK_EX) == -1) {
+        fprintf(stderr, "Failed to lock %s: %s\n", temp_filename, strerror(errno));
+        fclose(out_file);
+        return -1;
+    }
+
+    for (int j = 0; j < rec->count; j++) {
+        Alert *alert = &rec->alerts[j];
+        if (!alert->active) continue;
+
+        if (fwrite(&alert->id, sizeof(uint64_t), 1, out_file) != 1 ||
+            fwrite(&alert->create_at, sizeof(time_t), 1, out_file) != 1 ||
+            fwrite(&alert->unlock_at, sizeof(time_t), 1, out_file) != 1 ||
+            fwrite(&alert->expire_at, sizeof(time_t), 1, out_file) != 1 ||
+            fwrite(&alert->active, sizeof(int), 1, out_file) != 1 ||
+            fwrite(&alert->text_len, sizeof(size_t), 1, out_file) != 1 ||
+            fwrite(&alert->encrypted_key_len, sizeof(size_t), 1, out_file) != 1 ||
+            fwrite(&alert->iv_len, sizeof(size_t), 1, out_file) != 1 ||
+            fwrite(alert->text, 1, alert->text_len, out_file) != alert->text_len ||
+            fwrite(alert->encrypted_key, 1, alert->encrypted_key_len, out_file) != alert->encrypted_key_len ||
+            fwrite(alert->iv, 1, alert->iv_len, out_file) != alert->iv_len ||
+            fwrite(alert->tag, 1, GCM_TAG_LEN, out_file) != GCM_TAG_LEN) {
+            fprintf(stderr, "Failed to write alert data to %s\n", temp_filename);
+            goto cleanup_fail;
+        }
+
+        uint32_t delimiter = ALERT_RECORD_DELIMITER;
+        if (fwrite(&delimiter, sizeof(uint32_t), 1, out_file) != 1) {
+            fprintf(stderr, "Failed to write delimiter to %s\n", temp_filename);
+            goto cleanup_fail;
+        }
+    }
+
+    flock(fileno(out_file), LOCK_UN);
+    fclose(out_file);
+
+    if (rename(temp_filename, filename) != 0) {
+        fprintf(stderr, "Failed to rename %s to %s: %s\n", temp_filename, filename, strerror(errno));
+        unlink(temp_filename);
+        return -1;
+    }
+
+    if (rec->count == 0) {
+        unlink(filename);  // Remove empty file
+    }
+
+    if (verbose) {
+        fprintf(stderr, "Synced %d alerts to %s\n", rec->count, filename);
+    }
+    return 0;
+
+cleanup_fail:
+    flock(fileno(out_file), LOCK_UN);
+    fclose(out_file);
+    unlink(temp_filename);
+    return -1;
+}
