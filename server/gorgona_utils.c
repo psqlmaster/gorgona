@@ -1,4 +1,5 @@
 #include "gorgona_utils.h"
+#include "alert_db.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -142,6 +143,7 @@ Recipient *add_recipient(const unsigned char *hash) {
 /* Removes expired alerts for a recipient */
 void clean_expired_alerts(Recipient *rec) {
     time_t now = time(NULL);
+    int original_count = rec->count;  // Track for sync
     for (int i = 0; i < rec->count; ) {
         if (rec->alerts[i].expire_at <= now && rec->alerts[i].active) {
             free_alert(&rec->alerts[i]);
@@ -151,22 +153,30 @@ void clean_expired_alerts(Recipient *rec) {
             i++;
         }
     }
+    if (rec->count < original_count) {  // Sync if anything was removed
+        if (alert_db_sync(rec) != 0) {
+            fprintf(stderr, "Failed to sync after cleaning expired alerts\n");
+        }
+    }
 }
 
 /* Removes the oldest alert for a recipient */
 void remove_oldest_alert(Recipient *rec) {
     if (rec->count == 0) return;
     int oldest = 0;
-    uint64_t min_id = rec->alerts[0].id;  // BEGIN INSERT: Сравниваем по id вместо create_at
+    uint64_t min_id = rec->alerts[0].id;
     for (int i = 1; i < rec->count; i++) {
         if (rec->alerts[i].id < min_id) {
             min_id = rec->alerts[i].id;
             oldest = i;
         }
-    }  // END INSERT
+    }
     free_alert(&rec->alerts[oldest]);
     memmove(&rec->alerts[oldest], &rec->alerts[oldest + 1], sizeof(Alert) * (rec->count - oldest - 1));
     rec->count--;
+    if (alert_db_sync(rec) != 0) {  // Always sync after removal
+        fprintf(stderr, "Failed to sync after removing oldest alert\n");
+    }
 }
 
 /* Adds a new alert for a recipient */
@@ -182,10 +192,10 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
         rec = add_recipient(pubkey_hash);
     }
 
-    clean_expired_alerts(rec);
+    clean_expired_alerts(rec);  // Handles sync if needed
 
     if (rec->count >= max_alerts) {
-        remove_oldest_alert(rec);
+        remove_oldest_alert(rec);  // Handles sync
     }
 
     if (rec->count >= max_alerts) {

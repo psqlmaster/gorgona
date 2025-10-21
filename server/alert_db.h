@@ -23,4 +23,6 @@ int alert_db_load_recipients(void);
 int alert_db_save_alert(const Recipient *rec, const Alert *alert);
 // Очистка истёкших алертов (переписывает файл реципиента)
 int alert_db_clean_expired(const Recipient *rec);
+// Syncs the current in-memory alerts for a recipient back to disk (rewrites the file)
+int alert_db_sync(const Recipient *rec);
 #endif
