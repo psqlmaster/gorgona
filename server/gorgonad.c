@@ -55,6 +55,7 @@ void print_server_help(const char *program_name) {
     printf(" MAX_ALERTS = <number> (default: 1024, example: 2000)\n");
     printf(" MAX_CLIENTS = <number> (default: 100, example: 100)\n");
     printf(" max_message_size = <bytes> (default: 5242880 for 5 MB, example: 10485760 for 10 MB)\n");
+    printf(" use_disk_db = <boolean> (default: false, example: true to enable disk-based storage)\n");
     printf("\nLogging:\n");
     printf(" Logs are written to ./gorgonad.log. The log rotates when it exceeds %d bytes (10 MB).\n", MAX_LOG_SIZE);
     printf("\nLimits:\n");
@@ -101,10 +102,12 @@ int main(int argc, char *argv[]) {
     /* Read configuration */
     int port, max_alerts_config, max_clients_config;
     size_t max_message_size_config;
-    read_config(&port, &max_alerts_config, &max_clients_config, &max_message_size_config);
+    int use_disk_db_config; // Новая переменная
+    read_config(&port, &max_alerts_config, &max_clients_config, &max_message_size_config, &use_disk_db_config);
     max_alerts = max_alerts_config;
     max_clients = max_clients_config;
     max_message_size = max_message_size_config;
+    use_disk_db = use_disk_db_config; // Присваиваем глобальной переменной
 
     /* Initialize recipients - ДОЛЖНО БЫТЬ ПЕРВЫМ! */
     recipients = NULL;
@@ -134,13 +137,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (alert_db_init() != 0) {
+    if (use_disk_db && alert_db_init() != 0) { 
         fprintf(stderr, "Failed to initialize alert database\n");
         fclose(log_file);
         return 1;
     }
 
-    if (alert_db_load_recipients() != 0) {
+    if (use_disk_db && alert_db_load_recipients() != 0) {
         fprintf(stderr, "Failed to load recipients from database\n");
         fclose(log_file);
         return 1;

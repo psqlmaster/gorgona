@@ -32,6 +32,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 ##### Features
 
 - **End-to-End Encryption**: Messages are encrypted on the client and decrypted only by the recipient with their private key.
+- **Optional Persistent Storage**: Enable disk-based storage for alerts (default: disabled, configurable via `use_disk_db`). When enabled, alerts are saved to `/var/lib/gorgona/alerts/` for persistence across restarts; otherwise, operate in memory-only mode for lightweight deployments.
 - **Time-Locked Delivery**: Messages unlock at a specified `unlock_at` time and expire at `expire_at`.
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
 - **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gorgona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gorgona/`, which must be securely shared by the user.
@@ -49,6 +50,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Scalable Architecture**: Simple TCP server handles multiple clients (default: 100, configurable), with potential for load balancing.
 - **No Third-Party Reliance**: Operates locally or via direct client-server communication.
 - **Creative Applications**: Build time capsules, gamified messaging, or secure delayed backups.
+- **Flexible Storage Options**: Run in memory-only mode for high-speed, ephemeral operations or enable disk persistence for durability without losing alerts on server restarts.
 
 ##### Quick Start
 
@@ -183,11 +185,11 @@ gorgona -e listen new RWTPQzuhzBw=     # Listens for new messages and executes t
 ##### Run Server
 
 ```bash
-gorgonad [-v] [-h|--help]
+gorgonad [-v|--verbose] [-h|--help] [-V|--version]
 ```
-
-Use `-h` or `--help` for configuration help.  
-Use `-v` for verbose mode, example:
+- The server reads settings from /etc/gorgona/gorgonad.conf. Use use_disk_db = true for persistent storage.
+- Use `-h` or `--help` for configuration help.  
+- Use `-v` for verbose mode, example:
 
 ```bash
 strace -e network gorgona -v listen new RWTPQzuhzBw=
@@ -227,6 +229,8 @@ port = 7777
 MAX_ALERTS = 2000
 MAX_CLIENTS = 100
 max_message_size = 5242880
+# Enable (true) or disable (false) persistent disk storage for alerts (default: false)
+use_disk_db = false
 ```
 
 - `port`: TCP port (default: 5555).
@@ -244,10 +248,11 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
    |
    v
 [Initialization]
-   - Read configuration (/etc/gorgona/gorgonad.conf)
+   - Read configuration (/etc/gorgona/gorgonad.conf), including use_disk_db
    - Initialize client_sockets and subscribers arrays
    - Allocate memory for recipients (INITIAL_RECIPIENT_CAPACITY)
    - Open log file (gorgonad.log)
+   - If use_disk_db == true: Initialize and load alerts from disk (/var/lib/gorgona/alerts/)
    |
    v
 [Socket Creation]
@@ -281,9 +286,10 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
             |       - Parse: pubkey_hash, unlock_at, expire_at, text, key, iv, tag
             |       - add_alert:
             |          - Find/create Recipient
-            |          - Clean expired alerts
-            |          - Remove oldest alert if count >= max_alerts
+            |          - Clean expired alerts (sync to disk if use_disk_db == true)
+            |          - Remove oldest alert if count >= max_alerts (sync to disk if use_disk_db == true)
             |          - Decode base64 and add Alert
+            |          - If use_disk_db == true: Save alert to disk
             |       - Send response to client
             |       - notify_subscribers (for matching subscribers)
             |
@@ -306,6 +312,7 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
    - Free memory for recipients and alerts
    - Close sockets
    - Close log file
+   - If use_disk_db == true: Ensure all alerts are synced to disk
 ```
 
 ##### Future Plans
