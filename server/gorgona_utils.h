@@ -16,29 +16,29 @@
 #define MODE_NEW 6
 #define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
-#define MAX_LOG_SIZE (10 * 1024 * 1024) // 10 MB
-#define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) // 5 MB by default
+#define MAX_LOG_SIZE (10 * 1024 * 1024) /* 10 MB */
+#define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) /* 5 MB by default */
 
 /* Structure for storing an alert */
 typedef struct {
-    unsigned char *text; // Encrypted message
+    unsigned char *text; /* Encrypted message */
     size_t text_len;
-    unsigned char *encrypted_key; // Encrypted AES key
+    unsigned char *encrypted_key; /* Encrypted AES key */
     size_t encrypted_key_len;
-    unsigned char *iv; // Initialization vector
+    unsigned char *iv; /* Initialization vector */
     size_t iv_len;
-    unsigned char tag[GCM_TAG_LEN]; // GCM authentication tag
-    time_t create_at; // Creation time
-    uint64_t id;      // Snowflake ID для сортировки и уникальности
-    time_t unlock_at; // Unlock time
-    time_t expire_at; // Expiration time
+    unsigned char tag[GCM_TAG_LEN]; /* GCM authentication tag */
+    time_t create_at; /* Creation time */
+    uint64_t id;      /* Snowflake ID for sort & uniq */
+    time_t unlock_at; /* Unlock time */
+    time_t expire_at; /* Expiration time */
     int active; // Active flag
 } Alert;
 
 /* Structure for alerts by recipient */
 typedef struct {
     unsigned char hash[PUBKEY_HASH_LEN];
-    Alert *alerts; // Dynamic array
+    Alert *alerts; /* Dynamic array */
     int count;
     int capacity;
 } Recipient;
@@ -46,8 +46,8 @@ typedef struct {
 /* Structure for subscribers */
 typedef struct {
     int sock;
-    char pubkey_hash[64]; // For single mode
-    int mode; // 0 = not subscribed, 1 = live, 2 = all, 3 = single
+    char pubkey_hash[64]; /* For single mode */
+    int mode; /* 0 = not subscribed, 1 = live, 2 = all, 3 = single */
     time_t connect_time;
 } Subscriber;
 
@@ -82,13 +82,13 @@ void rotate_log(void);
 void get_utc_time_str(char *buffer, size_t buffer_size);
 void run_server(int server_fd);
 
-// Предварительные объявления функций из alert_db.h
+/* alert_db.h */
 int alert_db_init(void);
 int alert_db_load_recipients(void);
 int alert_db_save_alert(const Recipient *rec, const Alert *alert);
 int alert_db_clean_expired(const Recipient *rec);
 
-// Обновляем компараторы для сортировки по id
+/* for sort id */
 int alert_cmp_asc(const void *a, const void *b);
 int alert_cmp_desc(const void *a, const void *b);
 

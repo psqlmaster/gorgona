@@ -58,7 +58,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_messa
     *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
-    *use_disk_db = 0; // По умолчанию false
+    *use_disk_db = 0; /*default false*/
 
     FILE *conf_fp = fopen("/etc/gorgona/gorgonad.conf", "r");
     if (!conf_fp) {
@@ -178,7 +178,7 @@ void remove_oldest_alert(Recipient *rec) {
     free_alert(&rec->alerts[oldest]);
     memmove(&rec->alerts[oldest], &rec->alerts[oldest + 1], sizeof(Alert) * (rec->count - oldest - 1));
     rec->count--;
-    if (use_disk_db) { // Условно синхронизируем
+    if (use_disk_db) { 
         if (alert_db_sync(rec) != 0) {
             fprintf(stderr, "Failed to sync after removing oldest alert\n");
         }
@@ -198,10 +198,10 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
         rec = add_recipient(pubkey_hash);
     }
 
-    clean_expired_alerts(rec); // Уже включает sync при необходимости
+    clean_expired_alerts(rec); /* already include sync if needed */
 
     if (rec->count >= max_alerts) {
-        remove_oldest_alert(rec); // Уже включает sync при необходимости
+        remove_oldest_alert(rec); /* already include sync if needed */
     }
 
     if (rec->count >= max_alerts) {
@@ -309,11 +309,9 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                         free(base64_tag);
                         continue;
                     }
-                    // REPLACE START: Исправляем формат для id
                     int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
                                        pubkey_hash_b64, new_alert->id, new_alert->unlock_at, new_alert->expire_at,
                                        base64_text, base64_encrypted_key, base64_iv, base64_tag);
-                    // REPLACE END
                     free(base64_text);
                     free(base64_encrypted_key);
                     free(base64_iv);
@@ -542,11 +540,9 @@ void send_current_alerts(int sd, int mode, const char *pubkey_hash_b64_filter, i
                         free(pubkey_hash_b64);
                         return;
                     }
-                    // REPLACE START: Исправляем формат для id
                     int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
                                        pubkey_hash_b64, a->id, a->unlock_at, a->expire_at,
                                        base64_text, base64_encrypted_key, base64_iv, base64_tag);
-                    // REPLACE END
                     free(base64_text);
                     free(base64_encrypted_key);
                     free(base64_iv);
