@@ -565,19 +565,19 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
 
             parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config);
 
-         if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
-            messages_received++;
-            received_any_message = 1;
-            if (verbose) {
-                printf("Debug: Processed ALERT message %d\n", messages_received);
-            }
-            // Завершаем после получения count сообщений — даже если pubkey_hash_b64 не задан
-            if (messages_received >= count) {
-                free(resp_buffer);
-                connection_ok = 0;
-                break;
-            }
-        } 
+            if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
+                messages_received++;
+                received_any_message = 1;  // FIX: Отмечаем что получили сообщение для этого ключа
+                if (verbose) {
+                    printf("Debug: Processed ALERT message %d\n", messages_received);
+                }
+                // FIX: Для режима last с указанием ключа - завершаем после получения count сообщений
+                if (pubkey_hash_b64 && messages_received >= count) {
+                    free(resp_buffer);
+                    connection_ok = 0;
+                    break;
+                }
+            } 
             free(resp_buffer);
         }
 

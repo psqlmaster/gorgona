@@ -1,5 +1,6 @@
 #include "gorgona_utils.h"
 #include "alert_db.h"
+#include "snowflake.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -185,19 +186,6 @@ void remove_oldest_alert(Recipient *rec) {
     }
 }
 
-/* Base64 decode with fixed expected length */
-void base64_decode_fixed(const char *input, unsigned char *output, size_t expected_len) {
-    size_t len;
-    unsigned char *decoded = base64_decode(input, &len);
-    if (decoded && len == expected_len) {
-        memcpy(output, decoded, len);
-    } else {
-        // Handle error, e.g., memset(output, 0, expected_len);
-    }
-    free(decoded);
-}
-
-
 /* Adds a new alert for a recipient */
 void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd) {
@@ -232,7 +220,21 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv_len = 0;
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
-    base64_decode_fixed(base64_tag, alert->tag, GCM_TAG_LEN);
+
+    // Decode base64_tag into alert->tag (fixed-size array of GCM_TAG_LEN)
+    size_t decoded_tag_len = 0;
+    unsigned char *decoded_tag = base64_decode(base64_tag, &decoded_tag_len);
+    if (!decoded_tag || decoded_tag_len != GCM_TAG_LEN) {
+        free(decoded_tag);
+        free_alert(alert);
+        char *error_msg = "Error: Invalid base64 tag data";
+        uint32_t error_len_net = htonl(strlen(error_msg));
+        send(client_fd, &error_len_net, sizeof(uint32_t), 0);
+        send(client_fd, error_msg, strlen(error_msg), 0);
+        return;
+    }
+    memcpy(alert->tag, decoded_tag, GCM_TAG_LEN);
+    free(decoded_tag);
 
     if (!alert->text || !alert->encrypted_key || !alert->iv) {
         free_alert(alert);
@@ -246,7 +248,7 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
     alert->create_at = time(NULL);
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
-    alert->id = generate_snowflake_id(); 
+    alert->id = generate_snowflake_id();
     alert->active = 1;
 
     rec->count++;
@@ -307,7 +309,7 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     }
 
     for (int j = 0; j < max_clients; j++) {
-        if (subscribers[j].sock > 0 && subscribers[j].mode != 0) {
+        if (client_sockets[j] > 0 && subscribers[j].mode != 0) {
             bool match_hash = (subscribers[j].pubkey_hash[0] == '\0' || strcmp(subscribers[j].pubkey_hash, pubkey_hash_b64) == 0);
             bool send_it = false;
             if (subscribers[j].mode == MODE_LIVE && !is_locked) send_it = true;
@@ -327,30 +329,33 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
 }
 
 /* Sends current alerts to a subscriber */
-bool send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
+void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
-    bool close_connection = false;
 
     if (mode == MODE_LAST || mode == MODE_SINGLE) {
         if (!pubkey_hash_b64_filter || strlen(pubkey_hash_b64_filter) == 0) {
-            return mode == MODE_LAST;
+            subscribers[sub_index].close_after_send = true; // Close if no valid filter
+            return;
         }
         size_t hash_len;
         unsigned char *hash = base64_decode(pubkey_hash_b64_filter, &hash_len);
         if (!hash || hash_len != PUBKEY_HASH_LEN) {
             free(hash);
-            return mode == MODE_LAST;
+            subscribers[sub_index].close_after_send = true; // Close on invalid hash
+            return;
         }
         Recipient *target_rec = find_recipient(hash);
         free(hash);
         if (!target_rec) {
-            return mode == MODE_LAST;
+            subscribers[sub_index].close_after_send = true; // Close if no recipient
+            return;
         }
 
         clean_expired_alerts(target_rec);
 
         if (target_rec->count == 0) {
-            return mode == MODE_LAST;
+            subscribers[sub_index].close_after_send = true; // Close if no alerts
+            return;
         }
 
         qsort(target_rec->alerts, target_rec->count, sizeof(Alert), alert_cmp_desc);
@@ -361,7 +366,8 @@ bool send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         Alert *recent_alerts = malloc(sizeof(Alert) * messages_to_send);
         if (!recent_alerts) {
             fprintf(stderr, "Failed to allocate memory for recent_alerts\n");
-            return mode == MODE_LAST;
+            subscribers[sub_index].close_after_send = true; // Close on allocation failure
+            return;
         }
 
         /* Copy the most recent messages (already sorted descending) */
@@ -369,8 +375,10 @@ bool send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         for (int j = 0; j < target_rec->count && sent < messages_to_send; j++) {
             Alert *a = &target_rec->alerts[j];
             if (!a->active || a->expire_at <= now) {
-                fprintf(stderr, "Skipping alert %" PRIu64 ": active=%d, expire_at=%ld, now=%ld\n",
-                        a->id, a->active, a->expire_at, now);
+                if (verbose) {
+                    fprintf(stderr, "Skipping alert %" PRIu64 ": active=%d, expire_at=%ld, now=%ld\n",
+                            a->id, a->active, a->expire_at, now);
+                }
                 continue;
             }
             recent_alerts[sent] = *a;
@@ -427,23 +435,21 @@ bool send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                 free(base64_tag);
                 free(pubkey_hash_b64);
             }
-        } else {
-            fprintf(stderr, "No messages to send after filtering\n");
         }
         free(recent_alerts);
         if (mode == MODE_LAST) {
-            subscribers[sub_index].close_after_send = true; // Устанавливаем флаг для закрытия после отправки
-            close_connection = true;
+            subscribers[sub_index].close_after_send = true; // Ensure close after sending
         }
-        return close_connection;
+        return;
     }
 
+    int messages_sent = 0; // Track messages sent for MODE_LAST without filter
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         clean_expired_alerts(rec);
-        if (rec->count > 0) {
-            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_asc);
-        }
+        if (rec->count == 0) continue;
+
+        qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
 
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!pubkey_hash_b64) continue;
@@ -453,49 +459,75 @@ bool send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
             continue;
         }
 
-        for (int j = 0; j < rec->count; j++) {
+        int messages_to_send = (mode == MODE_LAST) ? count : rec->count;
+        messages_to_send = (messages_to_send > rec->count) ? rec->count : messages_to_send;
+
+        Alert *recent_alerts = malloc(sizeof(Alert) * messages_to_send);
+        if (!recent_alerts) {
+            fprintf(stderr, "Failed to allocate memory for recent_alerts\n");
+            free(pubkey_hash_b64);
+            continue;
+        }
+
+        int sent = 0;
+        for (int j = 0; j < rec->count && sent < messages_to_send; j++) {
             Alert *a = &rec->alerts[j];
-            if (!a->active) continue;
+            if (!a->active || a->expire_at <= now) continue;
+            recent_alerts[sent] = *a;
+            sent++;
+        }
+        messages_to_send = sent;
 
-            bool send_it = false;
-            if (mode == MODE_ALL) send_it = true;
-            else if (mode == MODE_LIVE || mode == MODE_SINGLE) send_it = (a->unlock_at <= now);
-            else if (mode == MODE_LOCK) send_it = (a->unlock_at > now);
+        if (messages_to_send > 0) {
+            qsort(recent_alerts, messages_to_send, sizeof(Alert), alert_cmp_asc);
+            for (int j = 0; j < messages_to_send; j++) {
+                Alert *a = &recent_alerts[j];
+                bool send_it = false;
+                if (mode == MODE_ALL) send_it = true;
+                else if (mode == MODE_LIVE || mode == MODE_SINGLE) send_it = (a->unlock_at <= now);
+                else if (mode == MODE_LOCK) send_it = (a->unlock_at > now);
 
-            if (send_it) {
-                char *base64_text = base64_encode(a->text, a->text_len);
-                char *base64_encrypted_key = base64_encode(a->encrypted_key, a->encrypted_key_len);
-                char *base64_iv = base64_encode(a->iv, a->iv_len);
-                char *base64_tag = base64_encode(a->tag, GCM_TAG_LEN);
+                if (send_it) {
+                    char *base64_text = base64_encode(a->text, a->text_len);
+                    char *base64_encrypted_key = base64_encode(a->encrypted_key, a->encrypted_key_len);
+                    char *base64_iv = base64_encode(a->iv, a->iv_len);
+                    char *base64_tag = base64_encode(a->tag, GCM_TAG_LEN);
 
-                if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
-                    size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 4*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
-                    char *response = malloc(needed_len);
-                    if (!response) {
+                    if (base64_text && base64_encrypted_key && base64_iv && base64_tag) {
+                        size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 4*20 + strlen(base64_text) + strlen(base64_encrypted_key) + strlen(base64_iv) + strlen(base64_tag) + 8;
+                        char *response = malloc(needed_len);
+                        if (!response) {
+                            free(base64_text);
+                            free(base64_encrypted_key);
+                            free(base64_iv);
+                            free(base64_tag);
+                            free(pubkey_hash_b64);
+                            free(recent_alerts);
+                            return;
+                        }
+                        int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                           pubkey_hash_b64, a->id, a->unlock_at, a->expire_at,
+                                           base64_text, base64_encrypted_key, base64_iv, base64_tag);
                         free(base64_text);
                         free(base64_encrypted_key);
                         free(base64_iv);
                         free(base64_tag);
-                        free(pubkey_hash_b64);
-                        return false;
+                        if (len > 0 && (size_t)len < needed_len) {
+                            enqueue_message(sub_index, response, len);
+                            messages_sent++; // Increment sent count
+                        }
+                        free(response);
                     }
-                    int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
-                                       pubkey_hash_b64, a->id, a->unlock_at, a->expire_at,
-                                       base64_text, base64_encrypted_key, base64_iv, base64_tag);
-                    free(base64_text);
-                    free(base64_encrypted_key);
-                    free(base64_iv);
-                    free(base64_tag);
-                    if (len > 0 && (size_t)len < needed_len) {
-                        enqueue_message(sub_index, response, len);
-                    }
-                    free(response);
                 }
             }
         }
+        free(recent_alerts);
         free(pubkey_hash_b64);
     }
-    return false;
+
+    if (mode == MODE_LAST) {
+        subscribers[sub_index].close_after_send = true; // Ensure close after sending all alerts
+    }
 }
 
 /* Helper: Rotate log if too large */
@@ -526,5 +558,3 @@ int alert_cmp_asc(const void *a, const void *b) {
 int alert_cmp_desc(const void *a, const void *b) {
     return alert_cmp_asc(b, a);
 }
-
-

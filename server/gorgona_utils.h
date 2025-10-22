@@ -94,7 +94,7 @@ void remove_oldest_alert(Recipient *rec);
 void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
-bool send_current_alerts(int sub_index, int mode, const char *single_hash_b64, int count);
+void send_current_alerts(int sub_index, int mode, const char *single_hash_b64, int count);  // Изменено на sub_index
 void rotate_log(void);
 void get_utc_time_str(char *buffer, size_t buffer_size);
 void run_server(int server_fd);

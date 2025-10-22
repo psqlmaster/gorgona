@@ -111,7 +111,7 @@ void process_out(int sub_index, int sd) {
 }
 
 int has_pending_data(int sub_index) {
-    return subscribers[sub_index].out_head != NULL;
+    return subscribers[sub_index].out_head != NULL || subscribers[sub_index].close_after_send;
 }
 
 void free_out_queue(int sub_index) {
@@ -488,9 +488,6 @@ void run_server(int server_fd) {
                                     enqueue_message(i, sub_msg, sub_len);
                                 }
                                 free(rest);
-                                if (sub_mode == MODE_LAST && send_current_alerts(i, sub_mode, pubkey_hash_b64, count)) {
-                                    sub->close_after_send = true; // Уже установлено в send_current_alerts, но для ясности
-                                }
                             } else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
                                 fprintf(stderr, "Processing SUBSCRIBE request: %s\n", buffer);
                                 char *rest = strdup(buffer + 10);
@@ -570,9 +567,6 @@ void run_server(int server_fd) {
                                 int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s%s", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
                                 enqueue_message(i, sub_msg, sub_len);
                                 free(rest);
-                                if (sub_mode == MODE_LAST && send_current_alerts(i, sub_mode, pubkey_hash_b64, 1)) {
-                                    sub->close_after_send = true; // Уже установлено в send_current_alerts, но для ясности
-                                } 
                             }
                             free(buffer);
                             sub->in_buffer = NULL;

@@ -98,6 +98,7 @@ int main(int argc, char *argv[]) {
     /* Register signal handlers */
     signal(SIGINT, shutdown_handler);
     signal(SIGTERM, shutdown_handler);
+    signal(SIGPIPE, SIG_IGN); 
 
     /* Read configuration */
     int port, max_alerts_config, max_clients_config;
