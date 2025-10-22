@@ -22,9 +22,9 @@ void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
     OutBuffer *new_buf;
     uint32_t len_net = htonl(msg_len);
 
-    // Enqueue len_net
+    /* Enqueue len_net */
     new_buf = malloc(sizeof(OutBuffer));
-    if (!new_buf) return;  // Error handling omitted for brevity
+    if (!new_buf) return;  /* Error handling omitted for brevity */
     new_buf->data = malloc(sizeof(uint32_t));
     if (!new_buf->data) { free(new_buf); return; }
     memcpy(new_buf->data, &len_net, sizeof(uint32_t));
@@ -39,7 +39,7 @@ void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
         subscribers[sub_index].out_head = subscribers[sub_index].out_tail = new_buf;
     }
 
-    // Enqueue msg
+    /* Enqueue msg */
     new_buf = malloc(sizeof(OutBuffer));
     if (!new_buf) return;
     new_buf->data = malloc(msg_len);
@@ -72,16 +72,16 @@ void process_out(int sub_index, int sd) {
                 head = subscribers[sub_index].out_head;
             }
         } else if (sent == 0) {
-            // Client closed
+            /* Client closed */
             close(sd);
             client_sockets[sub_index] = 0;
             free_out_queue(sub_index);
             break;
         } else {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                break;  // Wait for next select
+                break;  /* Wait for next select */
             } else {
-                // Error
+                /* Error */
                 if (log_file) {
                     char time_str[32];
                     get_utc_time_str(time_str, sizeof(time_str));
@@ -95,14 +95,14 @@ void process_out(int sub_index, int sd) {
             }
         }
     }
-    // Check if queue is empty and close is pending
+    /* Check if queue is empty and close is pending */
     if (subscribers[sub_index].out_head == NULL && subscribers[sub_index].close_after_send) {
         close(sd);
         client_sockets[sub_index] = 0;
         subscribers[sub_index].sock = 0;
         subscribers[sub_index].mode = 0;
         subscribers[sub_index].pubkey_hash[0] = '\0';
-        free_out_queue(sub_index);  // Already empty, but for consistency
+        free_out_queue(sub_index);  /* Already empty, but for consistency */
         if (subscribers[sub_index].in_buffer) free(subscribers[sub_index].in_buffer);
         subscribers[sub_index].in_buffer = NULL;
         subscribers[sub_index].in_pos = 0;
@@ -201,7 +201,7 @@ void run_server(int server_fd) {
                     subscribers[i].in_pos = 0;
                     subscribers[i].mode = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
-                    subscribers[i].close_after_send = false;  // Initialize new flag
+                    subscribers[i].close_after_send = false; 
                     if (log_file) {
                         char time_str[32];
                         get_utc_time_str(time_str, sizeof(time_str));
@@ -213,7 +213,7 @@ void run_server(int server_fd) {
                 }
             }
             if (i == max_clients) {
-                // Поскольку new_socket non-blocking, но для error отправляем синхронно (редко, малый размер)
+                /* Поскольку new_socket non-blocking, но для error отправляем синхронно (редко, малый размер) */
                 char *error_msg = "Error: Too many clients";
                 uint32_t error_len_net = htonl(strlen(error_msg));
                 send(new_socket, &error_len_net, sizeof(uint32_t), 0);
@@ -576,35 +576,44 @@ void run_server(int server_fd) {
                     }
                 }
 
-                if (valread <= 0) {
-                    if (valread == 0) {
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
-                            fflush(log_file);
-                        }
-                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        continue;  // No data, wait next select
-                    } else {
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
-                            fflush(log_file);
-                        }
+                if (valread == 0) {
+                    /* Client closed connection cleanly */
+                    if (log_file) {
+                        char time_str[32];
+                        get_utc_time_str(time_str, sizeof(time_str));
+                        fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
+                        fflush(log_file);
                     }
-                    if (valread <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        close(sd);
-                        client_sockets[i] = 0;
-                        sub->sock = 0;
-                        sub->mode = 0;
-                        sub->pubkey_hash[0] = '\0';
-                        free_out_queue(i);
-                        if (sub->in_buffer) free(sub->in_buffer);
-                        sub->in_buffer = NULL;
-                        sub->in_pos = 0;
+                    close(sd);
+                    client_sockets[i] = 0;
+                    sub->sock = 0;
+                    sub->mode = 0;
+                    sub->pubkey_hash[0] = '\0';
+                    free_out_queue(i);
+                    if (sub->in_buffer) free(sub->in_buffer);
+                    sub->in_buffer = NULL;
+                    sub->in_pos = 0;
+                    continue;
+                } else if (valread < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        continue;
                     }
+                    if (log_file) {
+                        char time_str[32];
+                        get_utc_time_str(time_str, sizeof(time_str));
+                        fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
+                        fflush(log_file);
+                    }
+                    close(sd);
+                    client_sockets[i] = 0;
+                    sub->sock = 0;
+                    sub->mode = 0;
+                    sub->pubkey_hash[0] = '\0';
+                    free_out_queue(i);
+                    if (sub->in_buffer) free(sub->in_buffer);
+                    sub->in_buffer = NULL;
+                    sub->in_pos = 0;
+                    continue;
                 }
             }
         }
