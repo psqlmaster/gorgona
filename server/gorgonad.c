@@ -109,7 +109,7 @@ int main(int argc, char *argv[]) {
     max_message_size = max_message_size_config;
     use_disk_db = use_disk_db_config; // Присваиваем глобальной переменной
 
-    /* Initialize recipients - ДОЛЖНО БЫТЬ ПЕРВЫМ! */
+    /* Initialize recipients */
     recipients = NULL;
     recipient_count = 0;
     recipient_capacity = 0;
