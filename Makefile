@@ -84,7 +84,7 @@ deb-changelog:
 		echo ""; \
 		echo "$$CHANGELOG_MESSAGE" | sed 's/^/  /'; \
 		echo ""; \
-		echo " -- Aleksandr Scheglov <globalalek@gmail.com> $$(date -R)"; \
+		echo " -- Aleksandr Scheglov <globalalek@gmail.com>  $$(date -R)"; \
 		echo ""; \
 		cat debian/changelog; \
 	} > debian/changelog.new; \

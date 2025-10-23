@@ -57,7 +57,7 @@ void print_server_help(const char *program_name) {
     printf(" max_message_size = <bytes> (default: 5242880 for 5 MB, example: 10485760 for 10 MB)\n");
     printf(" use_disk_db = <boolean> (default: false, example: true to enable disk-based storage)\n");
     printf("\nLogging:\n");
-    printf(" Logs are written to ./gorgonad.log. The log rotates when it exceeds %d bytes (10 MB).\n", MAX_LOG_SIZE);
+    printf(" Logs are written to ./gorgonad.log. The log rotates when it exceeds %zu MB.\n", max_log_size);
     printf("\nLimits:\n");
     printf(" - Maximum simultaneous clients: MAX_CLIENTS (default: 100 or from config).\n");
     printf(" - Maximum alerts per recipient: MAX_ALERTS (default: 1024 or from config).\n");
@@ -102,13 +102,14 @@ int main(int argc, char *argv[]) {
 
     /* Read configuration */
     int port, max_alerts_config, max_clients_config;
-    size_t max_message_size_config;
-    int use_disk_db_config; // Новая переменная
-    read_config(&port, &max_alerts_config, &max_clients_config, &max_message_size_config, &use_disk_db_config);
+    size_t max_message_size_config, max_log_size_config;
+    int use_disk_db_config;
+    read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, log_level, &max_message_size_config, &use_disk_db_config);
     max_alerts = max_alerts_config;
     max_clients = max_clients_config;
+    max_log_size = max_log_size_config;
     max_message_size = max_message_size_config;
-    use_disk_db = use_disk_db_config; // Присваиваем глобальной переменной
+    use_disk_db = use_disk_db_config;
 
     /* Initialize recipients */
     recipients = NULL;

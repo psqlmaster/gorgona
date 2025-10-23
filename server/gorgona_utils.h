@@ -17,7 +17,8 @@
 #define MODE_NEW 6
 #define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
-#define MAX_LOG_SIZE (10 * 1024 * 1024) /* 10 MB */
+#define DEFAULT_MAX_LOG_SIZE (10 * 1024 * 1024) /* 10 MB */
+#define DEFAULT_LOG_LEVEL "info" 
 #define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) /* 5 MB by default */
 
 /* Structure for outgoing buffer list (linked list for queue) */
@@ -77,6 +78,8 @@ extern int client_sockets[MAX_CLIENTS];
 extern Subscriber subscribers[MAX_CLIENTS];
 extern int max_alerts;
 extern int max_clients;
+extern size_t max_log_size;
+extern char log_level[32]; 
 extern size_t max_message_size;
 extern int verbose;
 extern int use_disk_db;
@@ -84,7 +87,7 @@ extern int use_disk_db;
 /* Function declarations */
 int is_http_request(const char *buffer);
 void trim_string(char *str);
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size, int *use_disk_db);
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);

@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <ctype.h>
 
 /* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ss UTC] */
 void get_utc_time_str(char *buffer, size_t buffer_size) {
@@ -25,8 +26,11 @@ int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
 int max_alerts = DEFAULT_MAX_ALERTS;
 int max_clients = MAX_CLIENTS;
+size_t max_log_size = DEFAULT_MAX_LOG_SIZE;
+char log_level[32] = DEFAULT_LOG_LEVEL;
 size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 int use_disk_db = 0;
+static time_t last_rotation_check = 0;
 
 /* Function to check for HTTP request */
 int is_http_request(const char *buffer) {
@@ -54,40 +58,76 @@ void trim_string(char *str) {
 }
 
 /* Reads configuration from gorgonad.conf */
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_message_size, int *use_disk_db) {
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level,
+                 size_t *max_message_size, int *use_disk_db) {
+    /* Set default values */
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
+    *max_log_size = DEFAULT_MAX_LOG_SIZE;
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
-    *use_disk_db = 0; /*default false*/
-
+    *use_disk_db = 0; /* false by default */
+    if (log_level) {
+          snprintf(log_level, 32, "%s", DEFAULT_LOG_LEVEL);
+    }
+    /* Open config file */
     FILE *conf_fp = fopen("/etc/gorgona/gorgonad.conf", "r");
     if (!conf_fp) {
         return;
     }
-
     char line[256];
     while (fgets(line, sizeof(line), conf_fp)) {
-        if (strstr(line, "[server]")) continue;
-        char *key = strtok(line, " =");
-        char *value = strtok(NULL, " =");
-        if (value) value[strcspn(value, "\n")] = '\0';
-        if (key) {
-            trim_string(key);
-            trim_string(value);
-            if (strcmp(key, "port") == 0) {
-                *port = atoi(value);
-            } else if (strcmp(key, "MAX_ALERTS") == 0) {
-                *max_alerts = atoi(value);
-            } else if (strcmp(key, "MAX_CLIENTS") == 0) {
-                *max_clients = atoi(value);
-            } else if (strcmp(key, "max_message_size") == 0) {
-                *max_message_size = atol(value);
-            } else if (strcmp(key, "use_disk_db") == 0) {
-                *use_disk_db = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
+        /* Remove inline comments (everything after '#') */
+        char *comment = strchr(line, '#');
+        if (comment) {
+            *comment = '\0';
+        }
+        /* Skip leading whitespace */
+        char *start = line;
+        while (*start && isspace((unsigned char)*start)) {
+            start++;
+        }
+        /* Skip empty or whitespace-only lines */
+        if (*start == '\0') {
+            continue;
+        }
+        /* Skip section headers like [server] */
+        if (*start == '[') {
+            continue;
+        }
+        /* Tokenize key and value */
+        char *key = strtok(start, " =\t");
+        char *value = strtok(NULL, " =\t");
+        if (!key || !value) {
+            continue;
+        }
+        /* Remove trailing newline from value */
+        value[strcspn(value, "\r\n")] = '\0';
+        /* Trim whitespace from both ends */
+        trim_string(key);
+        trim_string(value);
+        /* Parse known configuration keys */
+        if (strcmp(key, "port") == 0) {
+            *port = atoi(value);
+        } else if (strcmp(key, "max_alerts") == 0) {
+            *max_alerts = atoi(value);
+        } else if (strcmp(key, "max_clients") == 0) {
+            *max_clients = atoi(value);
+        } else if (strcmp(key, "max_log_size") == 0) {
+            *max_log_size = (size_t)atoi(value);
+        } else if (strcmp(key, "max_message_size") == 0) {
+            long mb = atol(value);
+            *max_message_size = (size_t)(mb * 1024 * 1024);
+        } else if (strcmp(key, "use_disk_db") == 0) {
+            *use_disk_db = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
+        } else if (strcmp(key, "log_level") == 0) {
+            if (log_level) {
+                strncpy(log_level, value, 31);
+                log_level[31] = '\0';
             }
         }
     }
+
     fclose(conf_fp);
 }
 
@@ -530,17 +570,26 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
     }
 }
 
-/* Helper: Rotate log if too large */
+
+
 void rotate_log() {
+    time_t now = time(NULL);
+    // Проверяем не чаще 1 раза в секунду
+    if (now - last_rotation_check < 5) {
+        return;
+    }
+    last_rotation_check = now;
+
     struct stat st;
-    if (stat("gorgona.log", &st) == 0 && st.st_size > MAX_LOG_SIZE) {
+    if (stat("gorgonad.log", &st) == 0 && st.st_size > max_log_size) {
         if (log_file) fclose(log_file);
-        rename("gorgona.log", "gorgona.log.1");
-        log_file = fopen("gorgona.log", "a");
+        rename("gorgonad.log", "gorgonad.log.1");
+        log_file = fopen("gorgonad.log", "a");
         if (!log_file) {
-            perror("Failed to open new gorgona.log after rotation");
+            perror("Failed to open new gorgonad.log after rotation");
         } else {
-            fprintf(log_file, "[%ld] Log rotated\n", (long)time(NULL));
+            fprintf(log_file, "[%ld] Log rotated\n", (long)now);
+            fflush(log_file);
         }
     }
 }

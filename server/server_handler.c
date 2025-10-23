@@ -15,6 +15,7 @@ extern int verbose;
 extern FILE *log_file;
 extern int max_clients;
 extern size_t max_message_size;
+extern char log_level[32];
 extern int client_sockets[];
 extern Subscriber subscribers[];
 
@@ -202,13 +203,14 @@ void run_server(int server_fd) {
                     subscribers[i].mode = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
                     subscribers[i].close_after_send = false; 
-                    if (log_file) {
+                    if (log_file && strcmp(log_level, "info") == 0) {
                         char time_str[32];
                         get_utc_time_str(time_str, sizeof(time_str));
                         fprintf(log_file, "%s New connection, socket fd %d, ip %s, port %d\n",
-                                time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+                              time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
                         fflush(log_file);
-                    }
+                        rotate_log();
+                    } 
                     break;
                 }
             }
@@ -224,6 +226,7 @@ void run_server(int server_fd) {
                     get_utc_time_str(time_str, sizeof(time_str));
                     fprintf(log_file, "%s Too many clients, connection refused\n", time_str);
                     fflush(log_file);
+                    rotate_log();
                 }
                 continue;
             }
@@ -258,6 +261,7 @@ void run_server(int server_fd) {
                                     get_utc_time_str(time_str, sizeof(time_str));
                                     fprintf(log_file, "%s Message too large from fd %d: %u bytes > max %zu\n", time_str, sd, sub->expected_msg_len, max_message_size);
                                     fflush(log_file);
+                                    rotate_log();
                                 }
                                 close(sd);
                                 client_sockets[i] = 0;
@@ -319,6 +323,7 @@ void run_server(int server_fd) {
                                     get_utc_time_str(time_str, sizeof(time_str));
                                     fprintf(log_file, "%s HTTP request detected and rejected from fd %d\n", time_str, sd);
                                     fflush(log_file);
+                                    rotate_log();
                                 }
                                 free(buffer);
                                 sub->in_buffer = NULL;
@@ -578,7 +583,7 @@ void run_server(int server_fd) {
 
                 if (valread == 0) {
                     /* Client closed connection cleanly */
-                    if (log_file) {
+                    if (log_file && strcmp(log_level, "info") == 0) {
                         char time_str[32];
                         get_utc_time_str(time_str, sizeof(time_str));
                         fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
