@@ -114,7 +114,8 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         } else if (strcmp(key, "max_clients") == 0) {
             *max_clients = atoi(value);
         } else if (strcmp(key, "max_log_size") == 0) {
-            *max_log_size = (size_t)atoi(value);
+            long mb = atol(value);
+            *max_log_size = (size_t)(mb * 1024 * 1024); 
         } else if (strcmp(key, "max_message_size") == 0) {
             long mb = atol(value);
             *max_message_size = (size_t)(mb * 1024 * 1024);
