@@ -1,0 +1,39 @@
+--- readme.md
++++ readme.md
+@@ -228,13 +228,16 @@
+ Server Configuration
+ Edit `/etc/gorgona/gorgonad.conf`:
+ [server]
+ port = 7777
+-MAX_ALERTS = 2000
+-MAX_CLIENTS = 100
+-max_message_size = 5242880
++max_alerts = 2000
++max_clients = 100
++max_log_size = 10          # MB (default: 10)
++log_level = error          # "info" or "error" (default: "info")
++max_message_size = 5       # MB (default: 5)
+ # Enable (true) or disable (false) persistent disk storage for alerts (default: false)
+ use_disk_db = false
+-`port`: TCP port (default: 5555).
+-`MAX_ALERTS`: Max alerts per recipient (default: 1024).
+-`MAX_CLIENTS`: Max simultaneous connections (default: 100).
+-`max_message_size`: Max message size in bytes (default: 5242880, 5 MB).
++`port`: TCP port (default: 5555).
++`max_alerts`: Max alerts per recipient (default: 1000).
++`max_clients`: Max simultaneous connections (default: 100).
++`max_log_size`: Log file size limit in MB before rotation (default: 10).
++`log_level`: Logging verbosity — "info" (default) or "error".
++`max_message_size`: Max message size in MB (default: 5).
+ If the file is missing, defaults are used.
+ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
+@@ -245,7 +248,7 @@
+ Run Server
+ gorgonad [-v|--verbose] [-h|--help] [-V|--version]
+ The server reads settings from /etc/gorgona/gorgonad.conf. Use use_disk_db = true for persistent storage.
+ Use `-h` or `--help` for configuration help.
+ Use `-v` for verbose mode, example:
+ strace -e network gorgona -v listen new RWTPQzuhzBw=
+-The server reads settings from `/etc/gorgona/gorgonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
++The server reads settings from `/etc/gorgona/gorgonad.conf` or uses defaults (port: 5555, max alerts: 1000, max clients: 100, log_level: "info").
+ Logs are written to `gorgonad.log` with rotation when exceeding 10 MB.

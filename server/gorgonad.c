@@ -52,19 +52,21 @@ void print_server_help(const char *program_name) {
     printf(" Format:\n");
     printf(" [server]\n");
     printf(" port = <port> (default: 5555, example: 7777)\n");
-    printf(" MAX_ALERTS = <number> (default: 1024, example: 2000)\n");
-    printf(" MAX_CLIENTS = <number> (default: 100, example: 100)\n");
-    printf(" max_message_size = <bytes> (default: 5242880 for 5 MB, example: 10485760 for 10 MB)\n");
+    printf(" max_alerts = <number> (default: 1000, example: 2000)\n");
+    printf(" max_clients = <number> (default: 100, example: 100)\n");
+    printf(" max_log_size = <MB> (default: 10, example: 50 for 50 MB before rotation)\n");
+    printf(" log_level = \"info\"|\"error\" (default: \"info\")\n");
+    printf(" max_message_size = <MB> (default: 5, example: 10 for 10 MB)\n");
     printf(" use_disk_db = <boolean> (default: false, example: true to enable disk-based storage)\n");
     printf("\nLogging:\n");
-    printf(" Logs are written to ./gorgonad.log. The log rotates when it exceeds %zu MB.\n", max_log_size);
+    printf(" Logs are written to ./gorgonad.log (rotates at %zu MB). \"info\" logs events and errors; \"error\" logs only errors.\n", max_log_size);
     printf("\nLimits:\n");
     printf(" - Maximum simultaneous clients: MAX_CLIENTS (default: 100 or from config).\n");
-    printf(" - Maximum alerts per recipient: MAX_ALERTS (default: 1024 or from config).\n");
+    printf(" - Maximum alerts per recipient: MAX_ALERTS (default: 1000 or from config).\n");
     printf(" - Recipient capacity expands dynamically starting from %d.\n", INITIAL_RECIPIENT_CAPACITY);
     printf("\nExample:\n");
     printf(" %s\n", program_name);
-    printf(" Starts the server using settings from ./gorgonad.conf or defaults.\n");
+    printf(" Starts the server using settings from /etc/gorgona/gorgonad.conf or defaults.\n");
 }
 
 int main(int argc, char *argv[]) {
