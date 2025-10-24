@@ -205,23 +205,20 @@ void run_server(int server_fd) {
                     subscribers[i].in_pos = 0;
                     subscribers[i].mode = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
-                    subscribers[i].close_after_send = false; 
+                    subscribers[i].close_after_send = false;
                     if (log_file && strcmp(log_level, "info") == 0) {
                         char time_str[32];
                         get_utc_time_str(time_str, sizeof(time_str));
                         fprintf(log_file, "%s New connection, socket fd %d, ip %s, port %d\n",
-                              time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+                                time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
                         fflush(log_file);
                         rotate_log();
-                    } 
+                    }
                     break;
                 }
             }
             if (i == max_clients) {
-                /* Поскольку new_socket non-blocking, но для error отправляем синхронно (редко, малый размер) */
-                char *error_msg = "Error: Too many clients";
-                uint32_t error_len_net = htonl(strlen(error_msg));
-                send(new_socket, &error_len_net, sizeof(uint32_t), 0);
+                char *error_msg = "Error: Too many clients\n";
                 send(new_socket, error_msg, strlen(error_msg), 0);
                 close(new_socket);
                 if (log_file) {
@@ -248,51 +245,216 @@ void run_server(int server_fd) {
                 valread = 0;
 
                 if (sub->read_state == READ_LEN) {
-                    char buf[sizeof(uint32_t) - sub->in_pos];
-                    valread = read(sd, buf, sizeof(uint32_t) - sub->in_pos);
+                    if (!sub->in_buffer) {
+                        sub->in_buffer = malloc(max_message_size + 1);
+                        if (!sub->in_buffer) {
+                            char *error_msg = "Error: Memory allocation failed\n";
+                            send(sd, error_msg, strlen(error_msg), 0);
+                            close(sd);
+                            client_sockets[i] = 0;
+                            sub->sock = 0;
+                            sub->mode = 0;
+                            sub->pubkey_hash[0] = '\0';
+                            free_out_queue(i);
+                            sub->in_pos = 0;
+                            if (log_file) {
+                                char time_str[32];
+                                get_utc_time_str(time_str, sizeof(time_str));
+                                fprintf(log_file, "%s Failed to allocate in_buffer for fd %d: %s\n", time_str, sd, strerror(errno));
+                                fflush(log_file);
+                            }
+                            continue;
+                        }
+                        sub->in_pos = 0;
+                    }
+
+                    char byte;
+                    valread = read(sd, &byte, 1);
                     if (valread > 0) {
-                        // Копируем в expected_msg_len (он uint32_t, но накапливаем байты)
-                        memcpy(((char*)&sub->expected_msg_len) + sub->in_pos, buf, valread);
-                        sub->in_pos += valread;
-                        if (sub->in_pos == sizeof(uint32_t)) {
-                            sub->expected_msg_len = ntohl(sub->expected_msg_len);
-                            if (sub->expected_msg_len > max_message_size) {
-                                char *error_msg = "Error: Message too large";
-                                enqueue_message(i, error_msg, strlen(error_msg));
+                        if (verbose) {
+                            fprintf(stderr, "Byte received: %c (0x%02x)\n", isprint(byte) ? byte : '.', (unsigned char)byte);
+                        }
+                        sub->in_buffer[sub->in_pos++] = byte;
+
+                        /* Check if we have a newline (text mode) or 4 bytes (potential binary mode) */
+                        if (byte == '\n' || sub->in_pos < sizeof(uint32_t)) {
+                            if (byte == '\n') {
+                                /* Text mode detected: process as telnet */
+                                sub->in_buffer[sub->in_pos] = '\0';
+                                trim_string(sub->in_buffer);
+
+                                /* Send welcome message if this is the first data */
+                                if (sub->in_pos <= 7) { /* Length of "version" */
+                                    char welcome[256];
+                                    int len = snprintf(welcome, sizeof(welcome), "Enter ?, info, or version.\n"); 
+                                    if (len > 0) {
+                                        send(sd, welcome, len, 0);
+                                        if (log_file && strcmp(log_level, "info") == 0) {
+                                            char time_str[32];
+                                            get_utc_time_str(time_str, sizeof(time_str));
+                                            fprintf(log_file, "%s Sent welcome message to fd %d\n", time_str, sd);
+                                            fflush(log_file);
+                                            rotate_log();
+                                        }
+                                    }
+                                }
+
+                                if (verbose) {
+                                    printf("Received (text): %s\n", sub->in_buffer);
+                                    if (log_file) {
+                                        char time_str[32];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Received (text) from fd %d: %s\n", time_str, sd, sub->in_buffer);
+                                        fflush(log_file);
+                                    }
+                                }
+
+                                /* Check for version/info commands */
+                                if (strcmp(sub->in_buffer, "?") == 0 || 
+                                    strcmp(sub->in_buffer, "info") == 0 || 
+                                    strcmp(sub->in_buffer, "version") == 0) {
+                                    char version_msg[77];
+                                    int version_len = snprintf(version_msg, sizeof(version_msg), "Gorgona Server Version %s\nThis server uses binary protocol. Goodbye Sir.\n", VERSION ? VERSION : "unknown");
+                                    send(sd, version_msg, version_len, 0);
+                                    sub->close_after_send = true;
+                                    if (log_file && strcmp(log_level, "info") == 0) {
+                                        char time_str[32];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Version request (%s) from fd %d\n", time_str, sub->in_buffer, sd);
+                                        fflush(log_file);
+                                        rotate_log();
+                                    }
+                                } else {
+                                    /* Unknown command in text mode */
+                                    char *error_msg = "Error: Unknown command\n";
+                                    send(sd, error_msg, strlen(error_msg), 0);
+                                    sub->close_after_send = true;
+                                    if (log_file) {
+                                        char time_str[32];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Unknown text command from fd %d: %s\n", time_str, sd, sub->in_buffer);
+                                        fflush(log_file);
+                                        rotate_log();
+                                    }
+                                }
+
+                                free(sub->in_buffer);
+                                sub->in_buffer = NULL;
+                                sub->in_pos = 0;
+                                sub->read_state = READ_LEN;
+                                continue;
+                            }
+                            continue; /* Continue reading until newline or 4 bytes */
+                        } else if (sub->in_pos == sizeof(uint32_t)) {
+                            /* Check if we have a valid binary length */
+                            uint32_t temp_len;
+                            memcpy(&temp_len, sub->in_buffer, sizeof(uint32_t));
+                            temp_len = ntohl(temp_len);
+                            if (temp_len <= max_message_size) {
+                                /* Binary mode detected */
+                                sub->expected_msg_len = temp_len;
+                                free(sub->in_buffer);
+                                sub->in_buffer = malloc(sub->expected_msg_len + 1);
+                                if (!sub->in_buffer) {
+                                    char *error_msg = "Error: Memory allocation failed";
+                                    enqueue_message(i, error_msg, strlen(error_msg));
+                                    close(sd);
+                                    client_sockets[i] = 0;
+                                    sub->sock = 0;
+                                    sub->mode = 0;
+                                    sub->pubkey_hash[0] = '\0';
+                                    free_out_queue(i);
+                                    sub->in_pos = 0;
+                                    if (log_file) {
+                                        char time_str[32];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Failed to allocate in_buffer for fd %d: %s\n", time_str, sd, strerror(errno));
+                                        fflush(log_file);
+                                    }
+                                    continue;
+                                }
+                                sub->in_pos = 0;
+                                sub->read_state = READ_MSG;
                                 if (log_file) {
                                     char time_str[32];
                                     get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Message too large from fd %d: %u bytes > max %zu\n", time_str, sd, sub->expected_msg_len, max_message_size);
+                                    fprintf(log_file, "%s Detected binary mode for fd %d, expected length: %u\n", time_str, sd, temp_len);
                                     fflush(log_file);
-                                    rotate_log();
                                 }
-                                close(sd);
-                                client_sockets[i] = 0;
-                                sub->sock = 0;
-                                sub->mode = 0;
-                                sub->pubkey_hash[0] = '\0';
-                                free_out_queue(i);
-                                if (sub->in_buffer) free(sub->in_buffer);
-                                sub->in_buffer = NULL;
-                                sub->in_pos = 0;
                                 continue;
+                            } else {
+                                /* Invalid length, check if ASCII (text mode) */
+                                bool is_ascii = true;
+                                for (size_t j = 0; j < sub->in_pos; j++) {
+                                    if (sub->in_buffer[j] < 32 || sub->in_buffer[j] > 126) {
+                                        is_ascii = false;
+                                        break;
+                                    }
+                                }
+                                if (is_ascii) {
+                                    /* Continue reading as text */
+                                    continue;
+                                } else {
+                                    char *error_msg = "Error: Message too large\n";
+                                    send(sd, error_msg, strlen(error_msg), 0);
+                                    close(sd);
+                                    client_sockets[i] = 0;
+                                    sub->sock = 0;
+                                    sub->mode = 0;
+                                    sub->pubkey_hash[0] = '\0';
+                                    free_out_queue(i);
+                                    free(sub->in_buffer);
+                                    sub->in_buffer = NULL;
+                                    sub->in_pos = 0;
+                                    if (log_file) {
+                                        char time_str[32];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Message too large from fd %d: %u bytes > max %zu\n", time_str, sd, temp_len, max_message_size);
+                                        fflush(log_file);
+                                        rotate_log();
+                                    }
+                                    continue;
+                                }
                             }
-                            sub->in_buffer = malloc(sub->expected_msg_len + 1);
-                            if (!sub->in_buffer) {
-                                char *error_msg = "Error: Memory allocation failed";
-                                enqueue_message(i, error_msg, strlen(error_msg));
-                                close(sd);
-                                client_sockets[i] = 0;
-                                sub->sock = 0;
-                                sub->mode = 0;
-                                sub->pubkey_hash[0] = '\0';
-                                free_out_queue(i);
-                                sub->in_pos = 0;
-                                continue;
-                            }
-                            sub->in_pos = 0;
-                            sub->read_state = READ_MSG;
                         }
+                    } else if (valread == 0) {
+                        /* Client disconnected */
+                        if (log_file && strcmp(log_level, "info") == 0) {
+                            char time_str[32];
+                            get_utc_time_str(time_str, sizeof(time_str));
+                            fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
+                            fflush(log_file);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        sub->sock = 0;
+                        sub->mode = 0;
+                        sub->pubkey_hash[0] = '\0';
+                        free_out_queue(i);
+                        if (sub->in_buffer) free(sub->in_buffer);
+                        sub->in_buffer = NULL;
+                        sub->in_pos = 0;
+                        continue;
+                    } else {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            continue;
+                        }
+                        if (log_file) {
+                            char time_str[32];
+                            get_utc_time_str(time_str, sizeof(time_str));
+                            fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
+                            fflush(log_file);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        sub->sock = 0;
+                        sub->mode = 0;
+                        sub->pubkey_hash[0] = '\0';
+                        free_out_queue(i);
+                        if (sub->in_buffer) free(sub->in_buffer);
+                        sub->in_buffer = NULL;
+                        sub->in_pos = 0;
+                        continue;
                     }
                 } else if (sub->read_state == READ_MSG) {
                     valread = read(sd, sub->in_buffer + sub->in_pos, sub->expected_msg_len - sub->in_pos);
@@ -575,53 +737,62 @@ void run_server(int server_fd) {
                                 int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s%s", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
                                 enqueue_message(i, sub_msg, sub_len);
                                 free(rest);
+                            } else {
+                                /* Unknown command in binary mode */
+                                char *error_msg = "Error: Unknown command";
+                                enqueue_message(i, error_msg, strlen(error_msg));
+                                if (log_file) {
+                                    char time_str[32];
+                                    get_utc_time_str(time_str, sizeof(time_str));
+                                    fprintf(log_file, "%s Unknown command from fd %d: %s\n", time_str, sd, buffer);
+                                    fflush(log_file);
+                                    rotate_log();
+                                }
                             }
                             free(buffer);
                             sub->in_buffer = NULL;
                             sub->read_state = READ_LEN;
                             sub->in_pos = 0;
                         }
-                    }
-                }
-
-                if (valread == 0) {
-                    /* Client closed connection cleanly */
-                    if (log_file && strcmp(log_level, "info") == 0) {
-                        char time_str[32];
-                        get_utc_time_str(time_str, sizeof(time_str));
-                        fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
-                        fflush(log_file);
-                    }
-                    close(sd);
-                    client_sockets[i] = 0;
-                    sub->sock = 0;
-                    sub->mode = 0;
-                    sub->pubkey_hash[0] = '\0';
-                    free_out_queue(i);
-                    if (sub->in_buffer) free(sub->in_buffer);
-                    sub->in_buffer = NULL;
-                    sub->in_pos = 0;
-                    continue;
-                } else if (valread < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    } else if (valread == 0) {
+                        /* Client disconnected */
+                        if (log_file && strcmp(log_level, "info") == 0) {
+                            char time_str[32];
+                            get_utc_time_str(time_str, sizeof(time_str));
+                            fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
+                            fflush(log_file);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        sub->sock = 0;
+                        sub->mode = 0;
+                        sub->pubkey_hash[0] = '\0';
+                        free_out_queue(i);
+                        if (sub->in_buffer) free(sub->in_buffer);
+                        sub->in_buffer = NULL;
+                        sub->in_pos = 0;
+                        continue;
+                    } else {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            continue;
+                        }
+                        if (log_file) {
+                            char time_str[32];
+                            get_utc_time_str(time_str, sizeof(time_str));
+                            fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
+                            fflush(log_file);
+                        }
+                        close(sd);
+                        client_sockets[i] = 0;
+                        sub->sock = 0;
+                        sub->mode = 0;
+                        sub->pubkey_hash[0] = '\0';
+                        free_out_queue(i);
+                        if (sub->in_buffer) free(sub->in_buffer);
+                        sub->in_buffer = NULL;
+                        sub->in_pos = 0;
                         continue;
                     }
-                    if (log_file) {
-                        char time_str[32];
-                        get_utc_time_str(time_str, sizeof(time_str));
-                        fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
-                        fflush(log_file);
-                    }
-                    close(sd);
-                    client_sockets[i] = 0;
-                    sub->sock = 0;
-                    sub->mode = 0;
-                    sub->pubkey_hash[0] = '\0';
-                    free_out_queue(i);
-                    if (sub->in_buffer) free(sub->in_buffer);
-                    sub->in_buffer = NULL;
-                    sub->in_pos = 0;
-                    continue;
                 }
             }
         }
