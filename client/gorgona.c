@@ -1,11 +1,8 @@
 /* BSD 3-Clause License
- * Copyright (c) 2025, Alexander Shcheglov
- * All rights reserved.
- */
-
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved. */
 #include "encrypt.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
 

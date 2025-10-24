@@ -1,3 +1,7 @@
+/* BSD 3-Clause License
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved. */
+#include "config.h"
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include "snowflake.h"
@@ -8,7 +12,6 @@
 #include <sys/stat.h>
 #include <stdbool.h>
 #include <inttypes.h>
-#include <ctype.h>
 
 /* Get current UTC time as string in format [YYYY-MM-DDThh:mm:ss UTC] */
 void get_utc_time_str(char *buffer, size_t buffer_size) {
@@ -55,81 +58,6 @@ void trim_string(char *str) {
         str[len - 1] = '\0';
         len--;
     }
-}
-
-/* Reads configuration from gorgonad.conf */
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level,
-                 size_t *max_message_size, int *use_disk_db) {
-    /* Set default values */
-    *port = DEFAULT_SERVER_PORT;
-    *max_alerts = DEFAULT_MAX_ALERTS;
-    *max_clients = MAX_CLIENTS;
-    *max_log_size = DEFAULT_MAX_LOG_SIZE;
-    *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
-    *use_disk_db = 0; /* false by default */
-    if (log_level) {
-          snprintf(log_level, 32, "%s", DEFAULT_LOG_LEVEL);
-    }
-    /* Open config file */
-    FILE *conf_fp = fopen("/etc/gorgona/gorgonad.conf", "r");
-    if (!conf_fp) {
-        return;
-    }
-    char line[256];
-    while (fgets(line, sizeof(line), conf_fp)) {
-        /* Remove inline comments (everything after '#') */
-        char *comment = strchr(line, '#');
-        if (comment) {
-            *comment = '\0';
-        }
-        /* Skip leading whitespace */
-        char *start = line;
-        while (*start && isspace((unsigned char)*start)) {
-            start++;
-        }
-        /* Skip empty or whitespace-only lines */
-        if (*start == '\0') {
-            continue;
-        }
-        /* Skip section headers like [server] */
-        if (*start == '[') {
-            continue;
-        }
-        /* Tokenize key and value */
-        char *key = strtok(start, " =\t");
-        char *value = strtok(NULL, " =\t");
-        if (!key || !value) {
-            continue;
-        }
-        /* Remove trailing newline from value */
-        value[strcspn(value, "\r\n")] = '\0';
-        /* Trim whitespace from both ends */
-        trim_string(key);
-        trim_string(value);
-        /* Parse known configuration keys */
-        if (strcmp(key, "port") == 0) {
-            *port = atoi(value);
-        } else if (strcmp(key, "max_alerts") == 0) {
-            *max_alerts = atoi(value);
-        } else if (strcmp(key, "max_clients") == 0) {
-            *max_clients = atoi(value);
-        } else if (strcmp(key, "max_log_size") == 0) {
-            long mb = atol(value);
-            *max_log_size = (size_t)(mb * 1024 * 1024); 
-        } else if (strcmp(key, "max_message_size") == 0) {
-            long mb = atol(value);
-            *max_message_size = (size_t)(mb * 1024 * 1024);
-        } else if (strcmp(key, "use_disk_db") == 0) {
-            *use_disk_db = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-        } else if (strcmp(key, "log_level") == 0) {
-            if (log_level) {
-                strncpy(log_level, value, 31);
-                log_level[31] = '\0';
-            }
-        }
-    }
-
-    fclose(conf_fp);
 }
 
 /* Formats a timestamp into a string */
@@ -375,27 +303,27 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
 
     if (mode == MODE_LAST || mode == MODE_SINGLE) {
         if (!pubkey_hash_b64_filter || strlen(pubkey_hash_b64_filter) == 0) {
-            subscribers[sub_index].close_after_send = true; // Close if no valid filter
+            subscribers[sub_index].close_after_send = true; /* Close if no valid filter */
             return;
         }
         size_t hash_len;
         unsigned char *hash = base64_decode(pubkey_hash_b64_filter, &hash_len);
         if (!hash || hash_len != PUBKEY_HASH_LEN) {
             free(hash);
-            subscribers[sub_index].close_after_send = true; // Close on invalid hash
+            subscribers[sub_index].close_after_send = true; /* Close on invalid hash */
             return;
         }
         Recipient *target_rec = find_recipient(hash);
         free(hash);
         if (!target_rec) {
-            subscribers[sub_index].close_after_send = true; // Close if no recipient
+            subscribers[sub_index].close_after_send = true; /* Close if no recipient */
             return;
         }
 
         clean_expired_alerts(target_rec);
 
         if (target_rec->count == 0) {
-            subscribers[sub_index].close_after_send = true; // Close if no alerts
+            subscribers[sub_index].close_after_send = true; /* Close if no alerts */
             return;
         }
 
@@ -407,7 +335,7 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         Alert *recent_alerts = malloc(sizeof(Alert) * messages_to_send);
         if (!recent_alerts) {
             fprintf(stderr, "Failed to allocate memory for recent_alerts\n");
-            subscribers[sub_index].close_after_send = true; // Close on allocation failure
+            subscribers[sub_index].close_after_send = true; /* Close on allocation failure */
             return;
         }
 
@@ -479,12 +407,12 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         }
         free(recent_alerts);
         if (mode == MODE_LAST) {
-            subscribers[sub_index].close_after_send = true; // Ensure close after sending
+            subscribers[sub_index].close_after_send = true; /* Ensure close after sending */
         }
         return;
     }
 
-    int messages_sent = 0; // Track messages sent for MODE_LAST without filter
+/*     int messages_sent = 0; // Track messages sent for MODE_LAST without filter */
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         clean_expired_alerts(rec);
@@ -555,7 +483,7 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                         free(base64_tag);
                         if (len > 0 && (size_t)len < needed_len) {
                             enqueue_message(sub_index, response, len);
-                            messages_sent++; // Increment sent count
+/*                             messages_sent++;  */
                         }
                         free(response);
                     }
@@ -567,20 +495,16 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
     }
 
     if (mode == MODE_LAST) {
-        subscribers[sub_index].close_after_send = true; // Ensure close after sending all alerts
+        subscribers[sub_index].close_after_send = true; /* Ensure close after sending all alerts */
     }
 }
 
-
-
 void rotate_log() {
     time_t now = time(NULL);
-    // Проверяем не чаще 1 раза в секунду
     if (now - last_rotation_check < 5) {
         return;
     }
     last_rotation_check = now;
-
     struct stat st;
     if (stat("gorgonad.log", &st) == 0 && st.st_size > max_log_size) {
         if (log_file) fclose(log_file);

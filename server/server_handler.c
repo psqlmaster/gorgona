@@ -1,3 +1,6 @@
+/* BSD 3-Clause License
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved. */
 #include "gorgona_utils.h"
 #include <stdio.h>
 #include <stdlib.h>

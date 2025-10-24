@@ -1,8 +1,7 @@
 #include <check.h>
-#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include "../client/config.h"
+#include "config.h"
 
 // Control mock behavior
 static int mock_config_mode = 0; // 0: valid, 1: missing, 2: empty
@@ -17,7 +16,7 @@ FILE *fopen(const char *path, const char *mode) {
         mock_fp = tmpfile();
         if (mock_fp) {
             if (mock_config_mode == 0) { // Valid config
-                fprintf(mock_fp, "[server]\nip=192.168.1.10\nport=7777\n[exec_commands]\ndf=/home/su/repository/c/gorgona/test/df.sh\n");
+                fprintf(mock_fp, "[server]\nip=46.138.247.148\nport=7777\n[exec_commands]\ndf=/home/su/repository/c/gorgona/test/df.sh\n");
                 rewind(mock_fp);
             }
             // For empty config (mode 2), leave file empty
@@ -32,7 +31,7 @@ START_TEST(test_read_config_valid) {
     Config config;
     memset(&config, 0, sizeof(Config)); // Initialize
     read_config(&config, 0);
-    ck_assert_str_eq(config.server_ip, "192.168.1.10");
+    ck_assert_str_eq(config.server_ip, "46.138.247.148");
     ck_assert_int_eq(config.server_port, 7777);
     ck_assert_int_eq(config.exec_count, 1);
     ck_assert_str_eq(config.exec_commands[0].key, "df");
@@ -45,7 +44,7 @@ START_TEST(test_read_config_missing) {
     Config config;
     memset(&config, 0, sizeof(Config)); // Initialize
     read_config(&config, 0); // Should use defaults
-    ck_assert_str_eq(config.server_ip, "192.168.1.10");
+    ck_assert_str_eq(config.server_ip, "46.138.247.148");
     ck_assert_int_eq(config.server_port, 5555); // Expect default port
     ck_assert_int_eq(config.exec_count, 0);
 }
@@ -56,7 +55,7 @@ START_TEST(test_read_config_empty) {
     Config config;
     memset(&config, 0, sizeof(Config)); // Initialize
     read_config(&config, 0); // Should use defaults
-    ck_assert_str_eq(config.server_ip, "192.168.1.10");
+    ck_assert_str_eq(config.server_ip, "46.138.247.148");
     ck_assert_int_eq(config.server_port, 5555); // Expect default port
     ck_assert_int_eq(config.exec_count, 0);
 }

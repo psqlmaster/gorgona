@@ -1,3 +1,6 @@
+/* BSD 3-Clause License
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved. */
 #ifndef GORGONA_UTILS_H
 #define GORGONA_UTILS_H
 #include <stdio.h>
@@ -5,21 +8,15 @@
 #include <stdbool.h>
 #include <sys/socket.h>
 #include "encrypt.h"
-#include "snowflake.h"
+#include "config.h"
 
-#define DEFAULT_MAX_ALERTS 1000
-#define MAX_CLIENTS 100
 #define MODE_LIVE 1
 #define MODE_ALL 2
 #define MODE_SINGLE 3
 #define MODE_LOCK 4
 #define MODE_LAST 5
 #define MODE_NEW 6
-#define DEFAULT_SERVER_PORT 5555
 #define INITIAL_RECIPIENT_CAPACITY 16
-#define DEFAULT_MAX_LOG_SIZE (10 * 1024 * 1024) /* 10 MB */
-#define DEFAULT_LOG_LEVEL "info" 
-#define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) /* 5 MB by default */
 
 /* Structure for outgoing buffer list (linked list for queue) */
 typedef struct OutBuffer {

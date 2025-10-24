@@ -1,7 +1,7 @@
 /* BSD 3-Clause License
 Copyright (c) 2025, Alexander Shcheglov
 All rights reserved. */
-
+#include "config.h"
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include <stdio.h>
@@ -11,7 +11,6 @@ All rights reserved. */
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <errno.h>
-#include <ctype.h>
 #include <signal.h>
 #include <time.h>
 #include <stdint.h>

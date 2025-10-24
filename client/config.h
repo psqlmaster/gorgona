@@ -1,7 +1,6 @@
 #ifndef CONFIG_H
 #define CONFIG_H
-/* #define DEFAULT_SERVER_IP "64.188.70.158" */
-#define DEFAULT_SERVER_IP "192.168.1.10"
+#define DEFAULT_SERVER_IP "46.138.247.148"
 #define DEFAULT_SERVER_PORT 5555
 #define MAX_EXEC_COMMANDS 100 
 
@@ -18,6 +17,5 @@ typedef struct {
 } Config;
 
 void read_config(Config *config, int verbose);
-int read_port_config(void);  // Если нужно, оставьте
 
 #endif
