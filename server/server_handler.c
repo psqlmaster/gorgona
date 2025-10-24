@@ -375,47 +375,14 @@ void run_server(int server_fd) {
                                 }
                                 sub->in_pos = 0;
                                 sub->read_state = READ_MSG;
-                                if (log_file) {
+                                if (log_file && strcmp(log_level, "info")) {
                                     char time_str[32];
                                     get_utc_time_str(time_str, sizeof(time_str));
                                     fprintf(log_file, "%s Detected binary mode for fd %d, expected length: %u\n", time_str, sd, temp_len);
                                     fflush(log_file);
                                 }
                                 continue;
-                            } else {
-                                /* Invalid length, check if ASCII (text mode) */
-                                bool is_ascii = true;
-                                for (size_t j = 0; j < sub->in_pos; j++) {
-                                    if (sub->in_buffer[j] < 32 || sub->in_buffer[j] > 126) {
-                                        is_ascii = false;
-                                        break;
-                                    }
-                                }
-                                if (is_ascii) {
-                                    /* Continue reading as text */
-                                    continue;
-                                } else {
-                                    char *error_msg = "Error: Message too large\n";
-                                    send(sd, error_msg, strlen(error_msg), 0);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->sock = 0;
-                                    sub->mode = 0;
-                                    sub->pubkey_hash[0] = '\0';
-                                    free_out_queue(i);
-                                    free(sub->in_buffer);
-                                    sub->in_buffer = NULL;
-                                    sub->in_pos = 0;
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Message too large from fd %d: %u bytes > max %zu\n", time_str, sd, temp_len, max_message_size);
-                                        fflush(log_file);
-                                        rotate_log();
-                                    }
-                                    continue;
-                                }
-                            }
+                            }  
                         }
                     } else if (valread == 0) {
                         /* Client disconnected */
@@ -472,29 +439,6 @@ void run_server(int server_fd) {
                                     fprintf(log_file, "%s Received from fd %d: %s\n", time_str, sd, buffer);
                                     fflush(log_file);
                                 }
-                            }
-
-                            if (is_http_request(buffer)) {
-                                char *http_response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-                                enqueue_message(i, http_response, strlen(http_response));
-                                close(sd);
-                                client_sockets[i] = 0;
-                                sub->sock = 0;
-                                sub->mode = 0;
-                                sub->pubkey_hash[0] = '\0';
-                                free_out_queue(i);
-                                if (log_file) {
-                                    char time_str[32];
-                                    get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s HTTP request detected and rejected from fd %d\n", time_str, sd);
-                                    fflush(log_file);
-                                    rotate_log();
-                                }
-                                free(buffer);
-                                sub->in_buffer = NULL;
-                                sub->read_state = READ_LEN;
-                                sub->in_pos = 0;
-                                continue;
                             }
 
                             if (strncmp(buffer, "SEND|", 5) == 0) {

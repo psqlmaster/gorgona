@@ -82,7 +82,6 @@ extern int verbose;
 extern int use_disk_db;
 
 /* Function declarations */
-int is_http_request(const char *buffer);
 void trim_string(char *str);
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);

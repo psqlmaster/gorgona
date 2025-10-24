@@ -35,22 +35,6 @@ size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 int use_disk_db = 0;
 static time_t last_rotation_check = 0;
 
-/* Function to check for HTTP request */
-int is_http_request(const char *buffer) {
-    if (strncmp(buffer, "GET ", 4) == 0 ||
-        strncmp(buffer, "HEAD ", 5) == 0 ||
-        strncmp(buffer, "POST ", 5) == 0 ||
-        strncmp(buffer, "OPTIONS ", 8) == 0 ||
-        strncmp(buffer, "CONNECT ", 8) == 0 ||
-        strncmp(buffer, "PUT ", 4) == 0 ||
-        strncmp(buffer, "DELETE ", 7) == 0 ||
-        strncmp(buffer, "TRACE ", 6) == 0 ||
-        strncmp(buffer, "PATCH ", 6) == 0) {
-        return 1;
-    }
-    return 0;
-}
-
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
     size_t len = strlen(str);

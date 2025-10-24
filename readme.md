@@ -296,8 +296,7 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
    |         - If client disconnects (valread == 0): Log, close socket, free_out_queue, free in_buffer  
    |         - If message complete: Null-terminate buffer, process command  
    |         |  
-   |         |----> [HTTP Request Detected (is_http_request)]  
-   |         |       - Enqueue HTTP 400 response, log, close socket, free_out_queue, free in_buffer  
+   |         |----> [telnet, ?]  
    |         |  
    |         |----> [SEND Command]  
    |         |       - Parse: pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag  
