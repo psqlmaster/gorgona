@@ -440,7 +440,7 @@ gorgona -e listen new RWTPQzuhzBw=
  
  sudo tee /etc/gorgona/gorgona.conf  /dev/null << 'EOF'
  [server]
- ip = 64.188.70.158
+ ip = 46.138.247.148 
  port = 7777
  [exec_commands]
  mkdir testdir = /tmp/mkdir.sh
