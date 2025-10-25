@@ -56,8 +56,8 @@ void print_help(const char *program_name) {
     printf(" %s -e listen new RWTPQzuhzBw= # Listens for new messages and executes them as commands\n", program_name);
     printf(" %s -ve listen new RWTPQzuhzBw= # Listens for new messages, executes them, and shows verbose output\n", program_name);
     printf(" %s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"hello world\" \"RWTPQzuhzBw=.pub\"\n", program_name);
-    printf(" %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" \"app start\" \"RWTPQzuhzBw=.pub\" # Executes /home/su/repository/c/gorgona/test/lsblk.sh if configured\n", program_name);
-    printf(" cat message.txt | %s send \"2025-09-30 23:55:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"\n", program_name);
+    printf(" %s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"app start\" \"RWTPQzuhzBw=.pub\" # Executes /home/su/repository/c/gorgona/test/lsblk.sh if configured\n", program_name);
+    printf(" df -h | %s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" - \"RWTPQzuhzBw=.pub\"\n", program_name);
 }
 
 int main(int argc, char *argv[]) {
