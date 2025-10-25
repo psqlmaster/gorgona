@@ -284,9 +284,9 @@ void run_server(int server_fd) {
                                 trim_string(sub->in_buffer);
 
                                 /* Send welcome message if this is the first data */
-                                if (sub->in_pos <= 7) { /* Length of "version" */
+                                if ((sub->in_pos <= 7) && strcmp(sub->in_buffer, "?") != 0  && strcmp(sub->in_buffer, "version") != 0 && strcmp(sub->in_buffer, "info") != 0) {
                                     char welcome[256];
-                                    int len = snprintf(welcome, sizeof(welcome), "Enter ?, info, or version.\n"); 
+                                    int len = snprintf(welcome, sizeof(welcome), "Welcome. Enter: ?, info, or version.\n"); 
                                     if (len > 0) {
                                         send(sd, welcome, len, 0);
                                         if (log_file && strcmp(log_level, "info") == 0) {
@@ -310,9 +310,7 @@ void run_server(int server_fd) {
                                 }
 
                                 /* Check for version/info commands */
-                                if (strcmp(sub->in_buffer, "?") == 0 || 
-                                    strcmp(sub->in_buffer, "info") == 0 || 
-                                    strcmp(sub->in_buffer, "version") == 0) {
+                                if (strcmp(sub->in_buffer, "?") == 0  || strcmp(sub->in_buffer, "version") == 0) {
                                     char version_msg[77];
                                     int version_len = snprintf(version_msg, sizeof(version_msg), "Gorgona Server Version %s\nThis server uses binary protocol. Goodbye Sir.\n", VERSION ? VERSION : "unknown");
                                     send(sd, version_msg, version_len, 0);
@@ -321,6 +319,19 @@ void run_server(int server_fd) {
                                         char time_str[32];
                                         get_utc_time_str(time_str, sizeof(time_str));
                                         fprintf(log_file, "%s Version request (%s) from fd %d\n", time_str, sub->in_buffer, sd);
+                                        fflush(log_file);
+                                        rotate_log();
+                                    }
+                                } else if (strcmp(sub->in_buffer, "info") == 0) {                                    
+                                    char info_msg[256];
+                                    int info_len = snprintf(info_msg, sizeof(info_msg),"Gorgona Server Version %s\nMax message size: %zu bytes\nMax clients: %d\nhttps://github.com/psqlmaster/gorgona\n",
+                                        VERSION ? VERSION : "unknown", max_message_size, max_clients);
+                                    send(sd, info_msg, info_len, 0);
+                                    sub->close_after_send = true;
+                                    if (log_file && strcmp(log_level, "info") == 0) {
+                                        char time_str[32];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Info request from fd %d\n", time_str, sd);
                                         fflush(log_file);
                                         rotate_log();
                                     }
