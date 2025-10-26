@@ -15,7 +15,21 @@
 #include <netinet/tcp.h>
 #include <dirent.h>
 #include <inttypes.h>
-#define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 января 2025 в ms (из snowflake.h) */
+#define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 January 2025 в ms (из snowflake.h) */
+
+typedef struct PendingAlert {
+    char *pubkey_hash_b64;
+    uint64_t id;
+    time_t unlock_at;
+    time_t expire_at;
+    char *encrypted_text;
+    char *encrypted_key;
+    char *iv;
+    char *tag;
+    struct PendingAlert *next;
+} PendingAlert;
+
+static PendingAlert *pending_alerts = NULL;
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -95,6 +109,45 @@ void free_key_hashes(char **key_hashes, int key_count) {
     free(key_hashes);
 }
 
+static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config) {
+    size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
+    unsigned char *encrypted = base64_decode(pa->encrypted_text, &encrypted_len);
+    unsigned char *encrypted_key_dec = base64_decode(pa->encrypted_key, &encrypted_key_len);
+    unsigned char *iv_dec = base64_decode(pa->iv, &iv_len);
+    unsigned char *tag_dec = base64_decode(pa->tag, &tag_len);
+
+    if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
+        fprintf(stderr, "Base64 decode failed for pending alert ID=%" PRIu64 "\n", pa->id);
+        goto cleanup;
+    }
+
+    char priv_file[256];
+    snprintf(priv_file, sizeof(priv_file), "/etc/gorgona/%s.key", pa->pubkey_hash_b64);
+    char *plaintext = NULL;
+    int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
+                             iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
+    if (ret != 0 || !plaintext) {
+        fprintf(stderr, "Decryption failed for pending alert ID=%" PRIu64 "\n", pa->id);
+        goto cleanup;
+    }
+
+    if (config->exec_count == 0) {
+        system(plaintext);
+    } else {
+        for (int i = 0; i < config->exec_count; i++) {
+            if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
+                system(config->exec_commands[i].value);
+                break;
+            }
+        }
+    }
+
+    free(plaintext);
+
+cleanup:
+    free(encrypted); free(encrypted_key_dec); free(iv_dec); free(tag_dec);
+}
+
 /* Parses server response and processes message */
 void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute, Config *config) {
     if (strncmp(response, "ALERT|", 6) != 0) {
@@ -149,13 +202,9 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
         return;
     }
 
-    // BEGIN INSERT: Добавляем вывод ID
     printf("Received message: Pubkey_Hash=%s\n", pubkey_hash_b64);
     printf("ID: %" PRIu64 "\n", id);
-    // END INSERT
 
-    /* Use separate buffers to avoid overwriting static buffer */
-    
     /* format and show both UTC and localtime to avoid confusion */
     char buf_create_utc[32], buf_unlock_utc[32], buf_expire_utc[32];
     char buf_create_local[32], buf_unlock_local[32], buf_expire_local[32];
@@ -197,13 +246,31 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     if (unlock_at > now) {
         printf("Locked message until %s (UTC) / %s (local)\n",
                buf_unlock_utc, buf_unlock_local);
+        if (execute) {
+            PendingAlert *pa = malloc(sizeof(PendingAlert));
+            if (pa) {
+                pa->pubkey_hash_b64 = strdup(pubkey_hash_b64);
+                pa->id = id;
+                pa->unlock_at = unlock_at;
+                pa->expire_at = expire_at;
+                pa->encrypted_text = strdup(encrypted_text);
+                pa->encrypted_key = strdup(encrypted_key);
+                pa->iv = strdup(iv);
+                pa->tag = strdup(tag);
+                pa->next = pending_alerts;
+                pending_alerts = pa;
+                if (verbose) {
+                    printf("Queued locked message ID=%" PRIu64 " for execution at %s\n", id, buf_unlock_utc);
+                }
+            }
+        }
         free(copy);
         return;
     }
 
     /* At this point the message is valid to attempt decoding / decryption.
-       Perform base64 decode and RSA/AES decryption here. */
-    /* Decode base64 data */
+       Perform base64 decode and RSA/AES decryption here. 
+       Decode base64 data */
     size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
     unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
     unsigned char *encrypted_key_dec = base64_decode(encrypted_key, &encrypted_key_len);
@@ -475,16 +542,15 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
 
         free(buffer);
 
-         /* Read responses */
+        /* Read responses with select() to handle pending alerts */
         int messages_received = 0;
         int connection_ok = 1;
         struct timeval start_time;
         gettimeofday(&start_time, NULL);
-
-        // FIX: Флаг для отслеживания получения сообщений для текущего ключа
         int received_any_message = 0;
 
         while (connection_ok) {
+            // Check periodic reconnect
             struct timeval current_time;
             gettimeofday(&current_time, NULL);
             long elapsed_sec = current_time.tv_sec - start_time.tv_sec;
@@ -493,10 +559,68 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                 connection_ok = 0;
                 break;
             }
-            uint32_t resp_len_net;
-            ssize_t valread;
 
-            valread = recv(sock, &resp_len_net, sizeof(uint32_t), MSG_WAITALL);
+            /* Find next unlock time */
+            time_t now = time(NULL);
+            time_t next_unlock = 0;
+            PendingAlert *pa = pending_alerts;
+            while (pa) {
+                if (pa->unlock_at > now && (!next_unlock || pa->unlock_at < next_unlock)) {
+                    next_unlock = pa->unlock_at;
+                }
+                pa = pa->next;
+            }
+
+            /* Set timeout for select */
+            struct timeval timeout, *timeout_ptr = NULL;
+            if (next_unlock) {
+                long delay = next_unlock - now;
+                if (delay < 0) delay = 0;
+                timeout.tv_sec = delay;
+                timeout.tv_usec = 0;
+                timeout_ptr = &timeout;
+            }
+
+            /* Check pending alerts that are ready */
+            now = time(NULL);
+            PendingAlert **prev = &pending_alerts;
+            while (*prev) {
+                if ((*prev)->unlock_at <= now && (*prev)->expire_at > now) {
+                    PendingAlert *to_exec = *prev;
+                    *prev = to_exec->next;
+                    execute_pending_alert(to_exec, verbose, &config);
+                    // Free memory
+                    free(to_exec->pubkey_hash_b64);
+                    free(to_exec->encrypted_text);
+                    free(to_exec->encrypted_key);
+                    free(to_exec->iv);
+                    free(to_exec->tag);
+                    free(to_exec);
+                } else {
+                    prev = &(*prev)->next;
+                }
+            }
+
+            /* Use select to wait for data or timeout */
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(sock, &readfds);
+            int activity = select(sock + 1, &readfds, NULL, NULL, timeout_ptr);
+
+            if (activity < 0) {
+                if (errno == EINTR) continue;
+                fprintf(stderr, "Select error: %s\n", strerror(errno));
+                connection_ok = 0;
+                break;
+            }
+
+            if (activity == 0) {
+                continue; /* Timeout — already handled pending alerts above */
+            }
+
+            /* Read response length */
+            uint32_t resp_len_net;
+            ssize_t valread = recv(sock, &resp_len_net, sizeof(uint32_t), MSG_WAITALL);
             if (valread == 0) {
                 if (verbose) fprintf(stderr, "Debug: Connection closed by server\n");
                 connection_ok = 0;
@@ -565,25 +689,20 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
 
             parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config);
 
-         if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
-            messages_received++;
-            received_any_message = 1;
-            if (verbose) {
-                printf("Debug: Processed ALERT message %d\n", messages_received);
+            if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
+                messages_received++;
+                received_any_message = 1;
+                if (pubkey_hash_b64 && messages_received >= count) {
+                    free(resp_buffer);
+                    connection_ok = 0;
+                    break;
+                }
             }
-            // Завершаем после получения count сообщений — даже если pubkey_hash_b64 не задан
-            if (messages_received >= count) {
-                free(resp_buffer);
-                connection_ok = 0;
-                break;
-            }
-        } 
+
             free(resp_buffer);
         }
-
         close(sock);
 
-        // FIX: Для режима last без ключа, если не получили сообщений для текущего ключа - выводим отладочную info
         if (strcmp(mode, "last") == 0 && !pubkey_hash_b64 && verbose && !received_any_message) {
             printf("Debug: No messages for key %s\n", current_pubkey_hash ? current_pubkey_hash : "NULL");
         }
@@ -593,7 +712,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
         free_key_hashes(key_hashes, key_count);
     }
 
-    // FIX: Для режима last без ключа завершаем работу после обработки всех ключей
+    /* For the last mode without a key, we finish the job after processing all keys. */
     if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
         if (verbose) {
             printf("Debug: Processed all keys, exiting\n");
@@ -609,6 +728,5 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
     sleep(reconnect_delay);
     reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
                      (reconnect_delay + reconnect_increment) : max_reconnect_delay;
-
     return 0;
 }    
