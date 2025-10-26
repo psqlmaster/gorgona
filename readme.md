@@ -38,6 +38,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gorgona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gorgona/`, which must be securely shared by the user.
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
 - **Command Execution Mode**: Use the `-e/--exec` flag with `listen` to execute received messages as system commands (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
+- **Sub-Second Time-Locked Execution**: In `lock/new` mode with `-e/--exec`, the client precisely executes commands at the exact `unlock_at` moment (±10ms), using a `select()`-based event loop. No busy-waiting — ideal for cron-like automation with cryptographic security.
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
@@ -181,6 +182,7 @@ gorgona listen last 3 RWTPQzuhzBw=     # Gets the last 3 messages
 gorgona listen new RWTPQzuhzBw=        # Receives only new messages from the moment of connection
 gorgona listen new                     # Receives only new messages for all keys since connection
 gorgona -e listen new RWTPQzuhzBw=     # Listens for new messages and executes them as system commands
+gorgona -e listen lock RWTPQzuhzBw=     # Waits for locked messages and executes them precisely at unlock_at
 ```
 
 ##### Run Server
@@ -483,4 +485,12 @@ gorgona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "mkdir testdir" "RWTPQz
 # mkdir & output message
 gorgona listen new RWTPQzuhzBw= & pid=$!; gorgona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" "mkdir testdir" "RWTPQzuhzBw=.pub"; sleep 2; kill $pid
 ```
-
+- Time-Locked Command Execution (Cron-like)
+```sh
+# Start listener in lock mode — it will execute the command exactly at unlock time
+gorgona -e listen lock RWTPQzuhzBw=
+# Send a command that unlocks in 30 seconds
+gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; } >> /tmp/unlocked_at.log" "RWTPQzuhzBw=.pub"
+# after 10 sec check file
+cat /tmp/unlocked_at.log
+```
