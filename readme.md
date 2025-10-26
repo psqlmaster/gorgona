@@ -489,7 +489,7 @@ gorgona listen new RWTPQzuhzBw= & pid=$!; gorgona send "2025-09-28 21:44:00" "20
 ```sh
 # Start listener in lock mode — it will execute the command exactly at unlock time
 gorgona -e listen lock RWTPQzuhzBw=
-# Send a command that unlocks in 10 seconds
+# In another terminal Send a command that unlocks alert in 10 seconds
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
 # Check and compare the time after 10 seconds. 
 ```
