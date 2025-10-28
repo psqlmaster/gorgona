@@ -1,7 +1,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
-#define DEFAULT_SERVER_IP "46.138.247.148"
-#define DEFAULT_SERVER_PORT 5555
+#define DEFAULT_SERVER_IP "192.168.1.200"
+#define DEFAULT_SERVER_PORT 7777
 #define MAX_EXEC_COMMANDS 100 
 
 typedef struct {

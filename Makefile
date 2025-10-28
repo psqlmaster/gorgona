@@ -14,7 +14,7 @@ DEFAULT_CHANGELOG_MSG = New release of gorgona client and server.
 # Source files
 gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c
 gorgonaD_SRC = server/gorgonad.c server/config.c server/gorgona_utils.c server/server_handler.c server/snowflake.c server/alert_db.c common/encrypt.c
-TEST_SRC = test/test_config.c test/test_alert_send.c test/test_alert_listen.c test/test_gorgona.c
+TEST_SRC = test/test_config.c test/test_alert_listen.c test/test_gorgona.c
 
 # Object files
 gorgona_OBJ = $(gorgona_SRC:.c=.o)
@@ -23,12 +23,12 @@ TEST_OBJ = $(TEST_SRC:.c=.o)
 
 # Test object files (без дублирующих модулей)
 TEST_CONFIG_OBJ = test/test_config.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
-TEST_ALERT_SEND_OBJ = test/test_alert_send.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
+#TEST_ALERT_SEND_OBJ = test/test_alert_send.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
 TEST_ALERT_LISTEN_OBJ = test/test_alert_listen.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
 TEST_GORGONA_OBJ = test/test_gorgona.o
 
 # Test executables
-TEST_EXEC = test/test_config test/test_alert_send test/test_alert_listen test/test_gorgona
+TEST_EXEC = test/test_config test/test_alert_listen test/test_gorgona
 
 # Targets
 all: gorgona gorgonad

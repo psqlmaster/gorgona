@@ -43,6 +43,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
 - **Tamper-Proof**: GCM authentication tags and RSA-OAEP padding protect against tampering.
+- **Interactive Server Status via Telnet**: Connect via `telnet <server> <port>` and use commands like `info`, `version`, or `?` to instantly view server version, uptime (e.g., `1d 21h 45m`), max clients, and message size limits — ideal for quick health checks without logs.
 
 ##### Advantages
 
@@ -493,3 +494,16 @@ gorgona -e listen lock RWTPQzuhzBw=
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
 # Check and compare the time after 10 seconds. 
 ```
+##### Server Status via Telnet
+```sh
+telnet 46.138.247.148 7777
+```
+    Trying 46.138.247.148...
+    Connected to 46.138.247.148.
+    Escape character is '^]'.
+    info
+    Gorgona Alert Server 2.4.1
+    Uptime: 1d 21h 45m
+    Max message size: 5242880 bytes
+    Max clients: 100
+    https://github.com/psqlmaster/gorgona

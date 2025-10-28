@@ -22,6 +22,8 @@ extern char log_level[32];
 extern int client_sockets[];
 extern Subscriber subscribers[];
 
+static time_t server_start_time = 0;
+
 void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
     OutBuffer *new_buf;
     uint32_t len_net = htonl(msg_len);
@@ -137,7 +139,9 @@ void run_server(int server_fd) {
     int addrlen = sizeof(address);
     fd_set readfds;
     fd_set writefds;
-
+    if (server_start_time == 0) {
+        server_start_time = time(NULL);
+    }
     while (1) {
         FD_ZERO(&readfds);
         FD_ZERO(&writefds);
@@ -322,20 +326,32 @@ void run_server(int server_fd) {
                                         fflush(log_file);
                                         rotate_log();
                                     }
-                                } else if (strcmp(sub->in_buffer, "info") == 0) {                                    
-                                    char info_msg[256];
-                                    int info_len = snprintf(info_msg, sizeof(info_msg),"Gorgona Server Version %s\nMax message size: %zu bytes\nMax clients: %d\nhttps://github.com/psqlmaster/gorgona\n",
-                                        VERSION ? VERSION : "unknown", max_message_size, max_clients);
-                                    send(sd, info_msg, info_len, 0);
-                                    sub->close_after_send = true;
-                                    if (log_file && strcmp(log_level, "info") == 0) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Info request from fd %d\n", time_str, sd);
-                                        fflush(log_file);
-                                        rotate_log();
-                                    }
-                                } else {
+                                } else if (strcmp(sub->in_buffer, "info") == 0) {
+                                      char info_msg[512];
+                                      time_t now = time(NULL);
+                                      double uptime_sec = difftime(now, server_start_time);
+                                      int days = (int)(uptime_sec / 86400);
+                                      int hours = (int)((uptime_sec / 3600) - (days * 24));
+                                      int minutes = (int)((uptime_sec / 60) - (days * 1440) - (hours * 60));
+                                      int info_len = snprintf(info_msg, sizeof(info_msg),
+                                          "Gorgona Server Version %s\n"
+                                          "Uptime: %dd %dh %dm\n"
+                                          "Max message size: %zu bytes\n"
+                                          "Max clients: %d\n"
+                                          "https://github.com/psqlmaster/gorgona\n",
+                                          VERSION ? VERSION : "unknown",
+                                          days, hours, minutes,
+                                          max_message_size, max_clients);
+                                      send(sd, info_msg, info_len, 0);
+                                      sub->close_after_send = true;
+                                      if (log_file && strcmp(log_level, "info") == 0) {
+                                          char time_str[32];
+                                          get_utc_time_str(time_str, sizeof(time_str));
+                                          fprintf(log_file, "%s Info request from fd %d\n", time_str, sd);
+                                          fflush(log_file);
+                                          rotate_log();
+                                      }
+                                  } else {
                                     /* Unknown command in text mode */
                                     char *error_msg = "Error: Unknown command\n";
                                     send(sd, error_msg, strlen(error_msg), 0);
