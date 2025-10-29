@@ -39,7 +39,7 @@ START_TEST(test_parse_response_valid) {
     Config config = {0};
     mock_read_config(&config, 0);
     const char *response = "ALERT|RWTPQzuhzBw=|1697650800|1697650800|1824759307|ZW5jcnlwdGVk|ZW5jcnlwdGVkX2tleQ==|aXY=|dGFn";
-    parse_response(response, "RWTPQzuhzBw=", 0, 0, &config);
+    parse_response(response, "RWTPQzuhzBw=", 0, 0, &config, 0);
 }
 END_TEST
 

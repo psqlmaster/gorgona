@@ -15,6 +15,8 @@
 #include <netinet/tcp.h>
 #include <dirent.h>
 #include <inttypes.h>
+#include <fcntl.h>
+#include <sys/wait.h> 
 #define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 January 2025 в ms (из snowflake.h) */
 
 typedef struct PendingAlert {
@@ -109,6 +111,36 @@ void free_key_hashes(char **key_hashes, int key_count) {
     free(key_hashes);
 }
 
+/* flag (-d) Executes command in background (daemon) */
+void daemon_exec(const char *command, int verbose) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        const char *log_path = getenv("gorgona_LOG_FILE");
+        int fd = -1;
+        if (log_path && log_path[0]) {
+            fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        }
+        if (fd == -1) {
+            fd = open("/dev/null", O_RDWR);
+        }
+        if (fd != -1) {
+            dup2(fd, STDIN_FILENO);
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            if (fd > 2) close(fd);
+        }
+        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+        _exit(127);
+    } else if (pid > 0) {
+        if (verbose) {
+            printf("Launched background process PID=%d\n", (int)pid);
+        }
+    } else {
+        perror("fork");
+    }
+}
+
 static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config) {
     size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
     unsigned char *encrypted = base64_decode(pa->encrypted_text, &encrypted_len);
@@ -149,7 +181,7 @@ cleanup:
 }
 
 /* Parses server response and processes message */
-void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute, Config *config) {
+void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute, Config *config, int daemon_exec_flag) {
     if (strncmp(response, "ALERT|", 6) != 0) {
         printf("Server response: %s\n", response);
         return;
@@ -300,37 +332,44 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
         return;
     }
     if (execute) {
-        char *script_to_run = NULL;
-        if (config->exec_count == 0) {
-            script_to_run = plaintext;
+      char *script_to_run = NULL;
+      if (config->exec_count == 0) {
+        script_to_run = plaintext;
+      } else {
+        for (int i = 0; i < config->exec_count; i++) {
+          if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
+            script_to_run = config->exec_commands[i].value;
+            break;
+          }
+        }
+      }
+      if (script_to_run) {
+        if (daemon_exec_flag) {
+          if (verbose) {
+            printf("Executing command in background: %s\n", script_to_run);
+          }
+          daemon_exec(script_to_run, verbose);
         } else {
-            for (int i = 0; i < config->exec_count; i++) {
-                if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
-                    script_to_run = config->exec_commands[i].value;
-                    break;
-                }
-            }
+          if (verbose) {
+            printf("Executing command: %s\n", script_to_run);
+          }
+          int ret = system(script_to_run);
+          if (ret != 0) {
+            fprintf(stderr, "Command execution failed: %s\n", script_to_run);
+          }
         }
-        if (script_to_run) {
-            if (verbose) {
-                printf("Executing command: %s\n", script_to_run);
-            }
-            int ret = system(script_to_run);
-            if (ret != 0) {
-                fprintf(stderr, "Command execution failed: %s\n", script_to_run);
-            }
-        } else if (verbose) {
-            printf("No matching script found for message: %s\n", plaintext);
-        }
+      } else if (verbose) {
+        printf("No matching script found for message: %s\n", plaintext);
+      }
     } else {
-        printf("Decrypted message:\n%s\n", plaintext);
+      printf("Decrypted message:\n%s\n", plaintext);
     }
     free(plaintext);
     free(copy);
 }
 
 /* Listens for messages from server in specified mode */
-int listen_alerts(int argc, char *argv[], int verbose, int execute) {
+int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_exec_flag) {
     if (argc < 2) {
         fprintf(stderr, "Usage: listen <mode> [<count>] [pubkey_hash_b64]\n");
         fprintf(stderr, "Modes: live, all, lock, single, last, new\n");
@@ -687,7 +726,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute) {
                 printf("Received response: %s\n", resp_buffer);
             }
 
-            parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config);
+            parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config, daemon_exec_flag);
 
             if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
                 messages_received++;

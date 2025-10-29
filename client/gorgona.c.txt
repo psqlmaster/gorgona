@@ -7,7 +7,7 @@ All rights reserved. */
 #include <getopt.h>
 
 extern int send_alert(int argc, char *argv[], int verbose);
-extern int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_exec_flag);
+extern int listen_alerts(int argc, char *argv[], int verbose, int execute);
 
 void print_help(const char *program_name) {
     printf("Gorgona Client (Version %s)\n", VERSION);
@@ -19,10 +19,6 @@ void print_help(const char *program_name) {
            "If [exec_commands] in /etc/gorgona/gorgona.conf is empty, all decrypted messages are executed. "
            "If [exec_commands] contains entries (e.g., 'greengage start = /path/to/script.sh'), only messages "
            "matching a key are executed by running the corresponding script.\n");
-    printf(" -d, --daemon-exec  Used with -e: executes commands in background as daemons (via fork + setsid). "
-           "Output from executed commands is written to the file specified by the environment variable "
-           "gorgona_LOG_FILE (e.g., gorgona_LOG_FILE=/var/log/gorgona.log ./gorgona -ed listen new ...). "
-           "If gorgona_LOG_FILE is not set, output is discarded (/dev/null).\n");
     printf(" -V, --version  Displays version information\n");
     printf(" -h, --help     Displays this help message\n");
     printf(" Note: Flags -v, -e, and -V can be combined (e.g., -veV) for verbose output during command execution.\n");
@@ -67,7 +63,6 @@ void print_help(const char *program_name) {
 int main(int argc, char *argv[]) {
     int verbose = 0;
     int execute = 0;
-    int daemon_exec_flag = 0;
     int opt;
 
     /* Define long options for getopt_long */
@@ -79,37 +74,29 @@ int main(int argc, char *argv[]) {
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "vheVd", long_options, NULL)) != -1) {
-      switch (opt) {
-      case 'v':
-        verbose = 1;
-        break;
-      case 'h':
-        print_help(argv[0]);
-        return 0;
-      case 'e':
-        execute = 1;
-        break;
-      case 'V':
-        printf("Gorgona Client Version %s\n", VERSION);
-        return 0;
-      case 'd':
-        daemon_exec_flag = 1;
-        break;
-      case '?':
-        fprintf(stderr, "Unknown flag: %s\n", argv[optind - 1]);
-        print_help(argv[0]);
-        return 1;
-      default:
-        fprintf(stderr, "Error processing flags\n");
-        print_help(argv[0]);
-        return 1;
-      }
-    }
-
-    if (daemon_exec_flag && !execute) {
-        fprintf(stderr, "Error: -d (--daemon-exec) requires -e (--exec)\n");
-        return 1;
+    while ((opt = getopt_long(argc, argv, "vheV", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'v':
+                verbose = 1;
+                break;
+            case 'h':
+                print_help(argv[0]);
+                return 0;
+            case 'e':
+                execute = 1;
+                break;
+            case 'V':
+                printf("Gorgona Client Version %s\n", VERSION);
+                return 0;
+            case '?':
+                fprintf(stderr, "Unknown flag: %s\n", argv[optind-1]);
+                print_help(argv[0]);
+                return 1;
+            default:
+                fprintf(stderr, "Error processing flags\n");
+                print_help(argv[0]);
+                return 1;
+        }
     }
 
     if (optind >= argc) {
@@ -124,7 +111,7 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[optind], "send") == 0) {
         return send_alert(argc - optind, argv + optind, verbose);
     } else if (strcmp(argv[optind], "listen") == 0) {
-        return listen_alerts(argc - optind, argv + optind, verbose, execute, daemon_exec_flag);
+        return listen_alerts(argc - optind, argv + optind, verbose, execute);
     } else {
         fprintf(stderr, "Unknown command: %s\n", argv[optind]);
         print_help(argv[0]);

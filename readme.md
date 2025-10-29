@@ -38,6 +38,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gorgona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gorgona/`, which must be securely shared by the user.
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
 - **Command Execution Mode**: Use the `-e/--exec` flag with `listen` to execute received messages as system commands (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
+- **When combined with the -d flag**: commands are executed in the background as detached daemons, making them immune to parent process termination (e.g., when running under systemd). This is especially useful for long-running processes like gpstart or custom services. All stdout/stderr from such commands is redirected to the path in gorgona_LOG_FILE, enabling centralized logging.
 - **Sub-Second Time-Locked Execution**: In `lock/new` mode with `-e/--exec`, the client precisely executes commands at the exact `unlock_at` moment (±10ms), using a `select()`-based event loop. No busy-waiting — ideal for cron-like automation with cryptographic security.
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
@@ -116,6 +117,9 @@ gorgona [-v] [-e|--exec] [-h|--help] [-V|--version] <command> [arguments]
 
 - `-v, --verbose`: Enables verbose output for debugging.
 - `-e, --exec`: For 'listen' command: execute messages as system commands (requires `pubkey_hash_b64`).
+- `-d, --daemon-exec`: Used with `-e/--exec` for 'listen' command: executes messages as **background daemons** (via `fork()` + `setsid()`).  
+      Output from executed commands is written to the file specified by the environment variable `gorgona_LOG_FILE` (e.g., `gorgona_LOG_FILE=/var/log/gorgona.log gorgona -ed listen new ...`).  
+      If `gorgona_LOG_FILE` is not set, command output is discarded (`/dev/null`).
   - If the `[exec_commands]` section in `/etc/gorgona/gorgona.conf` is empty, all decrypted messages are executed.
   - If `[exec_commands]` contains entries (e.g., `greengage start = /path/to/script.sh`), only messages matching a key are executed by running the corresponding script.
 - `-h, --help`: Displays help message.
@@ -184,6 +188,8 @@ gorgona listen new RWTPQzuhzBw=        # Receives only new messages from the mom
 gorgona listen new                     # Receives only new messages for all keys since connection
 gorgona -e listen new RWTPQzuhzBw=     # Listens for new messages and executes them as system commands
 gorgona -e listen lock RWTPQzuhzBw=     # Waits for locked messages and executes them precisely at unlock_at
+gorgona -ed listen new RWTPQzuhzBw=     # Listens for new messages and executes them as background daemons
+gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background with logging
 ```
 
 ##### Run Server
@@ -457,7 +463,7 @@ gorgona -e listen new RWTPQzuhzBw=
  
  [Service]
  Type=simple
- ExecStart=/usr/bin/gorgona -e listen new RWTPQzuhzBw=
+ ExecStart=/usr/bin/gorgona -ed listen new RWTPQzuhzBw=  ##### -d process is daemon #####
  Restart=always
  RestartSec=5
  StartLimitBurst=10
@@ -477,6 +483,10 @@ gorgona -e listen new RWTPQzuhzBw=
  sudo systemctl daemon-reload && \
  sudo systemctl enable gorgona && \
  sudo systemctl start gorgona
+
+sudo touch /var/log/gorgona_service.log
+sudo chown user:user /var/log/gorgona_service.log
+sudo chmod 644 /var/log/gorgona_service.log
  ```
 
 ```bash
