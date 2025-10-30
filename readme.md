@@ -504,7 +504,7 @@ gorgona -e listen lock RWTPQzuhzBw=
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
 # Check and compare the time after 10 seconds. 
 ```
-##### Server Status via Telnet
+- Server Status via Telnet
 ```sh
 telnet 46.138.247.148 7777
 ```
@@ -517,3 +517,35 @@ telnet 46.138.247.148 7777
     Max message size: 5242880 bytes
     Max clients: 100
     https://github.com/psqlmaster/gorgona
+
+- example starting service
+```sh
+# vim /etc/systemd/system/greenplum.service
+[Unit] 
+Description=Greenplum Database Cluster 
+After=network.target 
+Wants=network-online.target 
+ 
+[Service] 
+Type=forking 
+User=gpadmin 
+Group=gpadmin 
+Environment=GPHOME=/usr/lib/gpdb 
+Environment=MASTER_DATA_DIRECTORY=/data1/master/gpseg-1 
+Environment=PATH=/usr/lib/gpdb/bin:/usr/local/bin:/usr/bin:/bin 
+Environment=LD_LIBRARY_PATH=/usr/lib/gpdb/lib 
+Environment=LC_ALL=en_US.UTF-8 
+ExecStart=/usr/lib/gpdb/bin/gpstart -a 
+ExecStop=/usr/lib/gpdb/bin/gpstop -aM fast 
+PIDFile=/data1/master/gpseg-1/postmaster.pid 
+TimeoutSec=300 
+ 
+[Install] 
+WantedBy=multi-user.target
+```
+```sh
+# vim /etc/gorgona/gorgona.conf
+[exec_commands]
+start greenplum = /bin/systemctl start greenplum
+stop greenplum  = /bin/systemctl stop greenplum
+```
