@@ -110,7 +110,7 @@ sudo dpkg -i ./gorgonad_1.8.3_amd64.deb
 ##### Usage
 
 ```bash
-gorgona [-v] [-e|--exec] [-h|--help] [-V|--version] <command> [arguments]
+gorgona [-v] [-e|--exec] [-ed|--daemon-exec] [-h|--help] [-V|--version] <command> [arguments]
 ```
 
 ##### Flags
