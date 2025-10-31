@@ -20,6 +20,7 @@
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Future Plans](#future-plans)
 - [Testing](#testing)  ***youtube promo video***
+- [More examples](#more-examples)
 
 ---
 
@@ -146,7 +147,7 @@ ls -la /etc/gorgona
 ```
 
 ### Send Message 
-- (datetime UTC) & date -u '+%Y-%m-%d %H:%M:%S'
+- (datetime UTC) or date -u '+%Y-%m-%d %H:%M:%S'
 
 ```bash
 gorgona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipient.pub"
@@ -397,8 +398,7 @@ https://youtu.be/3JodTvfr88c
 make clean && make test
 ```
 
-**More examples**:
-
+##### More examples
 ```bash
 # send
 lsblk | gorgona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
@@ -429,17 +429,14 @@ gorgona -e listen new RWTPQzuhzBw=
  gorgona send \"2025-09-28 21:44:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"" "IcUimbs6LZY=.pub"
  ```
 
- If we listen on that channel:
-
+- If we listen on that channel:
  ```bash
  gorgona listen new RWTPQzuhzBw=
  gorgona listen last RWTPQzuhzBw=
  ```
 
- we immediately get a reply with the output of `iostat`.
-
+ - we immediately get a reply with the output of `iostat`.
  **Added service for listen messages in mode `--exec`**:
-
  ```bash
  sudo tee /tmp/mkdir.sh  /dev/null << 'EOF'
  mkdir -p /tmp/test/test1/test2/test3 && cd /tmp/test/test1/test2/test3 && pwd | \
