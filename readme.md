@@ -145,7 +145,7 @@ To decrypt messages, the recipient must have the sender’s `hash.key` private k
 ls -la /etc/gorgona
 ```
 
-### Send Message
+### Send Message (time UTC)
 
 ```bash
 gorgona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipient.pub"
