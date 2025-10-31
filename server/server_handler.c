@@ -288,7 +288,8 @@ void run_server(int server_fd) {
                                 trim_string(sub->in_buffer);
 
                                 /* Send welcome message if this is the first data */
-                                if ((sub->in_pos <= 7) && strcmp(sub->in_buffer, "?") != 0  && strcmp(sub->in_buffer, "version") != 0 && strcmp(sub->in_buffer, "info") != 0) {
+                                if ((sub->in_pos <= 7) && strcmp(sub->in_buffer, "?") != 0  && strcmp(sub->in_buffer, "version") != 0
+                                    && strcmp(sub->in_buffer, "info") != 0 && strcmp(sub->in_buffer, "help") != 0) {
                                     char welcome[256];
                                     int len = snprintf(welcome, sizeof(welcome), "Welcome. Enter: ?, info, or version.\n"); 
                                     if (len > 0) {
@@ -326,7 +327,7 @@ void run_server(int server_fd) {
                                         fflush(log_file);
                                         rotate_log();
                                     }
-                                } else if (strcmp(sub->in_buffer, "info") == 0) {
+                                } else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
                                       char info_msg[512];
                                       time_t now = time(NULL);
                                       double uptime_sec = difftime(now, server_start_time);
