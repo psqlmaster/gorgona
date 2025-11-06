@@ -3,23 +3,23 @@
 #include <stdio.h>
 #include "config.h"
 
-// Control mock behavior
-static int mock_config_mode = 0; // 0: valid, 1: missing, 2: empty
+/* Control mock behavior: 0 = valid config, 1 = missing file, 2 = empty file */
+static int mock_config_mode = 0;
 
-// Mock fopen to provide a controlled config file
+/* Mock fopen to provide a controlled config file */
 FILE *fopen(const char *path, const char *mode) {
     static FILE *mock_fp = NULL;
     if (strcmp(path, "/etc/gorgona/gorgona.conf") == 0) {
-        if (mock_config_mode == 1) { // Missing file
+        if (mock_config_mode == 1) { /* Simulate missing file */
             return NULL;
         }
         mock_fp = tmpfile();
         if (mock_fp) {
-            if (mock_config_mode == 0) { // Valid config
+            if (mock_config_mode == 0) { /* Simulate valid config */
                 fprintf(mock_fp, "[server]\nip=192.168.1.200\nport=7777\n[exec_commands]\ndf=/home/su/repository/c/gorgona/test/df.sh\n");
                 rewind(mock_fp);
             }
-            // For empty config (mode 2), leave file empty
+            /* For empty config (mode 2), leave file empty */
             return mock_fp;
         }
     }
@@ -27,9 +27,9 @@ FILE *fopen(const char *path, const char *mode) {
 }
 
 START_TEST(test_read_config_valid) {
-    mock_config_mode = 0; // Set to valid config
+    mock_config_mode = 0; /* Set to valid config */
     Config config;
-    memset(&config, 0, sizeof(Config)); // Initialize
+    memset(&config, 0, sizeof(Config)); /* Initialize config struct */
     read_config(&config, 0);
     ck_assert_str_eq(config.server_ip, "192.168.1.200");
     ck_assert_int_eq(config.server_port, 7777);
@@ -40,23 +40,23 @@ START_TEST(test_read_config_valid) {
 END_TEST
 
 START_TEST(test_read_config_missing) {
-    mock_config_mode = 1; // Set to missing file
+    mock_config_mode = 1; /* Set to missing file */
     Config config;
-    memset(&config, 0, sizeof(Config)); // Initialize
-    read_config(&config, 0); // Should use defaults
+    memset(&config, 0, sizeof(Config)); /* Initialize config struct */
+    read_config(&config, 0); /* Should use defaults */
     ck_assert_str_eq(config.server_ip, "192.168.1.200");
-    ck_assert_int_eq(config.server_port, 7777); // Expect default port
+    ck_assert_int_eq(config.server_port, 7777); /* Expect default port */
     ck_assert_int_eq(config.exec_count, 0);
 }
 END_TEST
 
 START_TEST(test_read_config_empty) {
-    mock_config_mode = 2; // Set to empty file
+    mock_config_mode = 2; /* Set to empty file */
     Config config;
-    memset(&config, 0, sizeof(Config)); // Initialize
-    read_config(&config, 0); // Should use defaults
+    memset(&config, 0, sizeof(Config)); /* Initialize config struct */
+    read_config(&config, 0); /* Should use defaults */
     ck_assert_str_eq(config.server_ip, "192.168.1.200");
-    ck_assert_int_eq(config.server_port, 7777); // Expect default port
+    ck_assert_int_eq(config.server_port, 7777); /* Expect default port */
     ck_assert_int_eq(config.exec_count, 0);
 }
 END_TEST
