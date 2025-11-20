@@ -32,9 +32,9 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 ##### Features
 
+- **Time Capsule**: A decentralized crontab with 1ms UTC precision for time-locked message execution between unlock_at and expire_at.
 - **End-to-End Encryption**: Messages are encrypted on the client and decrypted only by the recipient with their private key.
 - **Optional Persistent Storage**: Enable disk-based storage for alerts (default: disabled, configurable via `use_disk_db`). When enabled, alerts are saved to `/var/lib/gorgona/alerts/` for persistence across restarts; otherwise, operate in memory-only mode for lightweight deployments.
-- **Time-Locked Delivery**: Messages unlock at a specified `unlock_at` time and expire at `expire_at`.
 - **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
 - **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gorgona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gorgona/`, which must be securely shared by the user.
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
