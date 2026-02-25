@@ -67,6 +67,7 @@ void print_server_help(const char *program_name) {
     printf(" %s\n", program_name);
     printf(" Starts the server using settings from /etc/gorgona/gorgonad.conf or defaults.\n");
 }
+int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -102,11 +103,13 @@ int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN); 
 
     /* Read configuration */
-    int port, max_alerts_config, max_clients_config;
+    int port, max_alerts_config, max_clients_config, vacuum_threshold_config; 
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
-    read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, log_level, &max_message_size_config, &use_disk_db_config);
+    read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
+                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config); 
     max_alerts = max_alerts_config;
+    vacuum_threshold = vacuum_threshold_config;
     max_clients = max_clients_config;
     max_log_size = max_log_size_config;
     max_message_size = max_message_size_config;

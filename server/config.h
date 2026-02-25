@@ -7,5 +7,7 @@
 #define DEFAULT_MAX_LOG_SIZE (10 * 1024 * 1024) /* 10 MB */
 #define DEFAULT_LOG_LEVEL "info" 
 #define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) /* 5 MB by default */
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db);
+#define DEFAULT_VACUUM_THRESHOLD 25 /* 25% by default */
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
+                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold);
 #endif

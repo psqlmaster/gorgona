@@ -5,8 +5,8 @@
 #include <ctype.h>
 
 /* Reads configuration from gorgonad.conf */
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level,
-                 size_t *max_message_size, int *use_disk_db) {
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
+                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold) {
     /* Set default values */
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
@@ -14,6 +14,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
     *max_log_size = DEFAULT_MAX_LOG_SIZE;
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
     *use_disk_db = 0; /* false by default */
+    *vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
     if (log_level) {
           snprintf(log_level, 32, "%s", DEFAULT_LOG_LEVEL);
     }
@@ -54,7 +55,11 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         trim_string(key);
         trim_string(value);
         /* Parse known configuration keys */
-        if (strcmp(key, "port") == 0) {
+        if (strcmp(key, "vacuum_threshold_percent") == 0) {
+            *vacuum_threshold = atoi(value);
+            if (*vacuum_threshold < 1) *vacuum_threshold = 1;
+            if (*vacuum_threshold > 100) *vacuum_threshold = 100;
+        } else if (strcmp(key, "port") == 0) { 
             *port = atoi(value);
         } else if (strcmp(key, "max_alerts") == 0) {
             *max_alerts = atoi(value);
