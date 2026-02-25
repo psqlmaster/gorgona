@@ -57,6 +57,7 @@ void print_server_help(const char *program_name) {
     printf(" log_level = \"info\"|\"error\" (default: \"info\")\n");
     printf(" max_message_size = <MB> (default: 5, example: 10 for 10 MB)\n");
     printf(" use_disk_db = <boolean> (default: false, example: true to enable disk-based storage)\n");
+    printf(" vacuum_threshold_percent = <int> (default: 25, Cleanup threshold %%: higher reduces disk I/O, lower saves disk space)\n");
     printf("\nLogging:\n");
     printf(" Logs are written to ./gorgonad.log (rotates at %zu MB). \"info\" logs events and errors; \"error\" logs only errors.\n", max_log_size);
     printf("\nLimits:\n");
