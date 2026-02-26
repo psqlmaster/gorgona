@@ -8,6 +8,8 @@ All rights reserved. */
 #include <time.h>
 #include <stdbool.h>
 #include <sys/socket.h>
+#include <netinet/in.h> 
+#include <arpa/inet.h>
 #include <stdint.h>
 #include "encrypt.h"
 #include "config.h"
@@ -67,6 +69,7 @@ typedef struct {
 /* Structure for subscribers */
 typedef struct {
     int sock;
+    char ip_address[INET_ADDRSTRLEN]; 
     char pubkey_hash[64]; 
     int mode; 
     time_t connect_time;

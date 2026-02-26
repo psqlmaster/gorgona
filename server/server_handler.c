@@ -91,7 +91,7 @@ void process_out(int sub_index, int sd) {
                 if (log_file) {
                     char time_str[32];
                     get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s Send error for fd %d: %s\n", time_str, sd, strerror(errno));
+                    fprintf(log_file, "%s Send error for fd %d [%s]: %s\n", time_str, sd, subscribers[sub_index].ip_address, strerror(errno));
                     fflush(log_file);
                 }
                 close(sd);
@@ -200,6 +200,7 @@ void run_server(int server_fd) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
+                    inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;
@@ -213,7 +214,7 @@ void run_server(int server_fd) {
                     if (log_file && strcmp(log_level, "info") == 0) {
                         char time_str[32];
                         get_utc_time_str(time_str, sizeof(time_str));
-                        fprintf(log_file, "%s New connection, socket fd %d, ip %s, port %d\n",
+                        fprintf(log_file, "%s New connection, socket fd %d, ip [%s], port %d\n",
                                 time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
                         fflush(log_file);
                         rotate_log();
@@ -243,6 +244,8 @@ void run_server(int server_fd) {
             if (FD_ISSET(sd, &writefds)) {
                 process_out(i, sd);
             }
+
+            if (client_sockets[i] <= 0) continue; 
 
             if (FD_ISSET(sd, &readfds)) {
                 Subscriber *sub = &subscribers[i];
@@ -323,7 +326,7 @@ void run_server(int server_fd) {
                                     if (log_file && strcmp(log_level, "info") == 0) {
                                         char time_str[32];
                                         get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Version request (%s) from fd %d\n", time_str, sub->in_buffer, sd);
+                                        fprintf(log_file, "%s Version request (%s) from fd %d [%s]\n", time_str, sub->in_buffer, sd, subscribers[i].ip_address);
                                         fflush(log_file);
                                         rotate_log();
                                     }
@@ -348,7 +351,7 @@ void run_server(int server_fd) {
                                       if (log_file && strcmp(log_level, "info") == 0) {
                                           char time_str[32];
                                           get_utc_time_str(time_str, sizeof(time_str));
-                                          fprintf(log_file, "%s Info request from fd %d\n", time_str, sd);
+                                          fprintf(log_file, "%s Info request from fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
                                           fflush(log_file);
                                           rotate_log();
                                       }
@@ -356,14 +359,22 @@ void run_server(int server_fd) {
                                     /* Unknown command in text mode */
                                     char *error_msg = "Error: Unknown command\n";
                                     send(sd, error_msg, strlen(error_msg), 0);
-                                    sub->close_after_send = true;
                                     if (log_file) {
                                         char time_str[32];
                                         get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Unknown text command from fd %d: %s\n", time_str, sd, sub->in_buffer);
+                                        fprintf(log_file, "%s Unknown text command from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, sub->in_buffer);
                                         fflush(log_file);
                                         rotate_log();
                                     }
+                                    close(sd);
+                                    client_sockets[i] = 0;
+                                    subscribers[i].sock = 0;
+                                    // ... сброс полей subscribers[i] ...
+                                    free_out_queue(i);
+                                    if (sub->in_buffer) free(sub->in_buffer);
+                                    sub->in_buffer = NULL;
+                                    sub->in_pos = 0;
+                                    continue; 
                                 }
 
                                 free(sub->in_buffer);
@@ -406,7 +417,7 @@ void run_server(int server_fd) {
                                 if (log_file && strcmp(log_level, "info")) {
                                     char time_str[32];
                                     get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Detected binary mode for fd %d, expected length: %u\n", time_str, sd, temp_len);
+                                    fprintf(log_file, "%s Detected binary mode for fd %d [%s], expected length: %u\n", time_str, sd, subscribers[i].ip_address, temp_len);
                                     fflush(log_file);
                                 }
                                 continue;
@@ -437,7 +448,7 @@ void run_server(int server_fd) {
                         if (log_file) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
+                            fprintf(log_file, "%s Read error from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, strerror(errno));
                             fflush(log_file);
                         }
                         close(sd);
@@ -496,7 +507,7 @@ void run_server(int server_fd) {
                                     if (log_file) {
                                         char time_str[32];
                                         get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Incomplete SEND from %d\n", time_str, sd);
+                                        fprintf(log_file, "%s Incomplete SEND from fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
                                         fflush(log_file);
                                     }
                                     free(rest);
@@ -682,7 +693,7 @@ void run_server(int server_fd) {
                                     if (log_file) {
                                         char time_str[32];
                                         get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Unknown mode from %d: %s\n", time_str, sd, mode_str);
+                                        fprintf(log_file, "%s Unknown mode from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, mode_str);
                                         fflush(log_file);
                                     }
                                     free(rest);
@@ -731,7 +742,7 @@ void run_server(int server_fd) {
                         if (log_file && strcmp(log_level, "info") == 0) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
+                            fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
                             fflush(log_file);
                         }
                         close(sd);
