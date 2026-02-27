@@ -428,7 +428,7 @@ void run_server(int server_fd) {
                         if (log_file && strcmp(log_level, "info") == 0) {
                             char time_str[32];
                             get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Client disconnected, fd %d\n", time_str, sd);
+                            fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", time_str, sd, subscribers[i].ip_address); 
                             fflush(log_file);
                         }
                         close(sd);

@@ -6,7 +6,7 @@
 
 typedef struct {
     char key[256];
-    char value[256];
+    char value[1024];
 } ExecCommand;
 
 typedef struct {

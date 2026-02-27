@@ -17,6 +17,7 @@
 #include <inttypes.h>
 #include <fcntl.h>
 #include <sys/wait.h> 
+#include <ctype.h> 
 #define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 January 2025 в ms (из snowflake.h) */
 
 typedef struct PendingAlert {
@@ -32,6 +33,78 @@ typedef struct PendingAlert {
 } PendingAlert;
 
 static PendingAlert *pending_alerts = NULL;
+
+/**
+ * Escapes single quotes for shell safety.
+ */
+static void append_escaped(char **dst, const char *src) {
+    while (*src) {
+        if (*src == '\'') {
+            memcpy(*dst, "'\\''", 4);
+            *dst += 4;
+        } else if (*src != '\n' && *src != '\r') { /* Skip newlines/CR in tokens */
+            **dst = *src;
+            (*dst)++;
+        }
+        src++;
+    }
+}
+
+/**
+ * Advanced sanitize and concat for complex shell commands with pipes.
+ */
+char* sanitize_and_concat(const char *script, const char *args) {
+    if (!args || strlen(args) == 0) return strdup(script);
+
+    /* Allocate plenty of memory (script + 5x args + margin) */
+    size_t safe_len = strlen(script) + (strlen(args) * 5) + 256;
+    char *result = (char *)calloc(1, safe_len);
+    if (!result) return NULL;
+
+    /* 1. Find the first shell operator (| ; > &) */
+    const char *insertion_point = strpbrk(script, "|;>&");
+    size_t head_len = insertion_point ? (size_t)(insertion_point - script) : strlen(script);
+
+    char *ptr = result;
+
+    /* 2. Copy the command head (before the pipe) */
+    memcpy(ptr, script, head_len);
+    ptr += head_len;
+
+    /* Trim trailing spaces from head to avoid "cmd  'arg'" */
+    while (ptr > result && isspace((unsigned char)*(ptr - 1))) {
+        ptr--;
+    }
+
+    /* 3. Safely process and add arguments */
+    char *args_copy = strdup(args);
+    if (!args_copy) { free(result); return NULL; }
+
+    /* Split by any whitespace: space, tab, newline, carriage return */
+    char *token = strtok(args_copy, " \t\n\r");
+    while (token != NULL) {
+        *ptr++ = ' ';
+        *ptr++ = '\'';
+        append_escaped(&ptr, token);
+        *ptr++ = '\'';
+        token = strtok(NULL, " \t\n\r");
+    }
+    free(args_copy);
+
+    /* 4. Add the rest of the command (tail) */
+    if (insertion_point) {
+        /* Add a space before the operator if it's not already there */
+        if (ptr > result && *(ptr - 1) != ' ') {
+            *ptr++ = ' ';
+        }
+        size_t tail_len = strlen(insertion_point);
+        memcpy(ptr, insertion_point, tail_len);
+        ptr += tail_len;
+    }
+
+    *ptr = '\0';
+    return result;
+}
 
 /* Removes trailing spaces, \n, \r from a string */
 void trim_string(char *str) {
@@ -158,26 +231,64 @@ static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config)
     char *plaintext = NULL;
     int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
                              iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
+    
     if (ret != 0 || !plaintext) {
         fprintf(stderr, "Decryption failed for pending alert ID=%" PRIu64 "\n", pa->id);
         goto cleanup;
     }
 
+    /* Start of updated execution logic */
+    char *final_command = NULL;
+
     if (config->exec_count == 0) {
-        system(plaintext);
+        final_command = strdup(plaintext);
     } else {
         for (int i = 0; i < config->exec_count; i++) {
-            if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
-                system(config->exec_commands[i].value);
-                break;
+            size_t key_len = strlen(config->exec_commands[i].key);
+            
+            /* Check if the message starts with the allowed key */
+            if (strncmp(plaintext, config->exec_commands[i].key, key_len) == 0) {
+                /* 
+                 * Verify that it's a boundary match: either the key ends exactly 
+                 * or it is followed by a space (arguments).
+                 */
+                if (plaintext[key_len] == '\0' || plaintext[key_len] == ' ') {
+                    const char *dynamic_part = plaintext + key_len;
+                    /* Skip any additional spaces between the key and arguments */
+                    while (*dynamic_part == ' ') dynamic_part++;
+                    /* 
+                     * Combine the script path from config with the dynamic arguments.
+                     * Arguments are wrapped in single quotes for security.
+                     */
+                    final_command = sanitize_and_concat(config->exec_commands[i].value, dynamic_part);
+                    break;
+                }
             }
         }
+    }
+
+    if (final_command) {
+        if (verbose) {
+            printf("Executing pending alert ID=%" PRIu64 ": %s\n", pa->id, final_command);
+        }
+        
+        int exec_ret = system(final_command);
+        if (exec_ret != 0 && verbose) {
+            fprintf(stderr, "Pending command returned error code: %d\n", exec_ret);
+        }
+        
+        free(final_command);
+    } else if (verbose) {
+        printf("No matching config key found for pending alert message: %s\n", plaintext);
     }
 
     free(plaintext);
 
 cleanup:
-    free(encrypted); free(encrypted_key_dec); free(iv_dec); free(tag_dec);
+    free(encrypted); 
+    free(encrypted_key_dec); 
+    free(iv_dec); 
+    free(tag_dec);
 }
 
 /* Parses server response and processes message */
@@ -332,37 +443,45 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
         return;
     }
     if (execute) {
-      char *script_to_run = NULL;
-      if (config->exec_count == 0) {
-        script_to_run = plaintext;
-      } else {
-        for (int i = 0; i < config->exec_count; i++) {
-          if (strcmp(plaintext, config->exec_commands[i].key) == 0) {
-            script_to_run = config->exec_commands[i].value;
-            break;
-          }
-        }
-      }
-      if (script_to_run) {
-        if (daemon_exec_flag) {
-          if (verbose) {
-            printf("Executing command in background: %s\n", script_to_run);
-          }
-          daemon_exec(script_to_run, verbose);
+        char *final_command = NULL;
+        if (config->exec_count == 0) {
+            /* Config [exec_commands] is empty: execute the decrypted message directly */
+            final_command = strdup(plaintext);
         } else {
-          if (verbose) {
-            printf("Executing command: %s\n", script_to_run);
-          }
-          int ret = system(script_to_run);
-          if (ret != 0) {
-            fprintf(stderr, "Command execution failed: %s\n", script_to_run);
-          }
+            /* Config has specific allowed commands: check for prefix matching */
+            for (int i = 0; i < config->exec_count; i++) {
+                size_t key_len = strlen(config->exec_commands[i].key);
+                /* Match the start of the message with a config key */
+                if (strncmp(plaintext, config->exec_commands[i].key, key_len) == 0) {
+                    /* Verify boundary: exact match or followed by space */
+                    if (plaintext[key_len] == '\0' || plaintext[key_len] == ' ') {
+                        const char *dynamic_part = plaintext + key_len;
+                        /* Move pointer to the start of arguments, skipping spaces */
+                        while (*dynamic_part == ' ') dynamic_part++;
+                        /* Wrap arguments in safe quotes */
+                        final_command = sanitize_and_concat(config->exec_commands[i].value, dynamic_part);
+                        break;
+                    }
+                }
+            }
         }
-      } else if (verbose) {
-        printf("No matching script found for message: %s\n", plaintext);
-      }
+        if (final_command) {
+            if (daemon_exec_flag) {
+                if (verbose) printf("Executing command in background: %s\n", final_command);
+                daemon_exec(final_command, verbose);
+            } else {
+                if (verbose) printf("Executing command: %s\n", final_command);
+                int exec_ret = system(final_command);
+                if (exec_ret != 0 && verbose) {
+                    fprintf(stderr, "Command returned non-zero exit code: %d\n", exec_ret);
+                }
+            }
+            free(final_command);
+        } else if (verbose) {
+            printf("Security: No matching key found in [exec_commands] for message: %s\n", plaintext);
+        }
     } else {
-      printf("Decrypted message:\n%s\n", plaintext);
+        printf("Decrypted message:\n%s\n", plaintext);
     }
     free(plaintext);
     free(copy);
