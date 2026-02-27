@@ -495,12 +495,12 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         fprintf(stderr, "For last mode: listen last [<count>] [pubkey_hash_b64]\n");
         return 1;
     }
-
+    
     char *mode = argv[1];
-    int count = 1; // Default count
+    int count = 1;
     char *pubkey_hash_b64 = NULL;
 
-    /* Mode validation */
+    /* Mode validation - ИСПРАВЛЕНО: убраны пробелы в строках */
     char *upper_mode = strdup(mode);
     for (char *p = upper_mode; *p; p++) *p = toupper((unsigned char)*p);
     int valid_mode = (strcmp(upper_mode, "LIVE") == 0 ||
@@ -515,15 +515,15 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         return 1;
     }
 
-    /* Parse arguments */
+    /* Parse arguments - ИСПРАВЛЕНО: убраны пробелы */
     if (strcmp(mode, "last") == 0) {
         if (argc == 2) {
-            // No pubkey_hash_b64, will fetch for all keys
+            // No pubkey_hash_b64
         } else if (argc == 3) {
             char *endptr;
             count = strtol(argv[2], &endptr, 10);
             if (*endptr != '\0' || count <= 0) {
-                pubkey_hash_b64 = argv[2]; // Treat as pubkey_hash_b64 if not a valid count
+                pubkey_hash_b64 = argv[2];
                 count = 1;
             }
         } else if (argc == 4) {
@@ -554,337 +554,340 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
     }
 
     if (verbose) {
-        printf("Debug: Parsed mode='%s', count=%d, pubkey_hash_b64='%s'\n", mode, count, pubkey_hash_b64 ? pubkey_hash_b64 : "NULL");
+        printf("Debug: Parsed mode='%s', count=%d, pubkey_hash_b64='%s'\n", 
+               mode, count, pubkey_hash_b64 ? pubkey_hash_b64 : "NULL");
     }
+
     Config config;
     read_config(&config, verbose);
+    
     int reconnect_delay = 5;
     int reconnect_increment = 10;
     int max_reconnect_delay = 60;
     int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1200;
 
+    /* Determine whether you need to reconnect after a breakup */
+    int should_reconnect = (strcmp(mode, "last") != 0 && strcmp(mode, "single") != 0);
+
     char **key_hashes = NULL;
     int key_count = 0;
-    if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
-        if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
-            fprintf(stderr, "Failed to collect key hashes\n");
-            return 1;
-        }
-        if (verbose) {
-            printf("Debug: Found %d keys in /etc/gorgona\n", key_count);
-        }
-    } else {
-        key_hashes = malloc(sizeof(char *));
-        key_hashes[0] = pubkey_hash_b64 ? strdup(pubkey_hash_b64) : NULL;
-        key_count = pubkey_hash_b64 ? 1 : 0;
-    }
-
-    for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
-        char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
-        if (verbose && current_pubkey_hash) {
-            printf("Debug: Processing key %s\n", current_pubkey_hash);
-        }
-
-        int sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock < 0) {
-            perror("Socket creation error");
-            sleep(reconnect_delay);
-            reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                             (reconnect_delay + reconnect_increment) : max_reconnect_delay;
-            continue;
-        }
-        struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
-        if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
-            fprintf(stderr, "Invalid address: %s\n", config.server_ip);
-            close(sock);
-            sleep(reconnect_delay);
-            reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                             (reconnect_delay + reconnect_increment) : max_reconnect_delay;
-            continue;
-        }
-        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-            fprintf(stderr, "Connection failed: %s\n", strerror(errno));
-            close(sock);
-            sleep(reconnect_delay);
-            reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                             (reconnect_delay + reconnect_increment) : max_reconnect_delay;
-            continue;
-        }
-        int opt = 1;
-        if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) < 0) {
-            fprintf(stderr, "setsockopt SO_KEEPALIVE failed: %s\n", strerror(errno));
-            close(sock);
-            sleep(reconnect_delay);
-            continue;
-        }
-        #ifdef __linux__
-            int idle = 60;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
-            }
-            int interval = 10;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
-            }
-            int keep_count = 3;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
-            }
-        #elif defined(__APPLE__)
-            int keepalive_time = 60;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
-            }
-        #else
-            if (verbose) {
-                printf("Warning: Platform-specific TCP keepalive settings not implemented, using SO_KEEPALIVE only\n");
-            }
-        #endif
-        reconnect_delay = 5;
-
-        if (verbose) {
-            printf("Connected to %s:%d\n", config.server_ip, config.server_port);
-        }
-
-       /* Form request */
-        size_t needed_len = 256;
-        char *buffer = malloc(needed_len);
-        if (!buffer) {
-            fprintf(stderr, "Error: Failed to allocate memory\n");
-            close(sock);
-            sleep(reconnect_delay);
-            continue;
-        }
-
-        int len;
-        if (strcmp(mode, "single") == 0) {
-            len = snprintf(buffer, needed_len, "LISTEN|%s|%s", current_pubkey_hash, mode);
-        } else if (strcmp(mode, "last") == 0) {
-            // FIX: Правильно формируем запрос когда pubkey_hash_b64 = NULL
-            if (current_pubkey_hash) {
-                len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", current_pubkey_hash, mode, count);
-            } else {
-                len = snprintf(buffer, needed_len, "LISTEN||%s|%d", mode, count);
+    
+    /* Infinite reconnection cycle for persistent modes */
+    while (1) {
+        if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
+            if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
+                fprintf(stderr, "Failed to collect key hashes\n");
+                return 1;
             }
             if (verbose) {
-                printf("Debug: Forming request with count=%d\n", count);
+                printf("Debug: Found %d keys in /etc/gorgona\n", key_count);
             }
         } else {
-            if (current_pubkey_hash) {
-                len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, current_pubkey_hash);
-            } else {
-                len = snprintf(buffer, needed_len, "SUBSCRIBE %s", mode);
-            }
-        } 
-        /* Send request */
-        uint32_t msg_len_net = htonl(len);
-        ssize_t send_result;
-
-        send_result = send(sock, &msg_len_net, sizeof(uint32_t), MSG_NOSIGNAL);
-        if (send_result != sizeof(uint32_t)) {
-            fprintf(stderr, "Send error (length): %s\n", strerror(errno));
-            free(buffer);
-            close(sock);
-            sleep(reconnect_delay);
-            continue;
+            if (key_hashes) free_key_hashes(key_hashes, key_count);
+            key_hashes = malloc(sizeof(char *));
+            key_hashes[0] = pubkey_hash_b64 ? strdup(pubkey_hash_b64) : NULL;
+            key_count = pubkey_hash_b64 ? 1 : 0;
         }
 
-        send_result = send(sock, buffer, len, MSG_NOSIGNAL);
-        if (send_result != len) {
-            fprintf(stderr, "Send error: %s\n", strerror(errno));
-            free(buffer);
-            close(sock);
-            sleep(reconnect_delay);
-            continue;
-        }
-
-        free(buffer);
-
-        /* Read responses with select() to handle pending alerts */
-        int messages_received = 0;
-        int connection_ok = 1;
-        struct timeval start_time;
-        gettimeofday(&start_time, NULL);
-        int received_any_message = 0;
-
-        while (connection_ok) {
-            // Check periodic reconnect
-            struct timeval current_time;
-            gettimeofday(&current_time, NULL);
-            long elapsed_sec = current_time.tv_sec - start_time.tv_sec;
-            if (elapsed_sec > periodic_reconnect_sec) {
-                if (verbose) printf("Periodic reconnect after %ld seconds\n", elapsed_sec);
-                connection_ok = 0;
-                break;
+        for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
+            char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
+            if (verbose && current_pubkey_hash) {
+                printf("Debug: Processing key %s\n", current_pubkey_hash);
             }
 
-            /* Find next unlock time */
-            time_t now = time(NULL);
-            time_t next_unlock = 0;
-            PendingAlert *pa = pending_alerts;
-            while (pa) {
-                if (pa->unlock_at > now && (!next_unlock || pa->unlock_at < next_unlock)) {
-                    next_unlock = pa->unlock_at;
+            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock < 0) {
+                perror("Socket creation error");
+                sleep(reconnect_delay);
+                reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
+                                 (reconnect_delay + reconnect_increment) : max_reconnect_delay;
+                continue;
+            }
+            
+            /* ИСПРАВЛЕНО: убраны пробелы в структуре */
+            struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
+            if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
+                fprintf(stderr, "Invalid address: %s\n", config.server_ip);
+                close(sock);
+                sleep(reconnect_delay);
+                continue;
+            }
+            
+            if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+                fprintf(stderr, "Connection failed: %s\n", strerror(errno));
+                close(sock);
+                sleep(reconnect_delay);
+                continue;
+            }
+            
+            /* TCP keepalive settings - ИСПРАВЛЕНО: убраны пробелы */
+            int opt = 1;
+            if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) < 0) {
+                fprintf(stderr, "setsockopt SO_KEEPALIVE failed: %s\n", strerror(errno));
+            }
+            #ifdef __linux__
+                int idle = 60;
+                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) < 0) {
+                    fprintf(stderr, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
                 }
-                pa = pa->next;
+                int interval = 10;
+                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) < 0) {
+                    fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
+                }
+                int keep_count = 3;
+                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count)) < 0) {
+                    fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
+                }
+            #elif defined(__APPLE__)
+                int keepalive_time = 60;
+                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
+                    fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
+                }
+            #endif
+            
+            reconnect_delay = 5;
+
+            if (verbose) {
+                printf("Connected to %s:%d\n", config.server_ip, config.server_port);
             }
 
-            /* Set timeout for select */
-            struct timeval timeout, *timeout_ptr = NULL;
-            if (next_unlock) {
-                long delay = next_unlock - now;
-                if (delay < 0) delay = 0;
-                timeout.tv_sec = delay;
-                timeout.tv_usec = 0;
-                timeout_ptr = &timeout;
+            /* Form request - ИСПРАВЛЕНО: убраны пробелы */
+            size_t needed_len = 256;
+            char *buffer = malloc(needed_len);
+            if (!buffer) {
+                fprintf(stderr, "Error: Failed to allocate memory\n");
+                close(sock);
+                sleep(reconnect_delay);
+                continue;
             }
 
-            /* Check pending alerts that are ready */
-            now = time(NULL);
-            PendingAlert **prev = &pending_alerts;
-            while (*prev) {
-                if ((*prev)->unlock_at <= now && (*prev)->expire_at > now) {
-                    PendingAlert *to_exec = *prev;
-                    *prev = to_exec->next;
-                    execute_pending_alert(to_exec, verbose, &config);
-                    // Free memory
-                    free(to_exec->pubkey_hash_b64);
-                    free(to_exec->encrypted_text);
-                    free(to_exec->encrypted_key);
-                    free(to_exec->iv);
-                    free(to_exec->tag);
-                    free(to_exec);
+            int len;
+            if (strcmp(mode, "single") == 0) {
+                len = snprintf(buffer, needed_len, "LISTEN|%s|%s", current_pubkey_hash, mode);
+            } else if (strcmp(mode, "last") == 0) {
+                if (current_pubkey_hash) {
+                    len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", current_pubkey_hash, mode, count);
                 } else {
-                    prev = &(*prev)->next;
+                    len = snprintf(buffer, needed_len, "LISTEN||%s|%d", mode, count);
                 }
+            } else {
+                if (current_pubkey_hash) {
+                    len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, current_pubkey_hash);
+                } else {
+                    len = snprintf(buffer, needed_len, "SUBSCRIBE %s", mode);
+                }
+            } 
+            
+            /* Send request */
+            uint32_t msg_len_net = htonl(len);
+            ssize_t send_result = send(sock, &msg_len_net, sizeof(uint32_t), MSG_NOSIGNAL);
+            if (send_result != sizeof(uint32_t)) {
+                fprintf(stderr, "Send error (length): %s\n", strerror(errno));
+                free(buffer);
+                close(sock);
+                sleep(reconnect_delay);
+                continue;
             }
 
-            /* Use select to wait for data or timeout */
-            fd_set readfds;
-            FD_ZERO(&readfds);
-            FD_SET(sock, &readfds);
-            int activity = select(sock + 1, &readfds, NULL, NULL, timeout_ptr);
-
-            if (activity < 0) {
-                if (errno == EINTR) continue;
-                fprintf(stderr, "Select error: %s\n", strerror(errno));
-                connection_ok = 0;
-                break;
+            send_result = send(sock, buffer, len, MSG_NOSIGNAL);
+            if (send_result != len) {
+                fprintf(stderr, "Send error: %s\n", strerror(errno));
+                free(buffer);
+                close(sock);
+                sleep(reconnect_delay);
+                continue;
             }
 
-            if (activity == 0) {
-                continue; /* Timeout — already handled pending alerts above */
-            }
+            free(buffer);
 
-            /* Read response length */
-            uint32_t resp_len_net;
-            ssize_t valread = recv(sock, &resp_len_net, sizeof(uint32_t), MSG_WAITALL);
-            if (valread == 0) {
-                if (verbose) fprintf(stderr, "Debug: Connection closed by server\n");
-                connection_ok = 0;
-                break;
-            } else if (valread < 0) {
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+            /* Read responses */
+            int messages_received = 0;
+            int connection_ok = 1;
+            struct timeval start_time;
+            gettimeofday(&start_time, NULL);
+            int received_any_message = 0;
+
+            while (connection_ok) {
+                /* Periodic reconnect check */
+                struct timeval current_time;
+                gettimeofday(&current_time, NULL);
+                long elapsed_sec = current_time.tv_sec - start_time.tv_sec;
+                if (elapsed_sec > periodic_reconnect_sec) {
+                    if (verbose) printf("Periodic reconnect after %ld seconds\n", elapsed_sec);
+                    connection_ok = 0;
+                    break;
+                }
+
+                /* Find next unlock time */
+                time_t now = time(NULL);
+                time_t next_unlock = 0;
+                PendingAlert *pa = pending_alerts;
+                while (pa) {
+                    if (pa->unlock_at > now && (!next_unlock || pa->unlock_at < next_unlock)) {
+                        next_unlock = pa->unlock_at;
+                    }
+                    pa = pa->next;
+                }
+
+                /* Set timeout for select */
+                struct timeval timeout, *timeout_ptr = NULL;
+                if (next_unlock) {
+                    long delay = next_unlock - now;
+                    if (delay < 0) delay = 0;
+                    timeout.tv_sec = delay;
+                    timeout.tv_usec = 0;
+                    timeout_ptr = &timeout;
+                }
+
+                /* Check pending alerts */
+                now = time(NULL);
+                PendingAlert **prev = &pending_alerts;
+                while (*prev) {
+                    if ((*prev)->unlock_at <= now && (*prev)->expire_at > now) {
+                        PendingAlert *to_exec = *prev;
+                        *prev = to_exec->next;
+                        execute_pending_alert(to_exec, verbose, &config);
+                        free(to_exec->pubkey_hash_b64);
+                        free(to_exec->encrypted_text);
+                        free(to_exec->encrypted_key);
+                        free(to_exec->iv);
+                        free(to_exec->tag);
+                        free(to_exec);
+                    } else {
+                        prev = &(*prev)->next;
+                    }
+                }
+
+                /* Use select to wait for data */
+                fd_set readfds;
+                FD_ZERO(&readfds);
+                FD_SET(sock, &readfds);
+                int activity = select(sock + 1, &readfds, NULL, NULL, timeout_ptr);
+
+                if (activity < 0) {
+                    if (errno == EINTR) continue;
+                    fprintf(stderr, "Select error: %s\n", strerror(errno));
+                    connection_ok = 0;
+                    break;
+                }
+
+                if (activity == 0) {
                     continue;
                 }
-                fprintf(stderr, "Read error (length): %s\n", strerror(errno));
-                connection_ok = 0;
-                break;
-            } else if (valread != sizeof(uint32_t)) {
-                fprintf(stderr, "Incomplete length read: %zd/%zu\n", valread, sizeof(uint32_t));
-                connection_ok = 0;
-                break;
-            }
 
-            size_t resp_len = ntohl(resp_len_net);
-            if (resp_len == 0 || resp_len > 1024 * 1024) {
-                fprintf(stderr, "Invalid response length: %zu\n", resp_len);
-                connection_ok = 0;
-                break;
-            }
-
-            char *resp_buffer = malloc(resp_len + 1);
-            if (!resp_buffer) {
-                fprintf(stderr, "Error: Failed to allocate memory for response\n");
-                connection_ok = 0;
-                break;
-            }
-
-            size_t total_read = 0;
-            while (total_read < resp_len && connection_ok) {
-                valread = recv(sock, resp_buffer + total_read, resp_len - total_read, 0);
+                /* Read response length */
+                uint32_t resp_len_net;
+                ssize_t valread = recv(sock, &resp_len_net, sizeof(uint32_t), MSG_WAITALL);
                 if (valread == 0) {
-                    if (verbose) fprintf(stderr, "Debug: Connection closed by server during data read\n");
+                    if (verbose) fprintf(stderr, "Debug: Connection closed by server\n");
                     connection_ok = 0;
                     break;
                 } else if (valread < 0) {
                     if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
                     }
-                    fprintf(stderr, "Read error: %s\n", strerror(errno));
+                    fprintf(stderr, "Read error (length): %s\n", strerror(errno));
+                    connection_ok = 0;
+                    break;
+                } else if (valread != sizeof(uint32_t)) {
+                    fprintf(stderr, "Incomplete length read: %zd/%zu\n", valread, sizeof(uint32_t));
                     connection_ok = 0;
                     break;
                 }
-                total_read += valread;
-            }
 
-            if (!connection_ok) {
-                free(resp_buffer);
-                break;
-            }
+                size_t resp_len = ntohl(resp_len_net);
+                if (resp_len == 0 || resp_len > 1024 * 1024) {
+                    fprintf(stderr, "Invalid response length: %zu\n", resp_len);
+                    connection_ok = 0;
+                    break;
+                }
 
-            if (total_read != resp_len) {
-                fprintf(stderr, "Incomplete data read: %zu/%zu\n", total_read, resp_len);
-                free(resp_buffer);
-                connection_ok = 0;
-                break;
-            }
+                char *resp_buffer = malloc(resp_len + 1);
+                if (!resp_buffer) {
+                    fprintf(stderr, "Error: Failed to allocate memory for response\n");
+                    connection_ok = 0;
+                    break;
+                }
 
-            resp_buffer[resp_len] = '\0';
-            if (verbose) {
-                printf("Received response: %s\n", resp_buffer);
-            }
+                size_t total_read = 0;
+                while (total_read < resp_len && connection_ok) {
+                    valread = recv(sock, resp_buffer + total_read, resp_len - total_read, 0);
+                    if (valread == 0) {
+                        if (verbose) fprintf(stderr, "Debug: Connection closed by server during data read\n");
+                        connection_ok = 0;
+                        break;
+                    } else if (valread < 0) {
+                        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                            continue;
+                        }
+                        fprintf(stderr, "Read error: %s\n", strerror(errno));
+                        connection_ok = 0;
+                        break;
+                    }
+                    total_read += valread;
+                }
 
-            parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config, daemon_exec_flag);
+                if (!connection_ok) {
+                    free(resp_buffer);
+                    break;
+                }
 
-            if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
-                messages_received++;
-                received_any_message = 1;
-                if (pubkey_hash_b64 && messages_received >= count) {
+                if (total_read != resp_len) {
+                    fprintf(stderr, "Incomplete data read: %zu/%zu\n", total_read, resp_len);
                     free(resp_buffer);
                     connection_ok = 0;
                     break;
                 }
+
+                resp_buffer[resp_len] = '\0';
+                if (verbose) {
+                    printf("Received response: %s\n", resp_buffer);
+                }
+
+                parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config, daemon_exec_flag);
+
+                if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
+                    messages_received++;
+                    received_any_message = 1;
+                    if (pubkey_hash_b64 && messages_received >= count) {
+                        free(resp_buffer);
+                        connection_ok = 0;
+                        break;
+                    }
+                }
+
+                free(resp_buffer);
             }
-
-            free(resp_buffer);
+            
+            close(sock);
+ 
+            if (strcmp(mode, "last") == 0 && !pubkey_hash_b64 && verbose && !received_any_message) {
+                printf("Debug: No messages for key %s\n", current_pubkey_hash ? current_pubkey_hash : "NULL");
+            }
         }
-        close(sock);
 
-        if (strcmp(mode, "last") == 0 && !pubkey_hash_b64 && verbose && !received_any_message) {
-            printf("Debug: No messages for key %s\n", current_pubkey_hash ? current_pubkey_hash : "NULL");
+        if (key_hashes) {
+            free_key_hashes(key_hashes, key_count);
+            key_hashes = NULL;
+            key_count = 0;
+        }
+
+        /* For last/single mode, exit after completion */
+        if (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) {
+            return 0;
+        }
+
+        /* For persistent modes (new, live, all, lock) - reconnect */
+        if (should_reconnect) {
+            fprintf(stderr, "Connection lost, reconnecting in %d seconds...\n", reconnect_delay);
+            sleep(reconnect_delay);
+            reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
+                             (reconnect_delay + reconnect_increment) : max_reconnect_delay;
+            /* Continue the outer while(1) loop for reconnection */
+        } else {
+            break;
         }
     }
 
-    if (key_hashes) {
-        free_key_hashes(key_hashes, key_count);
-    }
-
-    /* For the last mode without a key, we finish the job after processing all keys. */
-    if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
-        if (verbose) {
-            printf("Debug: Processed all keys, exiting\n");
-        }
-        return 0;
-    }
-
-    if (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) {
-        return 0;
-    }
-
-    fprintf(stderr, "Connection lost, reconnecting in %d seconds...\n", reconnect_delay);
-    sleep(reconnect_delay);
-    reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                     (reconnect_delay + reconnect_increment) : max_reconnect_delay;
     return 0;
-}    
+}
