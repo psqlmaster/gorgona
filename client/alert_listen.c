@@ -18,6 +18,9 @@
 #include <fcntl.h>
 #include <sys/wait.h> 
 #include <ctype.h> 
+#include <unistd.h>
+#include <time.h>
+#define _POSIX_C_SOURCE 200809L
 #define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 January 2025 в ms (из snowflake.h) */
 
 typedef struct PendingAlert {
@@ -500,7 +503,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
     int count = 1;
     char *pubkey_hash_b64 = NULL;
 
-    /* Mode validation - ИСПРАВЛЕНО: убраны пробелы в строках */
+    /* Mode validation */
     char *upper_mode = strdup(mode);
     for (char *p = upper_mode; *p; p++) *p = toupper((unsigned char)*p);
     int valid_mode = (strcmp(upper_mode, "LIVE") == 0 ||
@@ -515,7 +518,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         return 1;
     }
 
-    /* Parse arguments - ИСПРАВЛЕНО: убраны пробелы */
+    /* Parse arguments */
     if (strcmp(mode, "last") == 0) {
         if (argc == 2) {
             // No pubkey_hash_b64
@@ -561,17 +564,19 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
     Config config;
     read_config(&config, verbose);
     
-    int reconnect_delay = 5;
-    int reconnect_increment = 10;
-    int max_reconnect_delay = 60;
-    int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1200;
+    int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1800;
 
     /* Determine whether you need to reconnect after a breakup */
     int should_reconnect = (strcmp(mode, "last") != 0 && strcmp(mode, "single") != 0);
 
     char **key_hashes = NULL;
     int key_count = 0;
-    
+
+    /* Backoff variables - exponential with fast start and cap */
+    int consecutive_failures = 0;
+    const int MAX_BACKOFF_CAP_MS = 60000;   // 60 seconds
+    const int MAX_FAILURES_CAP    = 16;     // 2^16 = 65536 ms → capped anyway
+
     /* Infinite reconnection cycle for persistent modes */
     while (1) {
         if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
@@ -598,67 +603,61 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             int sock = socket(AF_INET, SOCK_STREAM, 0);
             if (sock < 0) {
                 perror("Socket creation error");
-                sleep(reconnect_delay);
-                reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                                 (reconnect_delay + reconnect_increment) : max_reconnect_delay;
-                continue;
+                goto backoff;
             }
             
-            /* ИСПРАВЛЕНО: убраны пробелы в структуре */
             struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
             if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
                 fprintf(stderr, "Invalid address: %s\n", config.server_ip);
                 close(sock);
-                sleep(reconnect_delay);
-                continue;
+                goto backoff;
             }
             
             if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
                 fprintf(stderr, "Connection failed: %s\n", strerror(errno));
                 close(sock);
-                sleep(reconnect_delay);
-                continue;
+                goto backoff;
             }
             
-            /* TCP keepalive settings - ИСПРАВЛЕНО: убраны пробелы */
+            /* TCP keepalive settings */
             int opt = 1;
             if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) < 0) {
                 fprintf(stderr, "setsockopt SO_KEEPALIVE failed: %s\n", strerror(errno));
             }
-            #ifdef __linux__
-                int idle = 60;
-                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) < 0) {
-                    fprintf(stderr, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
-                }
-                int interval = 10;
-                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) < 0) {
-                    fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
-                }
-                int keep_count = 3;
-                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count)) < 0) {
-                    fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
-                }
-            #elif defined(__APPLE__)
-                int keepalive_time = 60;
-                if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
-                    fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
-                }
-            #endif
+#ifdef __linux__
+            int idle = 60;
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
+            }
+            int interval = 10;
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
+            }
+            int keep_count = 3;
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
+            }
+#elif defined(__APPLE__)
+            int keepalive_time = 60;
+            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
+                fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
+            }
+#endif
             
-            reconnect_delay = 5;
+            /* SUCCESS → reset backoff */
+            consecutive_failures = 0;
 
             if (verbose) {
                 printf("Connected to %s:%d\n", config.server_ip, config.server_port);
             }
 
-            /* Form request - ИСПРАВЛЕНО: убраны пробелы */
+            /* Form request */
             size_t needed_len = 256;
             char *buffer = malloc(needed_len);
             if (!buffer) {
                 fprintf(stderr, "Error: Failed to allocate memory\n");
                 close(sock);
-                sleep(reconnect_delay);
-                continue;
+                goto backoff;
             }
 
             int len;
@@ -685,8 +684,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 fprintf(stderr, "Send error (length): %s\n", strerror(errno));
                 free(buffer);
                 close(sock);
-                sleep(reconnect_delay);
-                continue;
+                goto backoff;
             }
 
             send_result = send(sock, buffer, len, MSG_NOSIGNAL);
@@ -694,8 +692,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 fprintf(stderr, "Send error: %s\n", strerror(errno));
                 free(buffer);
                 close(sock);
-                sleep(reconnect_delay);
-                continue;
+                goto backoff;
             }
 
             free(buffer);
@@ -864,7 +861,12 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             if (strcmp(mode, "last") == 0 && !pubkey_hash_b64 && verbose && !received_any_message) {
                 printf("Debug: No messages for key %s\n", current_pubkey_hash ? current_pubkey_hash : "NULL");
             }
+
+            /* If we reached here after inner while(connection_ok) → connection was lost/closed */
+            consecutive_failures++;   // count this as failure for next attempt
         }
+
+        backoff: 
 
         if (key_hashes) {
             free_key_hashes(key_hashes, key_count);
@@ -877,17 +879,27 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             return 0;
         }
 
-        /* For persistent modes (new, live, all, lock) - reconnect */
+        /* For persistent modes - reconnect with backoff */
         if (should_reconnect) {
-            fprintf(stderr, "Connection lost, reconnecting in %d seconds...\n", reconnect_delay);
-            sleep(reconnect_delay);
-            reconnect_delay = (reconnect_delay + reconnect_increment) < max_reconnect_delay ?
-                             (reconnect_delay + reconnect_increment) : max_reconnect_delay;
-            /* Continue the outer while(1) loop for reconnection */
-        } else {
-            break;
+            int backoff_ms = 1 << consecutive_failures;           // 1, 2, 4, 8, 16, ...
+            if (backoff_ms > MAX_BACKOFF_CAP_MS) {
+                backoff_ms = MAX_BACKOFF_CAP_MS;
+            }
+
+            fprintf(stderr, "Connection lost / failed, reconnecting in ~%d ms (attempt %d)...\n",
+                    backoff_ms, consecutive_failures + 1);
+
+            struct timespec ts;
+            ts.tv_sec = backoff_ms / 1000;
+            ts.tv_nsec = (backoff_ms % 1000) * 1000000L;
+            nanosleep(&ts, NULL); 
+
+            if (consecutive_failures < MAX_FAILURES_CAP) {
+                consecutive_failures++;
+            }
+            // loop continues → next iteration of while(1)
         }
-    }
+    }   // end of while(1)
 
     return 0;
 }
