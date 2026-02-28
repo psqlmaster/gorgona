@@ -230,6 +230,88 @@ port = 7777
 [exec_commands]
 app start = /home/su/repository/c/gorgona/test/script.sh
 ```
+##### Wrapper Script Support for Complex Commands
+- For complex shell commands with pipes, variables, or dynamic content, use wrapper scripts instead of inline commands. 
+- This avoids shell escaping issues and provides better maintainability. Arguments from gorgona messages are passed to the script as $1, $2, $3...
+
+**Example: Remote Service & Log Manager**
+```bash
+#!/bin/bash
+# Arguments: $1=action, $2=service, $3=parameter (optional)
+# Usage examples:
+#   sysadmin restart nginx
+#   sysadmin logs postgres 100
+#   sysadmin status sshd
+#   sysadmin kill zombie 5
+
+ACTION="${1:-help}"
+SERVICE="${2:-}"
+PARAM="${3:-}"
+
+TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S')
+PUBKEY="RWTPQzuhzBw=.pub"
+
+case "$ACTION" in
+    restart)
+        RESULT=$(systemctl restart "$SERVICE" 2>&1 && echo "✓ $SERVICE restarted" || echo "✗ Failed to restart $SERVICE")
+        ;;
+    status)
+        RESULT=$(systemctl status "$SERVICE" --no-pager 2>&1 | head -10)
+        ;;
+    logs)
+        LINES="${PARAM:-50}"
+        RESULT=$(journalctl -u "$SERVICE" --no-pager -n "$LINES" 2>&1)
+        ;;
+    kill)
+        PATTERN="${PARAM:-$SERVICE}"
+        RESULT=$(pkill -9 -f "$PATTERN" 2>&1 && echo "✓ Processes killed" || echo "✗ No processes found")
+        ;;
+    disk)
+        PATH="${SERVICE:-/}"
+        RESULT=$(du -sh "$PATH" 2>&1 && df -h "$PATH" 2>&1 | tail -1)
+        ;;
+    help|*)
+        RESULT="Available: restart|status|logs|kill|disk <service> [param]"
+        ;;
+esac
+
+echo "[$TIMESTAMP] $ACTION $SERVICE $PARAM
+$RESULT" | ./gorgona send "$TIMESTAMP" "$(date -u -d '+1 day' '+%Y-%m-%d %H:%M:%S')" - "$PUBKEY"
+```
+**Make it executable:**
+```bash
+chmod +x /usr/local/bin/gorgona_sysadmin.sh
+```
+**Configure exec_commands**
+- Edit /etc/gorgona/gorgona.conf:
+```ini
+[server]
+ip = 46.138.247.148
+port = 7777
+
+[exec_commands]
+sysadmin = /usr/local/bin/gorgona_sysadmin.sh
+```
+**Usage Examples**
+```bash
+# Restart nginx service
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin restart nginx" "RWTPQzuhzBw=.pub"
+
+# Get last 100 lines of postgres logs
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin logs postgres 100" "RWTPQzuhzBw=.pub"
+
+# Check sshd service status
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin status sshd" "RWTPQzuhzBw=.pub"
+
+# Kill all zombie processes
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin kill zombie" "RWTPQzuhzBw=.pub"
+
+# Check disk usage of /var/log
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin disk /var/log" "RWTPQzuhzBw=.pub"
+
+# Listen and execute automatically
+gorgona -ed listen new RWTPQzuhzBw=
+```
 
 ### Server Configuration
 
