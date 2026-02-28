@@ -274,7 +274,6 @@ case "$ACTION" in
         RESULT="Available: restart|status|logs|kill|disk <service> [param]"
         ;;
 esac
-
 echo "[$TIMESTAMP] $ACTION $SERVICE $PARAM
 $RESULT" | ./gorgona send "$TIMESTAMP" "$(date -u -d '+1 day' '+%Y-%m-%d %H:%M:%S')" - "$PUBKEY"
 ```
