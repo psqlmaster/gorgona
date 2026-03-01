@@ -266,7 +266,7 @@ Notes:
 
 Backward compatibility:
 - The parser also accepts the older minimal form `key = <value>` inside `[exec_commands]` (legacy), but using per-key sections is recommended.
-```
+
 ##### Wrapper Script Support for Complex Commands
 - For complex shell commands with pipes, variables, or dynamic content, use wrapper scripts instead of inline commands. 
 - This avoids shell escaping issues and provides better maintainability. Arguments from gorgona messages are passed to the script as $1, $2, $3...
@@ -275,6 +275,7 @@ Backward compatibility:
 - /usr/local/bin/gorgona_sysadmin.sh
 ```bash
 #!/bin/bash
+
 # Arguments: $1=action, $2=service, $3=parameter (optional)
 # Usage examples:
 #   sysadmin restart nginx
@@ -318,7 +319,6 @@ esac
 
 echo "[$TIMESTAMP] $ACTION $SERVICE $PARAM
 $RESULT" | /usr/bin/gorgona send "$TIMESTAMP" "$(date -u -d '+1 day' '+%Y-%m-%d %H:%M:%S')" - "$PUBKEY"
-
 ```
 **Make it executable:**
 ```bash
