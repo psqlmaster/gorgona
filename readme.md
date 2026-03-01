@@ -20,11 +20,11 @@
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Future Plans](#future-plans)
 - [Testing](#testing)  
-    [![YouTube Demo ▶](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)](https://youtu.be/3JodTvfr88c)
+
+  - [<img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" alt="YouTube Demo ▶" height="18" style="vertical-align:middle;">](https://youtu.be/3JodTvfr88c)
 - [More examples](#more-examples)
 
 ---
-
 ##### Introduction
 
 `gorgona` is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, `gorgona` ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing, telemetry transport.).
