@@ -19,9 +19,7 @@
   - [Server Configuration](#server-configuration)
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Future Plans](#future-plans)
-- [Testing](#testing)  
-
-  - [<img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" alt="YouTube Demo ▶" height="18" style="vertical-align:middle;">](https://youtu.be/3JodTvfr88c)
+- [Testing](#testing) <a href="https://youtu.be/3JodTvfr88c"><img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" alt="YouTube Demo ▶" height="18" style="vertical-align:middle;"></a>
 - [More examples](#more-examples)
 
 ---
