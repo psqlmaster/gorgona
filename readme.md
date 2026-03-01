@@ -245,6 +245,7 @@ app start = /home/su/repository/c/gorgona/test/script.sh
 - This avoids shell escaping issues and provides better maintainability. Arguments from gorgona messages are passed to the script as $1, $2, $3...
 
 **Example: Remote Service & Log Manager**
+- /usr/local/bin/gorgona_sysadmin.sh
 ```bash
 #!/bin/bash
 # Arguments: $1=action, $2=service, $3=parameter (optional)
@@ -253,6 +254,8 @@ app start = /home/su/repository/c/gorgona/test/script.sh
 #   sysadmin logs postgres 100
 #   sysadmin status sshd
 #   sysadmin kill zombie 5
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 ACTION="${1:-help}"
 SERVICE="${2:-}"
@@ -277,15 +280,18 @@ case "$ACTION" in
         RESULT=$(pkill -9 -f "$PATTERN" 2>&1 && echo "✓ Processes killed" || echo "✗ No processes found")
         ;;
     disk)
-        PATH="${SERVICE:-/}"
-        RESULT=$(du -sh "$PATH" 2>&1 && df -h "$PATH" 2>&1 | tail -1)
+        # ИСПРАВЛЕНО: PATH -> CHECK_PATH (не перезаписывать системную переменную!)
+        CHECK_PATH="${SERVICE:-/}"
+        RESULT=$(du -sh "$CHECK_PATH" 2>&1 && df -h "$CHECK_PATH" 2>&1 | tail -1)
         ;;
     help|*)
         RESULT="Available: restart|status|logs|kill|disk <service> [param]"
         ;;
 esac
+
 echo "[$TIMESTAMP] $ACTION $SERVICE $PARAM
-$RESULT" | ./gorgona send "$TIMESTAMP" "$(date -u -d '+1 day' '+%Y-%m-%d %H:%M:%S')" - "$PUBKEY"
+$RESULT" | /usr/bin/gorgona send "$TIMESTAMP" "$(date -u -d '+1 day' '+%Y-%m-%d %H:%M:%S')" - "$PUBKEY"
+
 ```
 **Make it executable:**
 ```bash
@@ -305,18 +311,51 @@ sysadmin = /usr/local/bin/gorgona_sysadmin.sh
 ```bash
 # Restart nginx service
 gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin restart nginx" "RWTPQzuhzBw=.pub"
+# example output:
+# Decrypted message:
+# [2026-03-01 14:49:48] restart nginx 
+# ✓ nginx restarted
 
 # Get last 100 lines of postgres logs
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin logs postgres 100" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin logs nginx 3" "RWTPQzuhzBw=.pub"
+# example output:
+# Decrypted message:
+# [2026-03-01 14:49:21] logs nginx 3
+# Feb 27 16:34:09 hostname nginx[1738727]: 2026/02/27 16:34:09 [warn] 1738727#1738727: conflicting server name "hostname.org" on 0.0.0.0:443, ignored
+# Feb 27 16:34:09 hostname nginx[1738735]: 2026/02/27 16:34:09 [warn] 1738735#1738735: conflicting server name "hostname.org" on 0.0.0.0:80, ignored
+# Feb 27 16:34:09 hostname nginx[1738735]: 2026/02/27 16:34:09 [warn] 1738735#1738735: conflicting server name "hostname.org" on 0.0.0.0:443, ignored
 
 # Check sshd service status
 gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin status sshd" "RWTPQzuhzBw=.pub"
+# example output:
+# Decrypted message:
+# sysadmin status sshd
+# Received message: Pubkey_Hash=RWTPQzuhzBw=
+# ID: 150268099387392
+# Metadata (local): Create=2026-03-01 17:42:27, Unlock=2026-03-01 17:42:27, Expire=2026-03-02 17:42:27
+# Decrypted message:
+# [2026-03-01 14:42:27] status sshd 
+# ● ssh.service - OpenBSD Secure Shell server
+#      Loaded: loaded (/lib/systemd/system/ssh.service; enabled; preset: enabled)
+#      Active: active (running) since Fri 2026-02-27 16:34:11 MSK; 2 days ago
+#        Docs: man:sshd(8)
+#              man:sshd_config(5)
+#     Process: 1738962 ExecStartPre=/usr/sbin/sshd -t (code=exited, status=0/SUCCESS)
+#    Main PID: 1738963 (sshd)
+#       Tasks: 1 (limit: 153344)
+#      Memory: 3.3M
+#         CPU: 91ms
 
 # Kill all zombie processes
 gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin kill zombie" "RWTPQzuhzBw=.pub"
 
 # Check disk usage of /var/log
 gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin disk /var/log" "RWTPQzuhzBw=.pub"
+# example output:
+# Decrypted message:
+# [2026-03-01 14:36:04] disk /var/log 
+# 2.1G	/var/log
+# /dev/mapper/pve-root   94G   63G   27G  71% /
 
 # Listen and execute automatically
 gorgona -ed listen new RWTPQzuhzBw=
