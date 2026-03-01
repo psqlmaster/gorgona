@@ -183,13 +183,24 @@ If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `las
 **Examples**:
 
 ```bash
+# Examples: Listen modes
 gorgona listen single RWTPQzuhzBw=     # Gets the message from single key
 gorgona listen last RWTPQzuhzBw=       # Gets the last 1 message
 gorgona listen last 3 RWTPQzuhzBw=     # Gets the last 3 messages
 gorgona listen new RWTPQzuhzBw=        # Receives only new messages from the moment of connection
 gorgona listen new                     # Receives only new messages for all keys since connection
-gorgona -e listen new RWTPQzuhzBw=     # Listens for new messages and executes them as system commands
-gorgona -e listen lock RWTPQzuhzBw=     # Waits for locked messages and executes them precisely at unlock_at
+# Time-Locked Command Execution (cron-like)
+# Start listener in lock mode — it will execute the command exactly at unlock time
+gorgona -e listen lock RWTPQzuhzBw=
+# In another terminal: send a command that unlocks in 10 seconds
+gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
+# After ~10s the listener with -e executes the decrypted command at unlock_at
+# Same lock mode but without execution: decrypt & display at unlock time
+# Start listener (no -e) — message is queued and shown when unlocked
+gorgona listen lock RWTPQzuhzBw=
+# Send the same message (unlocks in 10s) from another terminal
+gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "test message" "RWTPQzuhzBw=.pub"
+# After ~10s the listener without -e prints: "Unlocked pending message ID=..." and the decrypted text
 gorgona -ed listen new RWTPQzuhzBw=     # Listens for new messages and executes them as background daemons
 gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background with logging
 ```
@@ -577,8 +588,8 @@ gorgona listen new RWTPQzuhzBw= & pid=$!; gorgona send "2025-09-28 21:44:00" "20
 ```
 - Time-Locked Command Execution (Cron-like)
 ```sh
-# Start listener in lock mode — it will execute the command exactly at unlock time
-gorgona -e listen lock RWTPQzuhzBw=
+# Start listener in lock mode — it will execute the command exactly at unlock time (v - verbose mode)
+gorgona -ev listen lock RWTPQzuhzBw=
 # In another terminal Send a command that unlocks alert in 10 seconds
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
 # Check and compare the time after 10 seconds. 

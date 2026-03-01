@@ -217,7 +217,7 @@ void daemon_exec(const char *command, int verbose) {
     }
 }
 
-static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config) {
+static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config, int do_execute, int daemon_exec_flag) {
     size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
     unsigned char *encrypted = base64_decode(pa->encrypted_text, &encrypted_len);
     unsigned char *encrypted_key_dec = base64_decode(pa->encrypted_key, &encrypted_key_len);
@@ -237,6 +237,13 @@ static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config)
     
     if (ret != 0 || !plaintext) {
         fprintf(stderr, "Decryption failed for pending alert ID=%" PRIu64 "\n", pa->id);
+        goto cleanup;
+    }
+
+    if (!do_execute) {
+        printf("Unlocked pending message ID=%" PRIu64 "\n", pa->id);
+        printf("Decrypted message:\n%s\n", plaintext);
+        free(plaintext);
         goto cleanup;
     }
 
@@ -274,12 +281,14 @@ static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config)
         if (verbose) {
             printf("Executing pending alert ID=%" PRIu64 ": %s\n", pa->id, final_command);
         }
-        
-        int exec_ret = system(final_command);
-        if (exec_ret != 0 && verbose) {
-            fprintf(stderr, "Pending command returned error code: %d\n", exec_ret);
+        if (daemon_exec_flag) {
+            daemon_exec(final_command, verbose);
+        } else {
+            int exec_ret = system(final_command);
+            if (exec_ret != 0 && verbose) {
+                fprintf(stderr, "Pending command returned error code: %d\n", exec_ret);
+            }
         }
-        
         free(final_command);
     } else if (verbose) {
         printf("No matching config key found for pending alert message: %s\n", plaintext);
@@ -392,21 +401,23 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
     if (unlock_at > now) {
         printf("Locked message until %s (UTC) / %s (local)\n",
                buf_unlock_utc, buf_unlock_local);
-        if (execute) {
-            PendingAlert *pa = malloc(sizeof(PendingAlert));
-            if (pa) {
-                pa->pubkey_hash_b64 = strdup(pubkey_hash_b64);
-                pa->id = id;
-                pa->unlock_at = unlock_at;
-                pa->expire_at = expire_at;
-                pa->encrypted_text = strdup(encrypted_text);
-                pa->encrypted_key = strdup(encrypted_key);
-                pa->iv = strdup(iv);
-                pa->tag = strdup(tag);
-                pa->next = pending_alerts;
-                pending_alerts = pa;
-                if (verbose) {
+        PendingAlert *pa = malloc(sizeof(PendingAlert));
+        if (pa) {
+            pa->pubkey_hash_b64 = strdup(pubkey_hash_b64);
+            pa->id = id;
+            pa->unlock_at = unlock_at;
+            pa->expire_at = expire_at;
+            pa->encrypted_text = strdup(encrypted_text);
+            pa->encrypted_key = strdup(encrypted_key);
+            pa->iv = strdup(iv);
+            pa->tag = strdup(tag);
+            pa->next = pending_alerts;
+            pending_alerts = pa;
+            if (verbose) {
+                if (execute) {
                     printf("Queued locked message ID=%" PRIu64 " for execution at %s\n", id, buf_unlock_utc);
+                } else {
+                    printf("Queued locked message ID=%" PRIu64 " for display at %s\n", id, buf_unlock_utc);
                 }
             }
         }
@@ -743,7 +754,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                     if ((*prev)->unlock_at <= now && (*prev)->expire_at > now) {
                         PendingAlert *to_exec = *prev;
                         *prev = to_exec->next;
-                        execute_pending_alert(to_exec, verbose, &config);
+                        execute_pending_alert(to_exec, verbose, &config, execute, daemon_exec_flag);
                         free(to_exec->pubkey_hash_b64);
                         free(to_exec->encrypted_text);
                         free(to_exec->encrypted_key);
