@@ -484,7 +484,13 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
 `gorgona` works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
 
 ##### Testing
-https://youtu.be/3JodTvfr88c
+<p align="center">
+[![YouTube Demo \u25B6](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)](https://youtu.be/3JodTvfr88c)
+</p>
+
+[![Demo Teaser](https://img.youtube.com/vi/3JodTvfr88c/maxresdefault.jpg)](https://youtu.be/3JodTvfr88c)
+
+Watch the quick 2‑minute demo on YouTube: https://youtu.be/3JodTvfr88c
 ```bash
 # To run the test suite, use the following command:
 make clean && make test
