@@ -19,7 +19,7 @@
   - [Server Configuration](#server-configuration)
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Future Plans](#future-plans)
-- [Testing](#testing)  • Watch the demo: [YouTube demo ▶](https://youtu.be/3JodTvfr88c) — quick 30‑min walkthrough
+- [Testing](#testing)  • [![YouTube Demo ▶](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)](https://youtu.be/3JodTvfr88c) - quick 30‑min walkthrough
 - [More examples](#more-examples)
 
 ---
@@ -40,12 +40,12 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
 - **Command Execution Mode**: Use the `-e/--exec` flag with `listen` to execute received messages as system commands (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
 - **When combined with the -d flag**: commands are executed in the background as detached daemons, making them immune to parent process termination (e.g., when running under systemd). This is especially useful for long-running processes like gpstart or custom services. All stdout/stderr from such commands is redirected to the path in gorgona_LOG_FILE, enabling centralized logging.
-- **Sub-Second Time-Locked Execution**: In `lock/new` mode with `-e/--exec`, the client precisely executes commands at the exact `unlock_at` moment (±10ms), using a `select()`-based event loop. No busy-waiting — ideal for cron-like automation with cryptographic security.
+- **Sub-Second Time-Locked Execution**: In `lock/new` mode with `-e/--exec`, the client precisely executes commands at the exact `unlock_at` moment (±10ms), using a `select()`-based event loop. No busy-waiting - ideal for cron-like automation with cryptographic security.
 - **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
 - **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
 - **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
 - **Tamper-Proof**: GCM authentication tags and RSA-OAEP padding protect against tampering.
-- **Interactive Server Status via Telnet**: Connect via `telnet <server> <port>` and use commands like `info`, `version`, or `?` to instantly view server version, uptime (e.g., `1d 21h 45m`), max clients, and message size limits — ideal for quick health checks without logs.
+- **Interactive Server Status via Telnet**: Connect via `telnet <server> <port>` and use commands like `info`, `version`, or `?` to instantly view server version, uptime (e.g., `1d 21h 45m`), max clients, and message size limits - ideal for quick health checks without logs.
 
 ##### Advantages
 
@@ -190,13 +190,13 @@ gorgona listen last 3 RWTPQzuhzBw=     # Gets the last 3 messages
 gorgona listen new RWTPQzuhzBw=        # Receives only new messages from the moment of connection
 gorgona listen new                     # Receives only new messages for all keys since connection
 # Time-Locked Command Execution (cron-like)
-# Start listener in lock mode — it will execute the command exactly at unlock time
+# Start listener in lock mode - it will execute the command exactly at unlock time
 gorgona -e listen lock RWTPQzuhzBw=
 # In another terminal: send a command that unlocks in 10 seconds
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
 # After ~10s the listener with -e executes the decrypted command at unlock_at
 # Same lock mode but without execution: decrypt & display at unlock time
-# Start listener (no -e) — message is queued and shown when unlocked
+# Start listener (no -e) - message is queued and shown when unlocked
 gorgona listen lock RWTPQzuhzBw=
 # Send the same message (unlocks in 10s) from another terminal
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "test message" "RWTPQzuhzBw=.pub"
@@ -343,7 +343,7 @@ vacuum_threshold_percent = 25    # Cleanup threshold %: higher reduces disk I/O,
 - `max_alerts`: Max alerts per recipient (default: 1000).
 - `max_clients`: Max simultaneous connections (default: 100).
 - `max_log_size`: Log file size limit in MB before rotation (default: 10).
-- `log_level`: Logging verbosity — "info" (default) or "error".
+- `log_level`: Logging verbosity - "info" (default) or "error".
 - `max_message_size`: Max message size in MB (default: 5).
 
 If the file is missing, defaults are used.  
@@ -484,7 +484,6 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
 `gorgona` works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
 
 ##### Testing
-[![YouTube Demo ▶](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)](https://youtu.be/3JodTvfr88c)
 
 [![Demo Teaser](https://img.youtube.com/vi/3JodTvfr88c/maxresdefault.jpg)](https://youtu.be/3JodTvfr88c)
 
@@ -518,7 +517,7 @@ gorgona -e listen new RWTPQzuhzBw=
 # Command return code: 0
 ```
 
- **Hack for the most patient** — if you want not only to run a command on a remote host but also to receive its output, do it like this:
+ **Hack for the most patient** - if you want not only to run a command on a remote host but also to receive its output, do it like this:
 
  ```bash
  gorgona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" "iostat -d | \
@@ -592,7 +591,7 @@ gorgona listen new RWTPQzuhzBw= & pid=$!; gorgona send "2025-09-28 21:44:00" "20
 ```
 - Time-Locked Command Execution (Cron-like)
 ```sh
-# Start listener in lock mode — it will execute the command exactly at unlock time (v - verbose mode)
+# Start listener in lock mode - it will execute the command exactly at unlock time (v - verbose mode)
 gorgona -ev listen lock RWTPQzuhzBw=
 # In another terminal Send a command that unlocks alert in 10 seconds
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "{ date; uptime; }" "RWTPQzuhzBw=.pub"
