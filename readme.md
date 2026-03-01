@@ -20,7 +20,7 @@
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Future Plans](#future-plans)
 - [Testing](#testing)  
-  - [![YouTube Demo ▶](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)](https://youtu.be/3JodTvfr88c) - quick 30‑min walkthrough
+    [![YouTube Demo ▶](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)](https://youtu.be/3JodTvfr88c)
 - [More examples](#more-examples)
 
 ---
@@ -484,7 +484,7 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
 
 `gorgona` works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
 
-##### Testing
+##### Testing - quick 30‑min walkthrough
 
 [![Demo Teaser](https://img.youtube.com/vi/3JodTvfr88c/maxresdefault.jpg)](https://youtu.be/3JodTvfr88c)
 
