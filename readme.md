@@ -486,7 +486,7 @@ Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
 
 [![Demo Teaser](https://img.youtube.com/vi/3JodTvfr88c/maxresdefault.jpg)](https://youtu.be/3JodTvfr88c)
 
-Watch the quick 2‑minute demo on YouTube: https://youtu.be/3JodTvfr88c
+Watch the quick 30‑minute demo on YouTube: https://youtu.be/3JodTvfr88c
 ```bash
 # To run the test suite, use the following command:
 make clean && make test
