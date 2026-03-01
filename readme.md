@@ -337,14 +337,16 @@ sysadmin = /usr/local/bin/gorgona_sysadmin.sh
 **Usage Examples**
 ```bash
 # Restart nginx service
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin restart nginx" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" \
+"sysadmin restart nginx" "RWTPQzuhzBw=.pub" && gorgona listen new
 # example output:
 # Decrypted message:
 # [2026-03-01 14:49:48] restart nginx 
 # ✓ nginx restarted
 
 # Get last 100 lines of postgres logs
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin logs nginx 3" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" \
+"sysadmin logs nginx 3" "RWTPQzuhzBw=.pub" && gorgona listen new
 # example output:
 # Decrypted message:
 # [2026-03-01 14:49:21] logs nginx 3
@@ -353,7 +355,8 @@ gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%
 # Feb 27 16:34:09 hostname nginx[1738735]: 2026/02/27 16:34:09 [warn] 1738735#1738735: conflicting server name "hostname.org" on 0.0.0.0:443, ignored
 
 # Check sshd service status
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin status sshd" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" \
+"sysadmin status sshd" "RWTPQzuhzBw=.pub" && gorgona listen new
 # example output:
 # Decrypted message:
 # sysadmin status sshd
@@ -374,10 +377,12 @@ gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%
 #         CPU: 91ms
 
 # Kill all zombie processes
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin kill zombie" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" \
+"sysadmin kill zombie" "RWTPQzuhzBw=.pub" && gorgona listen new
 
 # Check disk usage of /var/log
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "sysadmin disk /var/log" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" \
+"sysadmin disk /var/log" "RWTPQzuhzBw=.pub" && gorgona listen new
 # example output:
 # Decrypted message:
 # [2026-03-01 14:36:04] disk /var/log 
