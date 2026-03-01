@@ -19,7 +19,7 @@
   - [Server Configuration](#server-configuration)
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Future Plans](#future-plans)
-- [Testing](#testing)  ***youtube promo video***
+- [Testing](#testing)  • Watch the demo: [YouTube demo ▶](https://youtu.be/3JodTvfr88c) — quick 30‑min walkthrough
 - [More examples](#more-examples)
 
 ---
