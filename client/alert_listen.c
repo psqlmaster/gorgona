@@ -468,25 +468,48 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
             /* Config [exec_commands] is empty: execute the decrypted message directly */
             final_command = strdup(plaintext);
         } else {
-            /* Config has specific allowed commands: check for prefix matching */
+            /* Config has specific allowed commands: check for matching entries */
             for (int i = 0; i < config->exec_count; i++) {
-                    /* If the config entry requires a specific key, ensure it matches the message owner */
-                    if (config->exec_commands[i].required_key[0] != '\0') {
-                        if (pubkey_hash_b64 == NULL || strcmp(config->exec_commands[i].required_key, pubkey_hash_b64) != 0) {
-                            continue; /* Not allowed for this key */
-                        }
+                ExecCommand *cmd = &config->exec_commands[i];
+
+                /* 
+                 * If the config entry requires a specific key (ACL), ensure it matches the sender.
+                 * If cmd->required_key is empty, the command is considered 'public' 
+                 * for any authorized sender whose key is known to the system.
+                 */
+                if (cmd->required_key[0] != '\0') {
+                    if (pubkey_hash_b64 == NULL || strcmp(cmd->required_key, pubkey_hash_b64) != 0) {
+                        continue; /* Sender key does not match the required key for this command */
                     }
-                size_t key_len = strlen(config->exec_commands[i].key);
-                /* Match the start of the message with a config key */
-                if (strncmp(plaintext, config->exec_commands[i].key, key_len) == 0) {
-                    /* Verify boundary: exact match or followed by space */
+                }
+
+                size_t key_len = strlen(cmd->key);
+
+                /* Check if the received message starts with the configured command name */
+                if (strncmp(plaintext, cmd->key, key_len) == 0) {
+                    
+                    /* Verify boundary: exact match or followed by a space (to separate arguments) */
                     if (plaintext[key_len] == '\0' || plaintext[key_len] == ' ') {
                         const char *dynamic_part = plaintext + key_len;
-                        /* Move pointer to the start of arguments, skipping spaces */
-                        while (*dynamic_part == ' ') dynamic_part++;
-                        /* Wrap arguments in safe quotes */
-                        final_command = sanitize_and_concat(config->exec_commands[i].value, dynamic_part);
-                        break;
+
+                        /* Skip any spaces between the command name and its arguments */
+                        while (*dynamic_part == ' ') {
+                            dynamic_part++;
+                        }
+
+                        /* 
+                         * Concatenate the pre-configured script path with the dynamic arguments.
+                         * sanitize_and_concat should handle shell injection protection.
+                         */
+                        final_command = sanitize_and_concat(cmd->value, dynamic_part);
+
+                        if (verbose && final_command) {
+                            printf("Found match: command='%s', script='%s', key_restriction='%s'\n",
+                                   cmd->key, cmd->value, 
+                                   cmd->required_key[0] ? cmd->required_key : "NONE (PUBLIC)");
+                        }
+                        
+                        break; /* Command match found, exit the loop */
                     }
                 }
             }
