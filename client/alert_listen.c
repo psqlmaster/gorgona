@@ -254,6 +254,12 @@ static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config,
         final_command = strdup(plaintext);
     } else {
         for (int i = 0; i < config->exec_count; i++) {
+            /* If the config entry requires a specific key, ensure it matches the message owner */
+            if (config->exec_commands[i].required_key[0] != '\0') {
+                if (pa->pubkey_hash_b64 == NULL || strcmp(config->exec_commands[i].required_key, pa->pubkey_hash_b64) != 0) {
+                    continue; /* Not allowed for this key */
+                }
+            }
             size_t key_len = strlen(config->exec_commands[i].key);
             
             /* Check if the message starts with the allowed key */
@@ -464,6 +470,12 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
         } else {
             /* Config has specific allowed commands: check for prefix matching */
             for (int i = 0; i < config->exec_count; i++) {
+                    /* If the config entry requires a specific key, ensure it matches the message owner */
+                    if (config->exec_commands[i].required_key[0] != '\0') {
+                        if (pubkey_hash_b64 == NULL || strcmp(config->exec_commands[i].required_key, pubkey_hash_b64) != 0) {
+                            continue; /* Not allowed for this key */
+                        }
+                    }
                 size_t key_len = strlen(config->exec_commands[i].key);
                 /* Match the start of the message with a config key */
                 if (strncmp(plaintext, config->exec_commands[i].key, key_len) == 0) {

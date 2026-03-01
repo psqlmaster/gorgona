@@ -221,7 +221,7 @@ The server reads settings from `/etc/gorgona/gorgonad.conf` or uses defaults (po
 
 ##### Configuration
 
-##### Client Configuration
+##### Client Configuration (Variant A)
 
 The file `/etc/gorgona/gorgona.conf` contains server settings and optional execution mappings:
 
@@ -239,6 +239,33 @@ port = 7777
 ```ini
 [exec_commands]
 app start = /home/su/repository/c/gorgona/test/script.sh
+```
+
+##### Recommended (Variant B) - per-key sections
+---
+
+Prefer using named subsections to group commands by required public-key hash. This is explicit, easy to read, and less error-prone.
+
+```ini
+[exec_commands:RWTPQzuhzBw=]
+weather = /usr/local/bin/gorgona_weather_sender.sh
+greengage start = /root/scripts/greengage_start.sh
+
+[exec_commands:IcUimbs6LZY=]
+la = /root/scripts/la.sh
+vm list running = /root/scripts/qm_list_running.sh
+
+[exec_commands]   ; global commands, available for all keys
+sysadmin = /usr/local/bin/gorgona_sysadmin.sh
+```
+
+Notes:
+- A header `[exec_commands:KEY]` binds all key/value lines inside to `required_key=KEY`. Only messages decrypted with the matching private key (i.e., whose `pubkey_hash_b64` equals `KEY`) may execute those commands when `-e/--exec` is used.
+- `[exec_commands]` (without suffix) is the global section — commands there are available to messages from any key.
+- This format is both human-editable and easy to generate with configuration management tools (Ansible, Chef, etc.).
+
+Backward compatibility:
+- The parser also accepts the older minimal form `key = <value>` inside `[exec_commands]` (legacy), but using per-key sections is recommended.
 ```
 ##### Wrapper Script Support for Complex Commands
 - For complex shell commands with pipes, variables, or dynamic content, use wrapper scripts instead of inline commands. 
