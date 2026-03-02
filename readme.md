@@ -149,18 +149,19 @@ ls -la /etc/gorgona
 - (datetime UTC) or date -u '+%Y-%m-%d %H:%M:%S'
 
 ```bash
+# gorgona send <data unlock message> <data expired> "Your message" "recipient.pub"
 gorgona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipient.pub"
 ```
 
-Use `-` for `<message>` to read from stdin.  
+Use `-` for `<message>` to read from stdin. 
 The public key file is the filename in `/etc/gorgona/`, e.g., `RWTPQzuhzBw=.pub`.
 
 **Examples**:
 
 ```bash
 gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "hello world" "RWTPQzuhzBw=.pub"
-gorgona send "2025-09-30 23:55:00" "2025-12-30 12:00:00" "Message in the future for you my dear friend RWTPQzuhzBw=" "RWTPQzuhzBw=.pub"
-cat message.txt | gorgona send "2025-09-30 23:55:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u -d '+30 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "Message in the future for you my dear friend RWTPQzuhzBw=" "RWTPQzuhzBw=.pub"
+cat message.txt | gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" - "RWTPQzuhzBw=.pub"
 ```
 
 ### Listen for Messages
