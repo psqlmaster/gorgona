@@ -95,16 +95,16 @@ make clean && make
 
 Builds `gorgona` (client) and `gorgonad` (server). Clean: `make clean`. Rebuild: `make rebuild`.
 
-### Install Client
+### [Install Client](https://github.com/psqlmaster/gorgona/releases)
 
 ```bash
-sudo dpkg -i ./gorgona_1.8.3_amd64.deb
+sudo dpkg -i ./gorgona_2.5.8_amd64.deb
 ```
 
-### Install Server
+### [Install Server](https://github.com/psqlmaster/gorgona/releases)
 
 ```bash
-sudo dpkg -i ./gorgonad_1.8.3_amd64.deb
+sudo dpkg -i ./gorgonad_2.5.8_amd64.deb
 ```
 
 ##### Usage
@@ -566,7 +566,7 @@ make clean && make test
 ##### More examples
 ```bash
 # send
-lsblk | gorgona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" - "RWTPQzuhzBw=.pub"
+lsblk | gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" - "RWTPQzuhzBw=.pub"
 # Server response: Alert added successfully
 
 # get
@@ -576,7 +576,7 @@ gorgona listen last RWTPQzuhzBw=
 # Decrypted message: [output of lsblk]
 
 # send command message
-gorgona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "echo \$(date)" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "echo \$(date)" "RWTPQzuhzBw=.pub"
 
 # listen execute command message
 gorgona -e listen new RWTPQzuhzBw=
@@ -587,11 +587,11 @@ gorgona -e listen new RWTPQzuhzBw=
 # Command return code: 0
 ```
 
- **Hack for the most patient** - if you want not only to run a command on a remote host but also to receive its output, do it like this:
+ >**Hack for the most patient** - if you want not only to run a command on a remote host but also to receive its output, do it like this:
 
  ```bash
- gorgona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" "iostat -d | \
- gorgona send \"2025-09-28 21:44:00\" \"2025-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"" "IcUimbs6LZY=.pub"
+ gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "iostat -d | \
+ gorgona send \"2025-09-28 21:44:00\" \"2030-12-30 12:00:00\" - \"RWTPQzuhzBw=.pub\"" "IcUimbs6LZY=.pub"
  ```
 
 - If we listen on that channel:
@@ -605,7 +605,7 @@ gorgona -e listen new RWTPQzuhzBw=
  ```bash
  sudo tee /tmp/mkdir.sh  /dev/null << 'EOF'
  mkdir -p /tmp/test/test1/test2/test3 && cd /tmp/test/test1/test2/test3 && pwd | \
- gorgona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" - "RWTPQzuhzBw=.pub"
+ gorgona send "2025-10-05 18:42:00" "2030-10-09 09:00:00" - "RWTPQzuhzBw=.pub"
  EOF
  
  chmod +x /tmp/mkdir.sh
@@ -654,10 +654,10 @@ sudo chmod 644 /var/log/gorgona_service.log
 
 ```bash
 # in new terminal, only mkdir
-gorgona send "2025-10-05 18:42:00" "2026-10-09 09:00:00" "mkdir testdir" "RWTPQzuhzBw=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "mkdir testdir" "RWTPQzuhzBw=.pub"
 
 # mkdir & output message
-gorgona listen new RWTPQzuhzBw= & pid=$!; gorgona send "2025-09-28 21:44:00" "2025-12-30 12:00:00" "mkdir testdir" "RWTPQzuhzBw=.pub"; sleep 2; kill $pid
+gorgona listen new RWTPQzuhzBw= & pid=$!; gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "mkdir testdir" "RWTPQzuhzBw=.pub"; sleep 2; kill $pid
 ```
 - Time-Locked Command Execution (Cron-like)
 ```sh
