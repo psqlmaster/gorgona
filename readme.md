@@ -58,7 +58,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 ##### Quick Start
 
 ```bash
-git clone https://github.com/psqlmaster/gorgona.git && \
+git clone --depth 1 https://github.com/psqlmaster/gorgona.git && \
 cd gorgona && \
 make clean && make && \
 sudo mkdir -p /etc/gorgona && \
