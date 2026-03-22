@@ -23,16 +23,24 @@ void shutdown_handler(int sig) {
     if (log_file) {
         char time_str[32];
         get_utc_time_str(time_str, sizeof(time_str));
-        fprintf(log_file, "%s Received signal %d, shutting down\n", time_str, sig);
+        fprintf(log_file, "%s Received signal %d, shutting down gracefully\n", time_str, sig);
         fflush(log_file);
-        fclose(log_file);
-        log_file = NULL;
     }
-    /* Close client sockets */
+
+    /* 1. Ключевой момент: Закрываем все mmap и файлы */
+    /* Это заставит ядро ОС сбросить все грязные страницы на диск перед выходом */
+    alert_db_close_all();
+
+    /* 2. Закрываем сокеты */
     for (int i = 0; i < max_clients; i++) {
         if (client_sockets[i] > 0) close(client_sockets[i]);
     }
-    /* Free other resources if needed */
+
+    if (log_file) {
+        fclose(log_file);
+        log_file = NULL;
+    }
+
     exit(0);
 }
 
