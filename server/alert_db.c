@@ -152,61 +152,72 @@ int alert_db_save_alert(Recipient *rec, Alert *alert) {
     return 0;
 }
 
+/**
+ * alert_db_load_recipients
+ * Scans the database directory and restores the alert index in memory.
+ * Uses mmap to map files directly to the address space for zero-copy access.
+ */
 int alert_db_load_recipients(void) {
     DIR *dir = opendir(ALERT_DB_DIR);
     if (!dir) {
-        if (verbose) perror("Could not open alert database directory");
-        return 0;
+        if (verbose) perror("Failed to open alert database directory");
+        return -1;
     }
 
     struct dirent *entry;
     while ((entry = readdir(dir))) {
-        // Ищем только файлы с расширением .alerts
-        char *extension = strstr(entry->d_name, ".alerts");
-        if (extension && strcmp(extension, ".alerts") == 0) {
+        /* Filter files by .alerts extension */
+        char *ext = strstr(entry->d_name, ".alerts");
+        if (ext && strcmp(ext, ".alerts") == 0) {
             
-            // 1. Получаем Base64 часть имени файла
+            /* 1. Extract Base64 encoded public key hash from filename */
             char b64[256];
-            size_t b64_len = extension - entry->d_name;
+            size_t b64_len = ext - entry->d_name;
             if (b64_len >= sizeof(b64)) b64_len = sizeof(b64) - 1;
             strncpy(b64, entry->d_name, b64_len);
             b64[b64_len] = '\0';
 
-            // 2. Декодируем хэш и нормализуем его длину
+            /* 2. Decode hash and normalize to PUBKEY_HASH_LEN to ensure memcmp consistency */
             size_t decoded_len;
             unsigned char *decoded_raw = base64_decode(b64, &decoded_len);
             if (!decoded_raw) continue;
 
-            // Важно: создаем чистый буфер фиксированного размера
             unsigned char fixed_hash[PUBKEY_HASH_LEN] = {0};
             memcpy(fixed_hash, decoded_raw, (decoded_len < PUBKEY_HASH_LEN) ? decoded_len : PUBKEY_HASH_LEN);
             free(decoded_raw);
 
-            // 3. Добавляем или находим реципиента в памяти
+            /* 3. Initialize or find recipient structure in global registry */
             Recipient *rec = add_recipient(fixed_hash);
             if (!rec) continue;
             
-            // Открываем mmap для файла
+            /* Map file to memory. ensure_mmap_capacity handles open() and mmap() */
             if (ensure_mmap_capacity(rec, 0) != 0 || !rec->mmap_ptr) continue;
 
             struct stat st;
             if (fstat(rec->fd, &st) != 0) continue;
             
             size_t offset = 0;
-            // 4. Парсим содержимое файла
+            unsigned char *base = (unsigned char *)rec->mmap_ptr;
+
+            /* 4. Parse alert records from the mmaped region */
             while (offset + sizeof(uint64_t) < (size_t)st.st_size) {
-                unsigned char *p = (unsigned char *)rec->mmap_ptr + offset;
+                unsigned char *p = base + offset;
                 
-                // Проверка на пустой заголовок (конец данных в разреженном файле)
+                /* Snowflake ID 0 indicates the start of empty space in the file */
                 uint64_t test_id;
                 memcpy(&test_id, p, sizeof(uint64_t));
                 if (test_id == 0) break;
 
-                // Убеждаемся, что в памяти достаточно места под структуру Alert
+                /* 5. Efficient Memory Management: Expand Alert array in blocks */
                 if (rec->count >= rec->capacity) {
-                    int new_capacity = rec->capacity + (max_alerts > 0 ? max_alerts : 100);
+                    /* Step depends on max_alerts to minimize realloc overhead */
+                    int alloc_step = (max_alerts > 512) ? 512 : 128;
+                    int new_capacity = rec->capacity + alloc_step;
                     Alert *new_alerts = realloc(rec->alerts, new_capacity * sizeof(Alert));
-                    if (!new_alerts) break; 
+                    if (!new_alerts) {
+                        if (log_file) fprintf(log_file, "Critical: OOM while loading DB\n");
+                        break;
+                    }
                     rec->alerts = new_alerts;
                     rec->capacity = new_capacity;
                 }
@@ -214,54 +225,52 @@ int alert_db_load_recipients(void) {
                 Alert *a = &rec->alerts[rec->count];
                 memset(a, 0, sizeof(Alert));
                 
-                // Читаем фиксированные поля заголовка записи
+                /* Parse fixed-size header fields */
                 a->id = test_id; p += sizeof(uint64_t);
                 memcpy(&a->create_at, p, sizeof(time_t)); p += sizeof(time_t);
                 memcpy(&a->unlock_at, p, sizeof(time_t)); p += sizeof(time_t);
                 memcpy(&a->expire_at, p, sizeof(time_t)); p += sizeof(time_t);
                 
-                // Указатель на поле 'active' прямо внутри mmap
+                /* Direct pointer to 'active' flag in mmap for instant updates */
                 a->active_ptr = (int *)p; 
                 memcpy(&a->active, p, sizeof(int)); p += sizeof(int);
 
-                // Читаем длины переменных данных
+                /* Read lengths for variable-sized data blobs */
                 memcpy(&a->text_len, p, sizeof(size_t)); p += sizeof(size_t);
                 memcpy(&a->encrypted_key_len, p, sizeof(size_t)); p += sizeof(size_t);
                 memcpy(&a->iv_len, p, sizeof(size_t)); p += sizeof(size_t);
 
-                // Безопасность: проверяем, не выходят ли данные за пределы файла
-                size_t remaining_in_file = (size_t)st.st_size - (size_t)(p - (unsigned char *)rec->mmap_ptr);
-                size_t data_needed = a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + sizeof(uint32_t);
+                /* 6. Strict Bounds Checking: Prevent overflow on corrupted files */
+                size_t payload_and_meta = a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + sizeof(uint32_t);
+                size_t current_pos = (size_t)(p - base);
                 
-                if (data_needed > remaining_in_file) {
-                    if (verbose) fprintf(stderr, "Corrupted alert record for hash %s, skipping remaining\n", b64);
+                if (current_pos + payload_and_meta > (size_t)st.st_size) {
+                    if (verbose) fprintf(stderr, "Database record corruption detected for key %s\n", b64);
                     break;
                 }
 
-                // Устанавливаем указатели прямо в область mmap
+                /* 7. Zero-Copy Pointer Assignment: Map structure fields to mmap offsets */
                 a->text = p; p += a->text_len;
                 a->encrypted_key = p; p += a->encrypted_key_len;
                 a->iv = p; p += a->iv_len;
                 
                 memcpy(a->tag, p, GCM_TAG_LEN); p += GCM_TAG_LEN;
                 
-                uint32_t del; 
-                memcpy(&del, p, sizeof(uint32_t)); p += sizeof(uint32_t);
+                uint32_t delimiter; 
+                memcpy(&delimiter, p, sizeof(uint32_t)); p += sizeof(uint32_t);
                 
-                // Проверяем магическое число-разделитель
-                if (del == ALERT_RECORD_DELIMITER) {
+                /* Verify record integrity via magic delimiter */
+                if (delimiter == ALERT_RECORD_DELIMITER) {
                     a->is_mmaped = true;
                     rec->count++;
-                    offset = (size_t)(p - (unsigned char *)rec->mmap_ptr);
+                    offset = (size_t)(p - base);
                 } else {
-                    if (verbose) fprintf(stderr, "Delimiter mismatch in database for %s at offset %zu\n", b64, offset);
+                    if (verbose) fprintf(stderr, "Integrity check failed (Bad Delimiter) for %s\n", b64);
                     break;
                 }
             }
+            /* Track high-water mark of valid data for future appends */
             rec->used_size = offset;
-            if (verbose && rec->count > 0) {
-                printf("Loaded %d alerts for recipient %s\n", rec->count, b64);
-            }
         }
     }
     closedir(dir);
