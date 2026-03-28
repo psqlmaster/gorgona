@@ -151,7 +151,10 @@ void run_server(int server_fd) {
         for (int i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (sd > 0) {
-                FD_SET(sd, &readfds);
+                // Если мы уже готовимся закрыть сокет, НЕ добавляем его в readfds
+                if (!subscribers[i].close_after_send) {
+                    FD_SET(sd, &readfds);
+                }
                 if (has_pending_data(i)) {
                     FD_SET(sd, &writefds);
                 }
@@ -278,9 +281,9 @@ void run_server(int server_fd) {
                     char byte;
                     valread = read(sd, &byte, 1);
                     if (valread > 0) {
-                        if (verbose) {
+                        /* if (verbose) {
                             fprintf(stderr, "Byte received: %c (0x%02x)\n", isprint(byte) ? byte : '.', (unsigned char)byte);
-                        }
+                        } */
                         sub->in_buffer[sub->in_pos++] = byte;
 
                         /* Check if we have a newline (text mode) or 4 bytes (potential binary mode) */
@@ -384,45 +387,78 @@ void run_server(int server_fd) {
                                 continue;
                             }
                             continue; /* Continue reading until newline or 4 bytes */
+
+
+
                         } else if (sub->in_pos == sizeof(uint32_t)) {
-                            /* Check if we have a valid binary length */
                             uint32_t temp_len;
                             memcpy(&temp_len, sub->in_buffer, sizeof(uint32_t));
                             temp_len = ntohl(temp_len);
-                            if (temp_len <= max_message_size) {
-                                /* Binary mode detected */
-                                sub->expected_msg_len = temp_len;
-                                free(sub->in_buffer);
-                                sub->in_buffer = malloc(sub->expected_msg_len + 1);
-                                if (!sub->in_buffer) {
-                                    char *error_msg = "Error: Memory allocation failed";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->sock = 0;
-                                    sub->mode = 0;
-                                    sub->pubkey_hash[0] = '\0';
-                                    free_out_queue(i);
-                                    sub->in_pos = 0;
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Failed to allocate in_buffer for fd %d: %s\n", time_str, sd, strerror(errno));
-                                        fflush(log_file);
-                                    }
-                                    continue;
-                                }
-                                sub->in_pos = 0;
-                                sub->read_state = READ_MSG;
-                                if (log_file && strcmp(log_level, "info")) {
-                                    char time_str[32];
-                                    get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Detected binary mode for fd %d [%s], expected length: %u\n", time_str, sd, subscribers[i].ip_address, temp_len);
+
+                            /* ПРОВЕРКА ЛИМИТА СЕРВЕРА */
+                            if (temp_len > max_message_size) {
+                                char error_resp[256];
+                                int err_len = snprintf(error_resp, sizeof(error_resp), 
+                                    "Error: Message size (%u bytes) exceeds server limit (%zu bytes)", 
+                                    temp_len, max_message_size);
+
+                                enqueue_message(i, error_resp, err_len);
+                                sub->close_after_send = true; // Очередь отправит ошибку и закроет сокет
+
+                                if (log_file) {
+                                    char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
+                                    fprintf(log_file, "%s Rejected large msg fd %d: %u > %zu\n", time_str, sd, temp_len, max_message_size);
                                     fflush(log_file);
                                 }
+                                // Очищаем буфер и ПРЕКРАЩАЕМ чтение для этого клиента
+                                if (sub->in_buffer) free(sub->in_buffer);
+                                sub->in_buffer = NULL;
+                                sub->in_pos = 0;
+                                continue; 
+                            } 
+
+                            /* Если всё хорошо - обычный malloc */
+                            sub->expected_msg_len = temp_len;
+                            free(sub->in_buffer);
+                            sub->in_buffer = malloc(sub->expected_msg_len + 1);
+
+
+
+                            if (!sub->in_buffer) {
+                                if (log_file) {
+                                    char time_str[32];
+                                    get_utc_time_str(time_str, sizeof(time_str));
+                                    fprintf(log_file, "%s Failed to allocate %u bytes for fd %d\n", 
+                                            time_str, sub->expected_msg_len, sd);
+                                }
+                                close(sd);
+                                client_sockets[i] = 0;
+                                sub->sock = 0;
+                                free_out_queue(i);
+                                sub->in_pos = 0;
                                 continue;
-                            }  
+                            }
+                            sub->in_pos = 0;
+                            sub->read_state = READ_MSG;
+                            
+                            if (verbose && log_file && strcmp(log_level, "info") == 0) {
+                                char time_str[32];
+                                get_utc_time_str(time_str, sizeof(time_str));
+                                fprintf(log_file, "%s Binary mode fd %d, expected len: %u\n", 
+                                        time_str, sd, temp_len);
+                                fflush(log_file);
+                            }
+                            continue;
                         }
+
+
+
+
+
+
+
+
+
                     } else if (valread == 0) {
                         /* Client disconnected */
                         if (log_file && strcmp(log_level, "info") == 0) {

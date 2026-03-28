@@ -839,7 +839,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 }
 
                 size_t resp_len = ntohl(resp_len_net);
-                if (resp_len == 0 || resp_len > 1024 * 1024) {
+                if (resp_len == 0 || resp_len > 50 * 1024 * 1024) { /*50mb max 1 alert*/
                     fprintf(stderr, "Invalid response length: %zu\n", resp_len);
                     connection_ok = 0;
                     break;

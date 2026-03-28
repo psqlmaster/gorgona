@@ -1,3 +1,6 @@
+/* BSD 3-Clause License
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved. */
 #define _XOPEN_SOURCE 700
 #include "encrypt.h"
 #include "config.h"
@@ -8,6 +11,9 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <sys/time.h>
+#include <signal.h> 
+#include <stdbool.h>
 
 /* Parses date and time in format "YYYY-MM-DD HH:MM:SS"
    Interprets the supplied datetime string as UTC (not localtime). */
@@ -160,13 +166,8 @@ int send_alert(int argc, char *argv[], int verbose) {
     /* Check data sizes */
     if (tag_len != GCM_TAG_LEN || iv_len != 12) {
         fprintf(stderr, "Invalid encryption data sizes\n");
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(message);
+        free(pubkey_hash); free(pubkey_hash_b64); free(encrypted);
+        free(encrypted_key); free(iv); free(tag); free(message);
         return 1;
     }
 
@@ -177,16 +178,9 @@ int send_alert(int argc, char *argv[], int verbose) {
     char *tag_b64 = base64_encode(tag, tag_len);
     if (!encrypted_b64 || !encrypted_key_b64 || !iv_b64 || !tag_b64) {
         fprintf(stderr, "Failed to encode encrypted data to base64\n");
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
+        free(pubkey_hash); free(pubkey_hash_b64); free(encrypted);
+        free(encrypted_key); free(iv); free(tag);
+        free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
         free(message);
         return 1;
     }
@@ -194,21 +188,49 @@ int send_alert(int argc, char *argv[], int verbose) {
     Config config;
     read_config(&config, verbose);
 
+    /* --- РАСЧЕТ РАЗМЕРА И ПРОВЕРКА ЛИМИТА (50 МБ) --- */
+    size_t needed_len = strlen("SEND|") + strlen(pubkey_hash_b64) + 64 + 
+                        strlen(encrypted_b64) + strlen(encrypted_key_b64) + 
+                        strlen(iv_b64) + strlen(tag_b64);
+
+    const size_t CLIENT_MAX_LIMIT = 50 * 1024 * 1024;
+    if (needed_len > CLIENT_MAX_LIMIT) {
+        fprintf(stderr, "Error: Message is too large to send (%.2f MB). Client limit is 50 MB.\n", 
+                (double)needed_len / (1024 * 1024));
+        free(pubkey_hash); free(pubkey_hash_b64); free(encrypted); 
+        free(encrypted_key); free(iv); free(tag); 
+        free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64); 
+        free(message);
+        return 1;
+    }
+
+    /* Формируем финальный буфер один раз */
+    char *buffer = malloc(needed_len + 1);
+    if (!buffer) {
+        fprintf(stderr, "Error: Failed to allocate memory for message\n");
+        free(pubkey_hash); free(pubkey_hash_b64); free(encrypted); 
+        free(encrypted_key); free(iv); free(tag); 
+        free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64); 
+        free(message);
+        return 1;
+    }
+
+    int len = snprintf(buffer, needed_len + 1, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+             pubkey_hash_b64, (long)unlock_at, (long)expire_at,
+             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
+
+    if (verbose) {
+        printf("Sending message (%d bytes)...\n", len);
+    }
+
     /* Connect to server */
     int sock = 0;
     struct sockaddr_in serv_addr;
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         fprintf(stderr, "Socket creation error\n");
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
+        free(buffer); free(pubkey_hash); free(pubkey_hash_b64); free(encrypted);
+        free(encrypted_key); free(iv); free(tag);
+        free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
         free(message);
         return 1;
     }
@@ -217,203 +239,92 @@ int send_alert(int argc, char *argv[], int verbose) {
     serv_addr.sin_port = htons(config.server_port);
     if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
         fprintf(stderr, "Invalid address/ Address not supported\n");
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
+        close(sock); free(buffer); free(pubkey_hash); free(pubkey_hash_b64);
         free(message);
         return 1;
     }
 
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         fprintf(stderr, "Connection failed\n");
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
+        close(sock); free(pubkey_hash); free(pubkey_hash_b64);
+        free(encrypted); free(encrypted_key); free(iv); free(tag);
+        free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
         free(message);
         return 1;
     }
 
-    /* Format message */
-    size_t needed_len = strlen("SEND|") + strlen(pubkey_hash_b64) + 2*20 + strlen(encrypted_b64) + strlen(encrypted_key_b64) + strlen(iv_b64) + strlen(tag_b64) + 8;
-    char *buffer = malloc(needed_len + 1);
-    if (!buffer) {
-        fprintf(stderr, "Error: Failed to allocate memory for message\n");
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
-    int len = snprintf(buffer, needed_len + 1, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
-             pubkey_hash_b64, unlock_at, expire_at,
-             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
-    if (len < 0 || (size_t)len > needed_len) {
-        fprintf(stderr, "Error: Failed to format message\n");
-        free(buffer);
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
+    /* Игнорируем SIGPIPE, чтобы не вылететь при записи в сокет, который сервер закрыл на чтение */
+    #include <signal.h>
+    signal(SIGPIPE, SIG_IGN);
 
-    if (verbose) {
-        printf("Sending: %s\n", buffer);
-    }
-
-    // Send length (4 bytes)
-    uint32_t msg_len_net = htonl(len);
+    // 4. Отправляем длину (4 байта)
+    uint32_t msg_len_net = htonl((uint32_t)len);
     if (send(sock, &msg_len_net, sizeof(uint32_t), 0) != sizeof(uint32_t)) {
-        perror("Length send error");
-        free(buffer);
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
+        perror("Failed to send length");
+        close(sock); goto cleanup_all;
     }
 
-    // Send data
-    if (send(sock, buffer, len, 0) != len) {
-        perror("Send error");
-        free(buffer);
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
-    free(buffer);
+    // 5. Отправляем данные ЧАНКАМИ по 64КБ
+    size_t total_sent = 0;
+    size_t chunk_size = 65536; 
+    bool aborted = false;
 
-    /* Receive server response */
-    uint32_t resp_len_net;
-    int valread = read(sock, &resp_len_net, sizeof(uint32_t));
-    if (valread != sizeof(uint32_t)) {
-        perror("Response length read error");
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
-    size_t resp_len = ntohl(resp_len_net);
-
-    char *resp_buffer = malloc(resp_len + 1);
-    if (!resp_buffer) {
-        fprintf(stderr, "Error: Failed to allocate memory for response\n");
-        close(sock);
-        free(pubkey_hash);
-        free(pubkey_hash_b64);
-        free(encrypted);
-        free(encrypted_key);
-        free(iv);
-        free(tag);
-        free(encrypted_b64);
-        free(encrypted_key_b64);
-        free(iv_b64);
-        free(tag_b64);
-        free(message);
-        return 1;
-    }
-
-    size_t total_read = 0;
-    while (total_read < resp_len) {
-        valread = read(sock, resp_buffer + total_read, resp_len - total_read);
-        if (valread <= 0) {
-            if (valread < 0) perror("Read error");
-            else fprintf(stderr, "Connection closed by server\n");
-            free(resp_buffer);
-            close(sock);
-            free(pubkey_hash);
-            free(pubkey_hash_b64);
-            free(encrypted);
-            free(encrypted_key);
-            free(iv);
-            free(tag);
-            free(encrypted_b64);
-            free(encrypted_key_b64);
-            free(iv_b64);
-            free(tag_b64);
-            free(message);
-            return 1;
+    while (total_sent < (size_t)len) {
+        size_t to_send = ((size_t)len - total_sent > chunk_size) ? chunk_size : ((size_t)len - total_sent);
+        ssize_t sent = send(sock, buffer + total_sent, to_send, MSG_NOSIGNAL);
+        
+        if (sent <= 0) {
+            // Если send вернул ошибку, значит сервер уже закрыл сокет (отклонил лимит)
+            aborted = true;
+            break;
         }
-        total_read += valread;
+        total_sent += sent;
+
+        // КРИТИЧЕСКИЙ МОМЕНТ: Проверяем, не прислал ли сервер ошибку ПРЯМО СЕЙЧАС (не блокируя поток)
+        struct timeval tv_poll = {0, 0}; // 0 секунд, 0 микросекунд - мгновенный опрос
+        fd_set rset;
+        FD_ZERO(&rset);
+        FD_SET(sock, &rset);
+        if (select(sock + 1, &rset, NULL, NULL, &tv_poll) > 0) {
+            // В сокете появились данные от сервера (вероятно, ошибка)
+            aborted = true;
+            break;
+        }
     }
-    resp_buffer[resp_len] = '\0';
+    free(buffer); buffer = NULL;
 
-    printf("Server response: %s\n", resp_buffer);
+    /* 6. Читаем финальный ответ или ошибку */
+    struct timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 
-    free(resp_buffer);
+    uint32_t resp_len_net;
+    if (read(sock, &resp_len_net, sizeof(uint32_t)) == sizeof(uint32_t)) {
+        size_t resp_len = ntohl(resp_len_net);
+        if (resp_len > 0 && resp_len < 2048) {
+            char *resp_buffer = malloc(resp_len + 1);
+            if (resp_buffer) {
+                size_t tr = 0;
+                while (tr < resp_len) {
+                    ssize_t r = read(sock, resp_buffer + tr, resp_len - tr);
+                    if (r <= 0) break;
+                    tr += r;
+                }
+                resp_buffer[tr] = '\0';
+                printf("Server response: %s\n", resp_buffer);
+                free(resp_buffer);
+            }
+        }
+    } else if (aborted) {
+        fprintf(stderr, "Server rejected the data (likely size limit) and closed connection.\n");
+    }
 
-    /* Free resources and close socket */
     close(sock);
-    free(pubkey_hash);
-    free(pubkey_hash_b64);
-    free(encrypted);
-    free(encrypted_key);
-    free(iv);
-    free(tag);
-    free(encrypted_b64);
-    free(encrypted_key_b64);
-    free(iv_b64);
-    free(tag_b64);
+
+cleanup_all:
+    if (buffer) free(buffer);
+    free(pubkey_hash); free(pubkey_hash_b64);
+    free(encrypted); free(encrypted_key); free(iv); free(tag);
+    free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
     free(message);
     return 0;
 }
-

@@ -197,7 +197,6 @@ void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire
     rec->count++;
 }
 
-
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     if (!new_alert || !new_alert->active) return;
 
@@ -212,7 +211,6 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
         return;
     }
 
-    /* Формируем строку с запасом */
     size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 1024 + 
                         strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
     
@@ -225,7 +223,6 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
         if (len > 0) {
             size_t actual_len = (size_t)len;
             if (actual_len >= needed_len) actual_len = needed_len - 1;
-            /* Важно: рассылка подписчикам тоже ограничена max_message_size */
             if (actual_len > max_message_size) actual_len = max_message_size;
 
             for (int j = 0; j < max_clients; j++) {
@@ -234,10 +231,12 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                                        strcmp(subscribers[j].pubkey_hash, pubkey_hash_b64) == 0);
                     
                     bool is_locked = (new_alert->unlock_at > time(NULL));
+                    bool send_it = false;
                     int mode = subscribers[j].mode;
-                    bool send_it = (mode == MODE_ALL || mode == MODE_NEW) ||
-                                   ((mode == MODE_LIVE || mode == MODE_SINGLE) && !is_locked) ||
-                                   (mode == MODE_LOCK && is_locked);
+                    if (mode == MODE_LIVE && !is_locked) send_it = true;
+                    else if (mode == MODE_ALL || mode == MODE_NEW) send_it = true;
+                    else if (mode == MODE_LOCK && is_locked) send_it = true;
+                    else if (mode == MODE_SINGLE && !is_locked) send_it = true;
 
                     if (match_hash && send_it) enqueue_message(j, response, actual_len);
                 }
@@ -250,27 +249,19 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
 
 void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
-
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
-        
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!pubkey_hash_b64) continue;
 
-        /* Если задан фильтр, пропускаем несовпадающие хэши */
         if (pubkey_hash_b64_filter && strlen(pubkey_hash_b64_filter) > 0) {
             if (strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
-                free(pubkey_hash_b64);
-                continue;
+                free(pubkey_hash_b64); continue;
             }
         }
 
         clean_expired_alerts(rec);
-
-        /* Сортируем для режимов LAST и SINGLE (по убыванию ID, чтобы взять свежие) */
-        if (mode == MODE_LAST || mode == MODE_SINGLE) {
-            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
-        }
+        if (mode == MODE_LAST || mode == MODE_SINGLE) qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
 
         int limit = (mode == MODE_LAST) ? count : rec->count;
         int sent_count = 0;
@@ -280,11 +271,9 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
             if (!a->active || a->expire_at <= now) continue;
 
             bool is_locked = (a->unlock_at > now);
-            bool send_it = false;
-
-            if (mode == MODE_ALL || mode == MODE_LAST) send_it = true;
-            else if (mode == MODE_LIVE || mode == MODE_SINGLE) send_it = !is_locked;
-            else if (mode == MODE_LOCK) send_it = is_locked;
+            bool send_it = (mode == MODE_ALL || mode == MODE_LAST) ||
+                           ((mode == MODE_LIVE || mode == MODE_SINGLE) && !is_locked) ||
+                           (mode == MODE_LOCK && is_locked);
 
             if (send_it) {
                 char *bt = base64_encode(a->text, a->text_len);
@@ -293,22 +282,28 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                 char *bg = base64_encode(a->tag, GCM_TAG_LEN);
 
                 if (bt && bk && bi && bg) {
-                    char resp[2048 + a->text_len * 2];
-                    int l = snprintf(resp, sizeof(resp), "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
-                                     pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
-                                     bt, bk, bi, bg);
-                    if (l > 0) enqueue_message(sub_index, resp, l);
-                    sent_count++;
+                    size_t needed = strlen("ALERT|") + strlen(pubkey_hash_b64) + 1024 + strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
+                    char *resp = malloc(needed);
+                    if (resp) {
+                        int l = snprintf(resp, needed, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                         pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
+                                         bt, bk, bi, bg);
+                        if (l > 0) {
+                            size_t actual_l = (size_t)l;
+                            if (actual_l >= needed) actual_l = needed - 1;
+                            if (actual_l > max_message_size) actual_l = max_message_size;
+                            enqueue_message(sub_index, resp, actual_l);
+                        }
+                        free(resp);
+                        sent_count++;
+                    }
                 }
                 free(bt); free(bk); free(bi); free(bg);
             }
         }
         free(pubkey_hash_b64);
     }
-
-    if (mode == MODE_LAST) {
-        subscribers[sub_index].close_after_send = true;
-    }
+    if (mode == MODE_LAST) subscribers[sub_index].close_after_send = true;
 }
 
 void rotate_log() {
