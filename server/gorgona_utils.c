@@ -211,42 +211,42 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
         free(pubkey_hash_b64); free(bt); free(bk); free(bi); free(bg);
         return;
     }
-
-    /* Формируем строку с запасом */
     size_t needed_len = strlen("ALERT|") + strlen(pubkey_hash_b64) + 1024 + 
                         strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
-    
     char *response = malloc(needed_len);
     if (response) {
         int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
                            pubkey_hash_b64, new_alert->id, (long)new_alert->unlock_at, 
                            (long)new_alert->expire_at, bt, bk, bi, bg);
-
         if (len > 0) {
             size_t actual_len = (size_t)len;
-            if (actual_len >= needed_len) actual_len = needed_len - 1;
-            /* Важно: рассылка подписчикам тоже ограничена max_message_size */
-            if (actual_len > max_message_size) actual_len = max_message_size;
-
             for (int j = 0; j < max_clients; j++) {
                 if (client_sockets[j] > 0 && subscribers[j].mode != 0) {
                     bool match_hash = (subscribers[j].pubkey_hash[0] == '\0' || 
                                        strcmp(subscribers[j].pubkey_hash, pubkey_hash_b64) == 0);
-                    
-                    bool is_locked = (new_alert->unlock_at > time(NULL));
+                    if (!match_hash) continue;
+                    bool send_it = false;
                     int mode = subscribers[j].mode;
-                    bool send_it = (mode == MODE_ALL || mode == MODE_NEW) ||
-                                   ((mode == MODE_LIVE || mode == MODE_SINGLE) && !is_locked) ||
-                                   (mode == MODE_LOCK && is_locked);
-
-                    if (match_hash && send_it) enqueue_message(j, response, actual_len);
+                    time_t now = time(NULL);
+                    bool is_locked = (new_alert->unlock_at > now);
+                    if (mode == MODE_LIVE || mode == MODE_ALL || mode == MODE_NEW) {
+                        send_it = true;
+                    } 
+                    else if (mode == MODE_LOCK && is_locked) {
+                        send_it = true;
+                    } else if (mode == MODE_SINGLE && !is_locked) {
+                        send_it = true;
+                    }
+                    if (send_it) {
+                        enqueue_message(j, response, actual_len);
+                    }
                 }
             }
         }
         free(response);
     }
     free(pubkey_hash_b64); free(bt); free(bk); free(bi); free(bg);
-}
+} 
 
 void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);

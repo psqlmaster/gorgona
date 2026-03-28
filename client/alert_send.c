@@ -254,7 +254,6 @@ int send_alert(int argc, char *argv[], int verbose) {
     }
 
     /* Игнорируем SIGPIPE, чтобы не вылететь при записи в сокет, который сервер закрыл на чтение */
-    #include <signal.h>
     signal(SIGPIPE, SIG_IGN);
 
     // 4. Отправляем длину (4 байта)

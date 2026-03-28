@@ -268,7 +268,7 @@ static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config,
                  * Verify that it's a boundary match: either the key ends exactly 
                  * or it is followed by a space (arguments).
                  */
-                if (plaintext[key_len] == '\0' || isspace((unsigned char)plaintext[key_len])) {
+                if (plaintext[key_len] == '\0' || plaintext[key_len] == ' ') {
                     const char *dynamic_part = plaintext + key_len;
                     /* Skip any additional spaces between the key and arguments */
                     while (*dynamic_part == ' ') dynamic_part++;
@@ -839,7 +839,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 }
 
                 size_t resp_len = ntohl(resp_len_net);
-                if (resp_len == 0 || resp_len > 50 * 1024 * 1024) { /*50mb max 1 alert*/
+                if (resp_len == 0 || resp_len > 1024 * 1024) {
                     fprintf(stderr, "Invalid response length: %zu\n", resp_len);
                     connection_ok = 0;
                     break;
