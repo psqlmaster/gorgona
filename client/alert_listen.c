@@ -625,23 +625,31 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
     /* Infinite reconnection cycle for persistent modes */
     while (1) {
-        if (!pubkey_hash_b64) {
+        /* ИСПРАВЛЕНИЕ: Собираем ключи ТОЛЬКО для режима last, чтобы получить историю по каждому */
+        if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
             if (key_hashes) free_key_hashes(key_hashes, key_count);
             if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
                 fprintf(stderr, "Failed to collect key hashes\n");
                 return 1;
             }
-            if (verbose) {
-                printf("Debug: Found %d keys in /etc/gorgona for mode '%s'\n", key_count, mode);
-            }
         } else {
-            /* Если ключ указан в аргументах (argv), используем только его */
-            if (key_hashes) free_key_hashes(key_hashes, key_count);
-            key_hashes = malloc(sizeof(char *));
-            if (!key_hashes) return 1;
-            key_hashes[0] = strdup(pubkey_hash_b64);
-            key_count = 1;
+            /* ИСПРАВЛЕНИЕ: Если pubkey_hash_b64 == NULL, мы НЕ собираем ключи в список,
+               а работаем в режиме 'подписки на всё'. key_count должен быть 0. */
+            if (key_hashes) {
+                free_key_hashes(key_hashes, key_count);
+                key_hashes = NULL;
+            }
+            if (pubkey_hash_b64) {
+                key_hashes = malloc(sizeof(char *));
+                if (!key_hashes) return 1;
+                key_hashes[0] = strdup(pubkey_hash_b64);
+                key_count = 1;
+            } else {
+                key_count = 0; // Глобальный режим
+            }
         }
+
+        /* Если key_count был 0 (глобальный режим), цикл выполнится 1 раз с NULL */
         for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
             char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
             if (verbose && current_pubkey_hash) {
@@ -718,12 +726,13 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                     len = snprintf(buffer, needed_len, "LISTEN||%s|%d", mode, count);
                 }
             } else {
+                /* Добавляем '|', чтобы серверный strtok корректно обработал отсутствие ключа */
                 if (current_pubkey_hash) {
                     len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, current_pubkey_hash);
                 } else {
-                    len = snprintf(buffer, needed_len, "SUBSCRIBE %s", mode);
+                    len = snprintf(buffer, needed_len, "SUBSCRIBE %s|", mode); 
                 }
-            } 
+            }
             
             /* Send request */
             uint32_t msg_len_net = htonl(len);
