@@ -625,21 +625,23 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
     /* Infinite reconnection cycle for persistent modes */
     while (1) {
-        if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
+        if (!pubkey_hash_b64) {
+            if (key_hashes) free_key_hashes(key_hashes, key_count);
             if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
                 fprintf(stderr, "Failed to collect key hashes\n");
                 return 1;
             }
             if (verbose) {
-                printf("Debug: Found %d keys in /etc/gorgona\n", key_count);
+                printf("Debug: Found %d keys in /etc/gorgona for mode '%s'\n", key_count, mode);
             }
         } else {
+            /* Если ключ указан в аргументах (argv), используем только его */
             if (key_hashes) free_key_hashes(key_hashes, key_count);
             key_hashes = malloc(sizeof(char *));
-            key_hashes[0] = pubkey_hash_b64 ? strdup(pubkey_hash_b64) : NULL;
-            key_count = pubkey_hash_b64 ? 1 : 0;
+            if (!key_hashes) return 1;
+            key_hashes[0] = strdup(pubkey_hash_b64);
+            key_count = 1;
         }
-
         for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
             char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
             if (verbose && current_pubkey_hash) {
