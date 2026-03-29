@@ -358,92 +358,57 @@ void run_server(int server_fd) {
                         /* 3. SMART PROTOCOL SNIFFER (at the 4th byte) */
                         if (sub->in_pos == 4) {
                             /* 
-                             * ОПРЕДЕЛЕНИЕ ПРОТОКОЛА:
-                             * Если первый байт < 32 — это почти наверняка бинарная длина Big-Endian (0x00 0x00 ...).
-                             * Все текстовые команды (SEND, LIST, info, ?) начинаются с печатных ASCII (>= 32).
+                             * ПРАВИЛЬНАЯ ПРОВЕРКА:
+                             * Если первый байт < 32 — это бинарная длина (Big-Endian).
+                             * Если первый байт >= 32 — это печатный символ (начало команды SEND, info и т.д.).
                              */
                             unsigned char first_byte = (unsigned char)sub->in_buffer[0];
 
-                            if (first_byte >= 32) {
-                                if (verbose) {
-                                    printf("Sniffer: Text/ASCII mode confirmed for fd %d\n", sd);
-                                }
-                                /* Продолжаем копить байты по одному в режиме READ_LEN до появления '\n' */
-                                continue;
-                            }
+                            if (first_byte < 32) {
+                                /* Это БИНАРНЫЙ протокол */
+                                uint32_t temp_len;
+                                memcpy(&temp_len, sub->in_buffer, 4);
+                                temp_len = ntohl(temp_len);
 
-                            /* 
-                             * Это БИНАРНЫЙ протокол. 
-                             * Первые 4 байта — это длина сообщения (uint32_t в сетевом порядке байт).
-                             */
-                            uint32_t temp_len;
-                            memcpy(&temp_len, sub->in_buffer, 4);
-                            temp_len = ntohl(temp_len);
-
-                            /* Проверка лимитов для бинарного сообщения */
-                            if (temp_len > max_message_size || temp_len == 0) {
-                                char err_size[256];
-                                int err_l = snprintf(err_size, sizeof(err_size), 
-                                    "Error: Binary message size (%u) exceeds server limit (%zu) or is zero.\n", 
-                                    temp_len, max_message_size);
-                                
-                                enqueue_message(i, err_size, err_l);
-
-                                if (log_file) {
-                                    char t_str[32]; 
-                                    get_utc_time_str(t_str, sizeof(t_str));
-                                    fprintf(log_file, "%s fd %d: PROTOCOL ERROR - Rejected %u bytes (Limit: %zu) from [%s]\n", 
-                                            t_str, sd, temp_len, max_message_size, sub->ip_address);
-                                    fflush(log_file);
-                                }
-
-                                if (verbose) {
-                                    printf("Binary rejected for fd %d: %u bytes exceeds limit %zu\n", 
-                                           sd, temp_len, max_message_size);
-                                }
-
-                                /* Пытаемся отправить ошибку перед закрытием */
-                                process_out(i, sd);
-                                
-                                if (sub->in_buffer) {
-                                    free(sub->in_buffer);
+                                if (temp_len > max_message_size || temp_len == 0) {
+                                    char err_size[256];
+                                    int err_l = snprintf(err_size, sizeof(err_size), 
+                                        "Error: Message size (%u) exceeds limit (%zu).\n", 
+                                        temp_len, max_message_size);
+                                    enqueue_message(i, err_size, err_l);
+                                    if (log_file) {
+                                        char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
+                                        fprintf(log_file, "%s fd %d: Binary overflow/error: %u bytes\n", t_str, sd, temp_len);
+                                    }
+                                    sub->close_after_send = true;
+                                    process_out(i, sd); // Отправляем ошибку перед закрытием
+                                    
+                                    if (sub->in_buffer) free(sub->in_buffer);
                                     sub->in_buffer = NULL;
+                                    sub->in_pos = 0;
+                                    continue;
                                 }
+
+                                /* Переключаемся в быстрый режим чтения сообщения целиком */
+                                sub->expected_msg_len = temp_len;
+                                char *new_binary_buf = malloc(sub->expected_msg_len + 1);
+                                if (!new_binary_buf) {
+                                    close(sd); client_sockets[i] = 0;
+                                    return;
+                                }
+                                free(sub->in_buffer);
+                                sub->in_buffer = new_binary_buf;
                                 sub->in_pos = 0;
-                                sub->close_after_send = true; 
+                                sub->read_state = READ_MSG;
+                                
+                                if (verbose) printf("Sniffer: Binary detected for fd %d, switching to fast mode (len: %u)\n", sd, temp_len);
+                                continue;
+                            } else {
+                                /* Это ТЕКСТОВЫЙ режим (команды) */
+                                if (verbose) printf("Sniffer: Text mode detected for fd %d (starts with '%c')\n", sd, first_byte);
+                                /* Просто продолжаем копить байты по одному в этом же режиме до '\n' */
                                 continue;
                             }
-
-                            /* 
-                             * Длина корректна. Переключаемся в режим быстрого чтения сообщения целиком.
-                             */
-                            sub->expected_msg_len = temp_len;
-                            char *new_binary_buf = malloc(sub->expected_msg_len + 1);
-                            if (!new_binary_buf) {
-                                if (log_file) {
-                                    char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                                    fprintf(log_file, "%s fd %d: Memory allocation failed for %u bytes\n", 
-                                            t_str, sd, sub->expected_msg_len);
-                                }
-                                close(sd); 
-                                client_sockets[i] = 0;
-                                return;
-                            }
-
-                            /* 
-                             * Очищаем старый текстовый буфер и заменяем его на буфер точного размера.
-                             * Байты длины нам больше не нужны, так как мы их уже обработали.
-                             */
-                            free(sub->in_buffer);
-                            sub->in_buffer = new_binary_buf;
-                            sub->in_pos = 0;
-                            sub->read_state = READ_MSG;
-
-                            if (verbose) {
-                                printf("Sniffer: Binary detected for fd %d, switching to READ_MSG, expected: %u bytes\n", 
-                                       sd, temp_len);
-                            }
-                            continue;
                         }
                     } else if (valread == 0) {
                         /* The client disconnected */
