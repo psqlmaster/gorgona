@@ -388,9 +388,9 @@ void run_server(int server_fd) {
                                     temp_len, max_message_size);
                                 enqueue_message(i, err_size, err_l);
                                 if (log_file) {
-                                    char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                                    fprintf(log_file, "%s fd %d: Rejected %u bytes (Limit: %zu)\n", 
-                                            t_str, sd, temp_len, max_message_size);
+                                     char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
+                                    fprintf(log_file, "%s fd %d: BINARY ATTACK detected - Rejected %u bytes (Limit: %zu) from [%s]\n", 
+                                            t_str, sd, temp_len, max_message_size, sub->ip_address);
                                 }
                                 if (verbose) printf("Binary rejected: %u bytes exceeds limit %zu\n", temp_len, max_message_size);
                                 process_out(i, sd);
@@ -399,6 +399,7 @@ void run_server(int server_fd) {
                                     sub->in_buffer = NULL;
                                 }
                                 sub->in_pos = 0;
+                                sub->close_after_send = true; 
                                 continue;
                             }
                             /* The size is normal; let's switch to message reading mode */
