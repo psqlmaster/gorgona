@@ -120,8 +120,8 @@ int main(int argc, char *argv[]) {
     max_alerts = max_alerts_config;
     vacuum_threshold = vacuum_threshold_config;
     max_clients = max_clients_config;
-    max_log_size = max_log_size_config;
-    max_message_size = max_message_size_config;
+    max_log_size = max_log_size_config;  /* MB */  
+    max_message_size = max_message_size_config;  /* MB */
     use_disk_db = use_disk_db_config;
 
     /* Initialize recipients */

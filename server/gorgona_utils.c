@@ -250,14 +250,12 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
 
 void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
-
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!pubkey_hash_b64) continue;
 
-        /* Если задан фильтр, пропускаем несовпадающие хэши */
         if (pubkey_hash_b64_filter && strlen(pubkey_hash_b64_filter) > 0) {
             if (strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
                 free(pubkey_hash_b64);
@@ -266,8 +264,7 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         }
 
         clean_expired_alerts(rec);
-
-        /* Сортируем для режимов LAST и SINGLE (по убыванию ID, чтобы взять свежие) */
+ 
         if (mode == MODE_LAST || mode == MODE_SINGLE) {
             qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
         }
@@ -293,19 +290,24 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                 char *bg = base64_encode(a->tag, GCM_TAG_LEN);
 
                 if (bt && bk && bi && bg) {
-                    char resp[2048 + a->text_len * 2];
-                    int l = snprintf(resp, sizeof(resp), "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                    size_t resp_len = 2048 + strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
+                    char *resp = malloc(resp_len);
+                    if (!resp) {
+                        free(bt); free(bk); free(bi); free(bg);
+                        continue;
+                    }
+                    
+                    int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
                                      pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
                                      bt, bk, bi, bg);
                     if (l > 0) enqueue_message(sub_index, resp, l);
-                    sent_count++;
+                    free(resp);
                 }
                 free(bt); free(bk); free(bi); free(bg);
             }
         }
-        free(pubkey_hash_b64);
+        free(pubkey_hash_b64); 
     }
-
     if (mode == MODE_LAST) {
         subscribers[sub_index].close_after_send = true;
     }
