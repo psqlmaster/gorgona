@@ -273,7 +273,7 @@ void run_server(int server_fd) {
 
  
                 if (sub->read_state == READ_LEN) {
-                    /* 1. Инициализация буфера при первом чтении */
+                    /* 1. Initializing the buffer on the first read */
                     if (!sub->in_buffer) {
                         sub->in_buffer = malloc(max_message_size + 1);
                         if (!sub->in_buffer) {
@@ -288,7 +288,7 @@ void run_server(int server_fd) {
                     if (valread > 0) {
                         if (byte == '\r') continue; 
 
-                        /* ЖЕСТКАЯ ЗАЩИТА: Если текстовый буфер переполнился */
+                        /* STRICT PROTECTION: If the text buffer overflows */
                         if (sub->in_pos >= max_message_size) {
                             char *limit_err = "Error: Text buffer overflow. Limit exceeded.\n";
                             enqueue_message(i, limit_err, strlen(limit_err));
@@ -302,7 +302,7 @@ void run_server(int server_fd) {
 
                         sub->in_buffer[sub->in_pos++] = byte;
 
-                        /* 2. ТЕКСТОВЫЙ РЕЖИМ (срабатывает при \n) */
+                        /* 2. TEXT MODE (triggered by \n) */
                         if (byte == '\n') {
                             sub->in_buffer[sub->in_pos] = '\0';
                             trim_string(sub->in_buffer);
@@ -320,10 +320,19 @@ void run_server(int server_fd) {
                                     double uptime_sec = difftime(now, server_start_time);
                                     int d = (int)(uptime_sec / 86400), h = (int)((uptime_sec / 3600) - (d * 24)), m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
                                     int info_len = snprintf(info_msg, sizeof(info_msg),
-                                        "Gorgona Version %s\nUptime: %dd %dh %dm\nMax size: %zu\n",
-                                        VERSION ? VERSION : "1.0", d, h, m, max_message_size);
+                                        "Gorgona Version %s\nUptime: %dd %dh %dm\nMax message size: %zu\n"
+                                        "Max clients: %d\n"
+                                        "https://github.com/psqlmaster/gorgona\n",
+                                        VERSION ? VERSION : "1.0", d, h, m, max_message_size, max_clients);
                                     enqueue_text_only(i, info_msg, info_len);
                                     sub->close_after_send = true;
+                                    if (log_file && strcmp(log_level, "info") == 0) {
+                                          char time_str[32];
+                                          get_utc_time_str(time_str, sizeof(time_str));
+                                          fprintf(log_file, "%s Info request from fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
+                                          fflush(log_file);
+                                          rotate_log();
+                                    }
                                 } 
                                 else {
                                     if (sub->in_pos <= 10) {
@@ -333,13 +342,20 @@ void run_server(int server_fd) {
                                         enqueue_text_only(i, "Error: Unknown command\n", 23);
                                         sub->close_after_send = true;
                                     }
+                                    if (log_file) {
+                                        char time_str[31];
+                                        get_utc_time_str(time_str, sizeof(time_str));
+                                        fprintf(log_file, "%s Unknown text command from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, sub->in_buffer);
+                                        fflush(log_file);
+                                        rotate_log();
+                                    }
                                 }
                             }
                             sub->in_pos = 0;
                             continue;
                         }
 
-                        /* 3. УМНЫЙ СНИФФЕР ПРОТОКОЛА (на 4-м байте) */
+                        /* 3. SMART PROTOCOL SNIFFER (at the 4th byte) */
                         if (sub->in_pos == 4) {
                             uint32_t temp_len;
                             memcpy(&temp_len, sub->in_buffer, 4);
@@ -378,8 +394,7 @@ void run_server(int server_fd) {
                                 sub->in_pos = 0;
                                 continue;
                             }
-
-                            /* Размер в норме, переключаемся в режим чтения сообщения */
+                            /* The size is normal; let's switch to message reading mode */
                             sub->expected_msg_len = temp_len;
                             char *new_binary_buf = malloc(sub->expected_msg_len + 1);
                             if (!new_binary_buf) {
@@ -394,7 +409,7 @@ void run_server(int server_fd) {
                             continue;
                         }
                     } else if (valread == 0) {
-                        /* Клиент закрыл соединение */
+                        /* The client disconnected */
                         if (log_file && strcmp(log_level, "info") == 0) {
                             char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
                             fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", t_str, sd, sub->ip_address); 
