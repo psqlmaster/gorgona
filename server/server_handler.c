@@ -271,7 +271,9 @@ void run_server(int server_fd) {
                 Subscriber *sub = &subscribers[i];
                 valread = 0;
 
+ 
                 if (sub->read_state == READ_LEN) {
+                    /* 1. Инициализация буфера при первом чтении */
                     if (!sub->in_buffer) {
                         sub->in_buffer = malloc(max_message_size + 1);
                         if (!sub->in_buffer) {
@@ -284,153 +286,127 @@ void run_server(int server_fd) {
                     char byte;
                     valread = read(sd, &byte, 1);
                     if (valread > 0) {
-                        /* Ignore Carriage Return to prevent double processing of \r\n in Telnet */
                         if (byte == '\r') continue; 
+
+                        /* ЖЕСТКАЯ ЗАЩИТА: Если текстовый буфер переполнился */
+                        if (sub->in_pos >= max_message_size) {
+                            char *limit_err = "Error: Text buffer overflow. Limit exceeded.\n";
+                            enqueue_message(i, limit_err, strlen(limit_err));
+                            if (log_file) {
+                                char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
+                                fprintf(log_file, "%s fd %d: Text buffer overflow protection triggered\n", t_str, sd);
+                            }
+                            sub->close_after_send = true;
+                            continue;
+                        }
 
                         sub->in_buffer[sub->in_pos++] = byte;
 
-                        /* 1. Check for newline (Text Mode Trigger) */
+                        /* 2. ТЕКСТОВЫЙ РЕЖИМ (срабатывает при \n) */
                         if (byte == '\n') {
                             sub->in_buffer[sub->in_pos] = '\0';
                             trim_string(sub->in_buffer);
 
-                            /* Handle Welcome/Empty request */
-                            if ((sub->in_pos <= 7) && strcmp(sub->in_buffer, "?") != 0  && strcmp(sub->in_buffer, "version") != 0
-                                && strcmp(sub->in_buffer, "info") != 0 && strcmp(sub->in_buffer, "help") != 0) {
-                                
-                                char welcome[128];
-                                int len = snprintf(welcome, sizeof(welcome), "Welcome. Enter: ?, info, or version.\n"); 
-                                enqueue_text_only(i, welcome, len);
-
-                                if (log_file && strcmp(log_level, "info") == 0) {
-                                    char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Sent welcome message to fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
-                                    fflush(log_file);
+                            if (strlen(sub->in_buffer) > 0) {
+                                if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
+                                    char v_msg[128];
+                                    int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server %s\nGoodbye Sir.\n", VERSION ? VERSION : "1.0");
+                                    enqueue_text_only(i, v_msg, v_len);
+                                    sub->close_after_send = true;
+                                } 
+                                else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
+                                    char info_msg[512];
+                                    time_t now = time(NULL);
+                                    double uptime_sec = difftime(now, server_start_time);
+                                    int d = (int)(uptime_sec / 86400), h = (int)((uptime_sec / 3600) - (d * 24)), m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
+                                    int info_len = snprintf(info_msg, sizeof(info_msg),
+                                        "Gorgona Version %s\nUptime: %dd %dh %dm\nMax size: %zu\n",
+                                        VERSION ? VERSION : "1.0", d, h, m, max_message_size);
+                                    enqueue_text_only(i, info_msg, info_len);
+                                    sub->close_after_send = true;
+                                } 
+                                else {
+                                    if (sub->in_pos <= 10) {
+                                        char *w = "Welcome. Enter: ?, info, or version.\n";
+                                        enqueue_text_only(i, w, strlen(w));
+                                    } else {
+                                        enqueue_text_only(i, "Error: Unknown command\n", 23);
+                                        sub->close_after_send = true;
+                                    }
                                 }
-                                if (verbose) printf("Sent welcome message to fd %d\n", sd);
                             }
-
-                            /* Handle version commands */
-                            if (strcmp(sub->in_buffer, "?") == 0  || strcmp(sub->in_buffer, "version") == 0) {
-                                char v_msg[128];
-                                int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server Version %s\nThis server uses binary protocol. Goodbye Sir.\n", VERSION ? VERSION : "unknown");
-                                enqueue_text_only(i, v_msg, v_len);
-                                sub->close_after_send = true;
-
-                                if (log_file && strcmp(log_level, "info") == 0) {
-                                    char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Version request (%s) from fd %d [%s]\n", time_str, sub->in_buffer, sd, subscribers[i].ip_address);
-                                    fflush(log_file);
-                                    rotate_log();
-                                }
-                                if (verbose) printf("Version request (%s) from fd %d\n", sub->in_buffer, sd);
-
-                            } else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
-                                char info_msg[512];
-                                time_t now = time(NULL);
-                                double uptime_sec = difftime(now, server_start_time);
-                                int days = (int)(uptime_sec / 86400);
-                                int hours = (int)((uptime_sec / 3600) - (days * 24));
-                                int minutes = (int)((uptime_sec / 60) - (days * 1440) - (hours * 60));
-                                int info_len = snprintf(info_msg, sizeof(info_msg),
-                                    "Gorgona Server Version %s\n"
-                                    "Uptime: %dd %dh %dm\n"
-                                    "Max message size: %zu bytes\n"
-                                    "Max clients: %d\n"
-                                    "https://github.com/psqlmaster/gorgona\n",
-                                    VERSION ? VERSION : "unknown",
-                                    days, hours, minutes,
-                                    max_message_size, max_clients);
-                                enqueue_text_only(i, info_msg, info_len);
-                                sub->close_after_send = true;
-
-                                if (log_file && strcmp(log_level, "info") == 0) {
-                                    char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Info request from fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
-                                    fflush(log_file);
-                                    rotate_log();
-                                }
-                                if (verbose) printf("Info request from fd %d\n", sd);
-
-                            } else if (strlen(sub->in_buffer) > 0) {
-                                /* Unknown command in text mode */
-                                char *error_msg = "Error: Unknown command\n";
-                                enqueue_text_only(i, error_msg, strlen(error_msg));
-                                sub->close_after_send = true;
-
-                                if (log_file) {
-                                    char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Unknown text command from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, sub->in_buffer);
-                                    fflush(log_file);
-                                    rotate_log();
-                                }
-                                if (verbose) printf("Unknown text command from fd %d: %s\n", sd, sub->in_buffer);
-                            }
-                            
                             sub->in_pos = 0;
                             continue;
-                        } 
+                        }
 
-                        /* 2. Check for binary length header (at exactly 4 bytes) */
+                        /* 3. УМНЫЙ СНИФФЕР ПРОТОКОЛА (на 4-м байте) */
                         if (sub->in_pos == 4) {
-                            /* If it matches a known command, we don't treat it as binary length */
-                            if (memcmp(sub->in_buffer, "info", 4) == 0 || memcmp(sub->in_buffer, "help", 4) == 0 || 
-                                memcmp(sub->in_buffer, "vers", 4) == 0) {
-                                continue; /* Continue reading text */
-                            }
-
-                            /* Otherwise, it's a binary protocol length header */
                             uint32_t temp_len;
-                            memcpy(&temp_len, sub->in_buffer, sizeof(uint32_t));
+                            memcpy(&temp_len, sub->in_buffer, 4);
                             temp_len = ntohl(temp_len);
 
-                            if (temp_len > max_message_size) {
-                                char err_resp[128];
-                                int err_l = snprintf(err_resp, sizeof(err_resp), "Error: Message size (%u) exceeds limit\n", temp_len);
-                                enqueue_text_only(i, err_resp, err_l);
-                                sub->close_after_send = true;
+                            /* 
+                             * ОПРЕДЕЛЕНИЕ ПРОТОКОЛА:
+                             * Все текстовые команды (SEND, SUBS, info, GET) начинаются с печатных символов ASCII (>= 32).
+                             * Бинарная длина Big-Endian для адекватных размеров всегда начинается с байта < 32 (обычно 0x00).
+                             */
+                            bool is_binary_header = ((unsigned char)sub->in_buffer[0] < 32);
+
+                            if (!is_binary_header) {
+                                if (verbose) printf("Sniffer: Text/ASCII detected for fd %d\n", sd);
+                                continue; /* Продолжаем копить байты как текст */
+                            }
+
+                            /* Это БИНАРНЫЙ протокол. Теперь проверяем размер. */
+                            if (temp_len > max_message_size || temp_len == 0) {
+                                char err_size[256];
+                                int err_l = snprintf(err_size, sizeof(err_size), 
+                                    "Error: Message size (%u) exceeds server limit (%zu).\n", 
+                                    temp_len, max_message_size);
+                                enqueue_message(i, err_size, err_l);
                                 if (log_file) {
                                     char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                                    fprintf(log_file, "%s Rejected large msg fd %d [%s]: %u bytes\n", t_str, sd, subscribers[i].ip_address, temp_len);
-                                    fflush(log_file);
+                                    fprintf(log_file, "%s fd %d: Rejected %u bytes (Limit: %zu)\n", 
+                                            t_str, sd, temp_len, max_message_size);
                                 }
-                                if (verbose) printf("Rejected large msg from fd %d: %u bytes\n", sd, temp_len);
+                                if (verbose) printf("Binary rejected: %u bytes exceeds limit %zu\n", temp_len, max_message_size);
+                                process_out(i, sd);
+                                if (sub->in_buffer) {
+                                    free(sub->in_buffer);
+                                    sub->in_buffer = NULL;
+                                }
                                 sub->in_pos = 0;
                                 continue;
                             }
 
+                            /* Размер в норме, переключаемся в режим чтения сообщения */
                             sub->expected_msg_len = temp_len;
-                            free(sub->in_buffer);
-                            sub->in_buffer = malloc(sub->expected_msg_len + 1);
-                            if (!sub->in_buffer) {
+                            char *new_binary_buf = malloc(sub->expected_msg_len + 1);
+                            if (!new_binary_buf) {
                                 close(sd); client_sockets[i] = 0;
                                 return;
                             }
+                            free(sub->in_buffer);
+                            sub->in_buffer = new_binary_buf;
                             sub->in_pos = 0;
                             sub->read_state = READ_MSG;
-
-                            if (verbose && log_file && strcmp(log_level, "info") == 0) {
-                                char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                                fprintf(log_file, "%s Binary mode fd %d [%s], expected len: %u\n", t_str, sd, subscribers[i].ip_address, temp_len);
-                                fflush(log_file);
-                            }
-                            if (verbose) printf("Binary mode fd %d, expected len: %u\n", sd, temp_len);
-
+                            if (verbose) printf("Sniffer: Binary detected for fd %d, len: %u\n", sd, temp_len);
                             continue;
                         }
                     } else if (valread == 0) {
-                        /* Connection closed by client */
+                        /* Клиент закрыл соединение */
                         if (log_file && strcmp(log_level, "info") == 0) {
-                            char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", time_str, sd, subscribers[i].ip_address); 
+                            char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
+                            fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", t_str, sd, sub->ip_address); 
                             fflush(log_file);
                         }
-                        if (verbose) printf("Client disconnected, fd %d\n", sd);
-
-                        close(sd); client_sockets[i] = 0;
+                        close(sd);
+                        client_sockets[i] = 0;
+                        sub->sock = 0;
                         free_out_queue(i);
                         if (sub->in_buffer) free(sub->in_buffer);
                         sub->in_buffer = NULL;
+                        sub->in_pos = 0;
                         continue;
                     }
                 } else if (sub->read_state == READ_MSG) {

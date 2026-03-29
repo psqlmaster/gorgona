@@ -293,7 +293,7 @@ int send_alert(int argc, char *argv[], int verbose) {
     free(buffer); buffer = NULL;
 
     /* 6. Читаем финальный ответ или ошибку */
-    struct timeval tv; tv.tv_sec = 2; tv.tv_usec = 0;
+    struct timeval tv; tv.tv_sec = 5; tv.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 
     uint32_t resp_len_net;
