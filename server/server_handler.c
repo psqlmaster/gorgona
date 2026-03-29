@@ -558,6 +558,7 @@ void run_server(int server_fd) {
                                 char *mode_str = strtok(NULL, "| ");
                                 char *count_str = strtok(NULL, "| ");
                                 
+                                /* ОПРЕДЕЛЯЕМ РЕЖИМ */
                                 int sub_mode = MODE_SINGLE;
                                 if (mode_str) {
                                     trim_string(mode_str);
@@ -566,6 +567,7 @@ void run_server(int server_fd) {
                                     upper_mode[sizeof(upper_mode) - 1] = '\0';
                                     for (char *p = upper_mode; *p; p++) *p = toupper(*p); 
                                     if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
+                                    else if (strcmp(upper_mode, "NEW") == 0) sub_mode = MODE_NEW;  /* <-- ДОБАВИТЬ */
                                 }
                                 
                                 int count = 1;
@@ -587,6 +589,7 @@ void run_server(int server_fd) {
                                     }
                                 }
                                 
+                                /* ПРОВЕРЯЕМ pubkey_hash - пустой разрешён ТОЛЬКО для MODE_LAST */
                                 trim_string(pubkey_hash_b64);
                                 if (strlen(pubkey_hash_b64) == 0) {
                                     if (sub_mode != MODE_LAST) {
@@ -614,7 +617,27 @@ void run_server(int server_fd) {
                                 }
                                 
                                 sub->mode = sub_mode;
-                                send_current_alerts(i, sub_mode, pubkey_hash_b64, count);
+                                
+                                /* Для MODE_NEW не отправляем историю, только будущие алерты */
+                                if (sub_mode != MODE_NEW) {
+                                    send_current_alerts(i, sub_mode, pubkey_hash_b64, count);
+                                }
+                                
+                                char sub_msg[256];
+                                if (sub_mode == MODE_SINGLE) {
+                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to SINGLE for %s ", pubkey_hash_b64);
+                                    enqueue_message(i, sub_msg, sub_len);
+                                } else if (sub_mode == MODE_LAST && strlen(pubkey_hash_b64) == 0) {
+                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to LAST for ALL keys (count=%d) ", count);
+                                    enqueue_message(i, sub_msg, sub_len);
+                                } else if (sub_mode == MODE_LAST) {
+                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to LAST for %s (count=%d) ", pubkey_hash_b64, count);
+                                    enqueue_message(i, sub_msg, sub_len);
+                                } else if (sub_mode == MODE_NEW) {
+                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to NEW for %s ", pubkey_hash_b64);
+                                    enqueue_message(i, sub_msg, sub_len);
+                                }
+                                
                                 free(rest);
                             } 
                             else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
