@@ -531,10 +531,11 @@ void run_server(int server_fd) {
                                 }
                                 free(pubkey_hash);
                                 free(rest);
-                            } else if (strncmp(buffer, "LISTEN|", 7) == 0) {
+                            } 
+                            else if (strncmp(buffer, "LISTEN|", 7) == 0) {
                                 char *rest = strdup(buffer + 7);
                                 if (!rest) {
-                                    char *error_msg = "Error: Memory allocation failed";
+                                    char *error_msg = "Error: Memory allocation failed ";
                                     enqueue_message(i, error_msg, strlen(error_msg));
                                     close(sd);
                                     client_sockets[i] = 0;
@@ -544,44 +545,28 @@ void run_server(int server_fd) {
                                     sub->in_pos = 0;
                                     continue;
                                 }
-                                char *pubkey_hash_b64 = strtok(rest, "|");
-                                char *mode_str = strtok(NULL, "|");
-                                char *count_str = strtok(NULL, "|");
-                                trim_string(pubkey_hash_b64);
-                                if (strlen(pubkey_hash_b64) == 0) {
-                                    char *error_msg = "Error: Empty pubkey hash in LISTEN";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Empty pubkey hash in LISTEN from %d\n", time_str, sd);
-                                        fflush(log_file);
-                                    }
-                                    free(rest);
-                                    free(buffer);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
+                                
+                                char *pubkey_hash_b64 = strtok(rest, "| ");
+                                char *mode_str = strtok(NULL, "| ");
+                                char *count_str = strtok(NULL, "| ");
+                                
                                 int sub_mode = MODE_SINGLE;
                                 if (mode_str) {
                                     trim_string(mode_str);
                                     char upper_mode[16];
                                     strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
                                     upper_mode[sizeof(upper_mode) - 1] = '\0';
-                                    for (char *p = upper_mode; *p; p++) *p = toupper(*p);
+                                    for (char *p = upper_mode; *p; p++) *p = toupper(*p); 
                                     if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
                                 }
+                                
                                 int count = 1;
                                 if (count_str) {
                                     trim_string(count_str);
                                     char *endptr;
                                     count = strtol(count_str, &endptr, 10);
                                     if (*endptr != '\0' || count <= 0) {
-                                        char *error_msg = "Error: Invalid count in LISTEN last mode";
+                                        char *error_msg = "Error: Invalid count in LISTEN last mode ";
                                         enqueue_message(i, error_msg, strlen(error_msg));
                                         free(rest);
                                         free(buffer);
@@ -593,17 +578,38 @@ void run_server(int server_fd) {
                                         continue;
                                     }
                                 }
-                                sub->mode = sub_mode;
-                                strncpy(sub->pubkey_hash, pubkey_hash_b64, sizeof(sub->pubkey_hash) - 1);
-                                sub->pubkey_hash[sizeof(sub->pubkey_hash) - 1] = '\0';
-                                send_current_alerts(i, sub_mode, pubkey_hash_b64, count);
-                                char sub_msg[256];
-                                if (sub_mode == MODE_SINGLE) {
-                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to SINGLE for %s", pubkey_hash_b64);
-                                    enqueue_message(i, sub_msg, sub_len);
+                                
+                                trim_string(pubkey_hash_b64);
+                                if (strlen(pubkey_hash_b64) == 0) {
+                                    if (sub_mode != MODE_LAST) {
+                                        char *error_msg = "Error: Empty pubkey hash in LISTEN ";
+                                        enqueue_message(i, error_msg, strlen(error_msg));
+                                        if (log_file) {
+                                            char time_str[32];
+                                            get_utc_time_str(time_str, sizeof(time_str));
+                                            fprintf(log_file, "%s Empty pubkey hash in LISTEN from %d\n", time_str, sd);
+                                            fflush(log_file);
+                                        }
+                                        free(rest);
+                                        free(buffer);
+                                        close(sd);
+                                        client_sockets[i] = 0;
+                                        sub->in_buffer = NULL;
+                                        sub->read_state = READ_LEN;
+                                        sub->in_pos = 0;
+                                        continue;
+                                    }
+                                    sub->pubkey_hash[0] = '\0';
+                                } else {
+                                    strncpy(sub->pubkey_hash, pubkey_hash_b64, sizeof(sub->pubkey_hash) - 1);
+                                    sub->pubkey_hash[sizeof(sub->pubkey_hash) - 1] = '\0';
                                 }
+                                
+                                sub->mode = sub_mode;
+                                send_current_alerts(i, sub_mode, pubkey_hash_b64, count);
                                 free(rest);
-                            } else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
+                            } 
+                            else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
                                 fprintf(stderr, "Processing SUBSCRIBE request: %s\n", buffer);
                                 char *rest = strdup(buffer + 10);
                                 if (!rest) {

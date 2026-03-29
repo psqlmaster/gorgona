@@ -252,7 +252,6 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
     time_t now = time(NULL);
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
-        
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!pubkey_hash_b64) continue;
 
@@ -293,17 +292,18 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                     size_t resp_len = 2048 + strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
                     char *resp = malloc(resp_len);
                     if (!resp) {
-                        free(bt); free(bk); free(bi); free(bg);
+                         free(bt); free(bk); free(bi); free(bg);
                         continue;
                     }
                     
-                    int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                    int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s ",
                                      pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
                                      bt, bk, bi, bg);
                     if (l > 0) enqueue_message(sub_index, resp, l);
                     free(resp);
                 }
                 free(bt); free(bk); free(bi); free(bg);
+                sent_count++;
             }
         }
         free(pubkey_hash_b64); 
