@@ -272,7 +272,7 @@ void run_server(int server_fd) {
                 valread = 0;
  
                 if (sub->read_state == READ_LEN) {
-                    /* 1. Initializing the buffer on the first read */
+                    /* 1. Инициализация буфера при первом чтении */
                     if (!sub->in_buffer) {
                         sub->in_buffer = malloc(max_message_size + 1);
                         if (!sub->in_buffer) {
@@ -285,204 +285,100 @@ void run_server(int server_fd) {
                     char byte;
                     valread = read(sd, &byte, 1);
                     if (valread > 0) {
-                        if (byte == '\r') continue; 
-
-                        /* STRICT PROTECTION: If the text buffer overflows */
-                        if (sub->in_pos >= max_message_size) {
-                            char *limit_err = "Error: Text buffer overflow. Limit exceeded.\n";
-                            enqueue_message(i, limit_err, strlen(limit_err));
-                            if (log_file) {
-                                char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                                fprintf(log_file, "%s fd %d: Text buffer overflow protection triggered\n", t_str, sd);
-                            }
-                            sub->close_after_send = true;
-                            continue;
-                        }
-
                         sub->in_buffer[sub->in_pos++] = byte;
 
-                        /* 2. TEXT MODE (triggered by \n) */
-                        if (byte == '\n') {
-                            sub->in_buffer[sub->in_pos] = '\0';
-                            trim_string(sub->in_buffer);
+                        /* ОПРЕДЕЛЯЕМ ПРОТОКОЛ ПО ПЕРВОМУ БАЙТУ */
+                        unsigned char first_byte = (unsigned char)sub->in_buffer[0];
 
-                            if (strlen(sub->in_buffer) > 0) {
-                                if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
-                                    char v_msg[128];
-                                    int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server %s\nGoodbye Sir.\n", VERSION ? VERSION : "1.0");
-                                    enqueue_text_only(i, v_msg, v_len);
-                                    sub->close_after_send = true;
-                                } 
-                                else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
-                                    char info_msg[512];
-                                    time_t now = time(NULL);
-                                    double uptime_sec = difftime(now, server_start_time);
-                                    int d = (int)(uptime_sec / 86400), h = (int)((uptime_sec / 3600) - (d * 24)), m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
-                                    int info_len = snprintf(info_msg, sizeof(info_msg),
-                                        "Gorgona Version %s\nUptime: %dd %dh %dm\nMax message size: %zu\n"
-                                        "Max clients: %d\n"
-                                        "https://github.com/psqlmaster/gorgona\n",
-                                        VERSION ? VERSION : "1.0", d, h, m, max_message_size, max_clients);
-                                    enqueue_text_only(i, info_msg, info_len);
-                                    sub->close_after_send = true;
-                                    if (log_file && strcmp(log_level, "info") == 0) {
-                                          char time_str[32];
-                                          get_utc_time_str(time_str, sizeof(time_str));
-                                          fprintf(log_file, "%s Info request from fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
-                                          fflush(log_file);
-                                          rotate_log();
-                                    }
-                                } 
-                                else {
-                                    if (sub->in_pos <= 10) {
-                                        char *w = "Welcome. Enter: ?, info, or version.\n";
-                                        enqueue_text_only(i, w, strlen(w));
-                                    } else {
-                                        enqueue_text_only(i, "Error: Unknown command\n", 23);
-                                        sub->close_after_send = true;
-                                    }
-                                    if (log_file) {
-                                        char time_str[31];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Unknown text command from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, sub->in_buffer);
-                                        fflush(log_file);
-                                        rotate_log();
-                                    }
-                                }
-                            }
-                            sub->in_pos = 0;
-                            continue;
-                        }
+                        /* Если первый байт 0x00 — это бинарный заголовок длины (до 16Мб) */
+                        if (first_byte == 0) {
+                            /* --- БИНАРНЫЙ РЕЖИМ --- */
+                            /* Ждем накопления ровно 4-х байт заголовка.
+                               ВАЖНО: Мы НЕ проверяем тут byte == '\n', поэтому 0x0A в длине не мешает. */
+                            if (sub->in_pos == 4) {
+                                uint32_t temp_len;
+                                memcpy(&temp_len, sub->in_buffer, 4);
+                                temp_len = ntohl(temp_len);
 
-                        /* 3. SMART PROTOCOL SNIFFER (at the 4th byte). */
-                        if (sub->read_state == READ_LEN) {
-                            /* 1. Инициализация буфера при первом чтении */
-                            if (!sub->in_buffer) {
-                                sub->in_buffer = malloc(max_message_size + 1);
-                                if (!sub->in_buffer) {
-                                    close(sd); client_sockets[i] = 0;
-                                    return;
+                                if (temp_len > max_message_size || temp_len == 0) {
+                                    char err_size[256];
+                                    int l = snprintf(err_size, sizeof(err_size), 
+                                                     "Error: Message size (%u) exceeds limit (%zu).\n", 
+                                                     temp_len, max_message_size);
+                                    enqueue_message(i, err_size, l);
+                                    sub->close_after_send = true;
+                                    if (sub->in_buffer) free(sub->in_buffer);
+                                    sub->in_buffer = NULL; sub->in_pos = 0;
+                                    continue;
                                 }
+
+                                /* Переключаемся в быстрый режим чтения сообщения целиком */
+                                sub->expected_msg_len = temp_len;
+                                char *new_binary_buf = malloc(sub->expected_msg_len + 1);
+                                if (!new_binary_buf) { close(sd); client_sockets[i] = 0; return; }
+                                free(sub->in_buffer);
+                                sub->in_buffer = new_binary_buf;
                                 sub->in_pos = 0;
-                            }
-
-                            char byte;
-                            valread = read(sd, &byte, 1);
-                            if (valread > 0) {
-                                /* Сначала кладем байт в буфер */
-                                sub->in_buffer[sub->in_pos++] = byte;
-
-                                /* ОПРЕДЕЛЯЕМ ПРОТОКОЛ ПО ПЕРВОМУ БАЙТУ */
-                                unsigned char first_byte = (unsigned char)sub->in_buffer[0];
-                                bool is_binary = (first_byte < 32);
-
-                                if (is_binary) {
-                                    /* --- БИНАРНЫЙ РЕЖИМ --- */
-                                    /* В этом режиме мы НЕ проверяем на \n или \r, 
-                                       потому что эти байты могут быть частью длины (как 0x0A в твоем случае) */
-                                    if (sub->in_pos == 4) {
-                                        uint32_t temp_len;
-                                        memcpy(&temp_len, sub->in_buffer, 4);
-                                        temp_len = ntohl(temp_len);
-
-                                        if (temp_len > max_message_size || temp_len == 0) {
-                                            // Обработка ошибки размера (код остается прежним)
-                                            char err_size[256];
-                                            snprintf(err_size, sizeof(err_size), "Error: Message size (%u) too big.\n", temp_len);
-                                            enqueue_message(i, err_size, strlen(err_size));
-                                            sub->close_after_send = true;
-                                            if (sub->in_buffer) free(sub->in_buffer);
-                                            sub->in_buffer = NULL; sub->in_pos = 0;
-                                            continue;
-                                        }
-
-                                        /* Всё ок, переключаемся в режим чтения сообщения целиком */
-                                        sub->expected_msg_len = temp_len;
-                                        char *new_binary_buf = malloc(sub->expected_msg_len + 1);
-                                        if (!new_binary_buf) { close(sd); client_sockets[i] = 0; return; }
-                                        free(sub->in_buffer);
-                                        sub->in_buffer = new_binary_buf;
-                                        sub->in_pos = 0;
-                                        sub->read_state = READ_MSG;
-                                        if (verbose) printf("Sniffer: Binary detected, length %u\n", temp_len);
-                                        continue;
-                                    }
-                                } else {
-                                    /* --- ТЕКСТОВЫЙ РЕЖИМ --- */
-                                    if (byte == '\r') {
-                                        sub->in_pos--; // Игнорируем \r
-                                        continue;
-                                    }
-
-                                    if (byte == '\n') {
-                                        sub->in_buffer[sub->in_pos] = '\0';
-                                        trim_string(sub->in_buffer);
-
-                                        if (strlen(sub->in_buffer) > 0) {
-                                            /* Обработка текстовых команд (?, version, info) */
-                                            if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
-                                                char v_msg[128];
-                                                int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server %s\nGoodbye Sir.\n", VERSION ? VERSION : "1.0");
-                                                enqueue_text_only(i, v_msg, v_len);
-                                                sub->close_after_send = true;
-                                            } 
-                                            else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
-                                                char info_msg[512];
-                                                time_t now = time(NULL);
-                                                double uptime_sec = difftime(now, server_start_time);
-                                                int d = (int)(uptime_sec / 86400), h = (int)((uptime_sec / 3600) - (d * 24)), m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
-                                                int info_len = snprintf(info_msg, sizeof(info_msg),
-                                                    "Gorgona Version %s\nUptime: %dd %dh %dm\nMax message size: %zu\nMax clients: %d\n",
-                                                    VERSION ? VERSION : "1.0", d, h, m, max_message_size, max_clients);
-                                                enqueue_text_only(i, info_msg, info_len);
-                                                sub->close_after_send = true;
-                                            } 
-                                            else {
-                                                if (sub->in_pos <= 10) {
-                                                    char *w = "Welcome. Enter: ?, info, or version.\n";
-                                                    enqueue_text_only(i, w, strlen(w));
-                                                } else {
-                                                    enqueue_text_only(i, "Error: Unknown command\n", 23);
-                                                    sub->close_after_send = true;
-                                                }
-                                            }
-                                        }
-                                        sub->in_pos = 0;
-                                        continue;
-                                    }
-
-                                    /* Защита от переполнения в текстовом режиме */
-                                    if (sub->in_pos >= max_message_size) {
-                                        enqueue_message(i, "Error: Text limit exceeded\n", 27);
-                                        sub->close_after_send = true;
-                                        sub->in_pos = 0;
-                                    }
-                                }
-                            } else if (valread == 0) {
-                                /* Отключение клиента (код остается прежним) */
-                                close(sd); client_sockets[i] = 0;
-                                if (sub->in_buffer) free(sub->in_buffer);
-                                sub->in_buffer = NULL; sub->in_pos = 0;
+                                sub->read_state = READ_MSG;
+                                if (verbose) printf("Sniffer: Binary detected, length %u\n", temp_len);
                                 continue;
                             }
                         } 
-                    } else if (valread == 0) {
-                        /* The client disconnected */
-                        if (log_file && strcmp(log_level, "info") == 0) {
-                            char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                            fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", t_str, sd, sub->ip_address); 
-                            fflush(log_file);
+                        else {
+                            /* --- ТЕКСТОВЫЙ РЕЖИМ (команды SEND, info, version и т.д.) --- */
+                            if (byte == '\r') {
+                                sub->in_pos--; // Игнорируем символ возврата каретки
+                                continue;
+                            }
+
+                            /* Текстовая команда завершается символом перевода строки */
+                            if (byte == '\n') {
+                                sub->in_buffer[sub->in_pos] = '\0';
+                                trim_string(sub->in_buffer);
+
+                                if (strlen(sub->in_buffer) > 0) {
+                                    if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
+                                        char v_msg[128];
+                                        int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server %s\nGoodbye Sir.\n", VERSION ? VERSION : "1.0");
+                                        enqueue_text_only(i, v_msg, v_len);
+                                        sub->close_after_send = true;
+                                    } 
+                                    else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
+                                        char info_msg[512];
+                                        time_t now = time(NULL);
+                                        double uptime_sec = difftime(now, server_start_time);
+                                        int d = (int)(uptime_sec / 86400), h = (int)((uptime_sec / 3600) - (d * 24)), m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
+                                        int info_len = snprintf(info_msg, sizeof(info_msg),
+                                            "Gorgona Version %s\nUptime: %dd %dh %dm\nMax message size: %zu\nMax clients: %d\n",
+                                            VERSION ? VERSION : "1.0", d, h, m, max_message_size, max_clients);
+                                        enqueue_text_only(i, info_msg, info_len);
+                                        sub->close_after_send = true;
+                                    } 
+                                    else {
+                                        /* Неизвестный текст */
+                                        enqueue_text_only(i, "Error: Unknown command\n", 23);
+                                        sub->close_after_send = true;
+                                    }
+                                }
+                                sub->in_pos = 0;
+                                continue;
+                            }
+
+                            /* Защита от переполнения текстового буфера */
+                            if (sub->in_pos >= max_message_size) {
+                                enqueue_message(i, "Error: Text limit exceeded\n", 27);
+                                sub->close_after_send = true;
+                                sub->in_pos = 0;
+                            }
                         }
-                        close(sd);
-                        client_sockets[i] = 0;
-                        sub->sock = 0;
-                        free_out_queue(i);
+                    } else if (valread == 0) {
+                        /* Клиент отключился во время ожидания команды/длины */
+                        close(sd); client_sockets[i] = 0;
                         if (sub->in_buffer) free(sub->in_buffer);
-                        sub->in_buffer = NULL;
-                        sub->in_pos = 0;
+                        sub->in_buffer = NULL; sub->in_pos = 0;
                         continue;
                     }
-                } else if (sub->read_state == READ_MSG) {
+                }  else if (sub->read_state == READ_MSG) {
                     valread = read(sd, sub->in_buffer + sub->in_pos, sub->expected_msg_len - sub->in_pos);
                     if (valread > 0) {
                         sub->in_pos += valread;
