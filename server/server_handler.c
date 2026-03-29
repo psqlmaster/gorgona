@@ -357,23 +357,30 @@ void run_server(int server_fd) {
 
                         /* 3. SMART PROTOCOL SNIFFER (at the 4th byte) */
                         if (sub->in_pos == 4) {
+                            /* СНАЧАЛА проверяем - это текст или бинарный протокол */
+                            bool is_text = true;
+                            for (int k = 0; k < 4; k++) {
+                                unsigned char c = (unsigned char)sub->in_buffer[k];
+                                /* Если хоть один байт - печатный ASCII или пробел, это текст */
+                                if (c >= 32 && c <= 126) {
+                                    is_text = true;
+                                    break;
+                                }
+                                /* Если все байты < 32 - это бинарный заголовок */
+                                if (k == 3) is_text = false;
+                            }
+
+                            if (is_text) {
+                                if (verbose) printf("Sniffer: Text/ASCII detected for fd %d\n", sd);
+                                /* Продолжаем копить байты как текст до \n */
+                                continue;
+                            }
+
+                            /* Это БИНАРНЫЙ протокол. Теперь проверяем размер. */
                             uint32_t temp_len;
                             memcpy(&temp_len, sub->in_buffer, 4);
                             temp_len = ntohl(temp_len);
 
-                            /* 
-                             * ОПРЕДЕЛЕНИЕ ПРОТОКОЛА:
-                             * Все текстовые команды (SEND, SUBS, info, GET) начинаются с печатных символов ASCII (>= 32).
-                             * Бинарная длина Big-Endian для адекватных размеров всегда начинается с байта < 32 (обычно 0x00).
-                             */
-                            bool is_binary_header = ((unsigned char)sub->in_buffer[0] < 32);
-
-                            if (!is_binary_header) {
-                                if (verbose) printf("Sniffer: Text/ASCII detected for fd %d\n", sd);
-                                continue; /* Продолжаем копить байты как текст */
-                            }
-
-                            /* Это БИНАРНЫЙ протокол. Теперь проверяем размер. */
                             if (temp_len > max_message_size || temp_len == 0) {
                                 char err_size[256];
                                 int err_l = snprintf(err_size, sizeof(err_size), 
