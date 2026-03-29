@@ -355,17 +355,17 @@ void run_server(int server_fd) {
                             continue;
                         }
 
-                        /* 3. SMART PROTOCOL SNIFFER (at the 4th byte) */
+                        /* 3. SMART PROTOCOL SNIFFER (at the 4th byte). */
                         if (sub->in_pos == 4) {
                             /* 
-                             * ПРАВИЛЬНАЯ ПРОВЕРКА:
-                             * Если первый байт < 32 — это бинарная длина (Big-Endian).
-                             * Если первый байт >= 32 — это печатный символ (начало команды SEND, info и т.д.).
+                             * ПРОВЕРКА ПО ПЕРВОМУ БАЙТУ:
+                             * В бинарном протоколе (Big-Endian) длина до 16Мб начинается с 0x00.
+                             * В текстовом протоколе команды (SEND, LIST, info, version) начинаются с букв (ASCII >= 32).
                              */
                             unsigned char first_byte = (unsigned char)sub->in_buffer[0];
 
                             if (first_byte < 32) {
-                                /* Это БИНАРНЫЙ протокол */
+                                /* ЭТО БИНАРНЫЙ ПРОТОКОЛ (Длина сообщения) */
                                 uint32_t temp_len;
                                 memcpy(&temp_len, sub->in_buffer, 4);
                                 temp_len = ntohl(temp_len);
@@ -373,23 +373,23 @@ void run_server(int server_fd) {
                                 if (temp_len > max_message_size || temp_len == 0) {
                                     char err_size[256];
                                     int err_l = snprintf(err_size, sizeof(err_size), 
-                                        "Error: Message size (%u) exceeds limit (%zu).\n", 
+                                        "Error: Message size (%u) exceeds server limit (%zu).\n", 
                                         temp_len, max_message_size);
                                     enqueue_message(i, err_size, err_l);
                                     if (log_file) {
                                         char t_str[32]; get_utc_time_str(t_str, sizeof(t_str));
-                                        fprintf(log_file, "%s fd %d: Binary overflow/error: %u bytes\n", t_str, sd, temp_len);
+                                        fprintf(log_file, "%s fd %d: BINARY ATTACK/ERROR - Rejected %u bytes from [%s]\n", 
+                                                t_str, sd, temp_len, sub->ip_address);
                                     }
                                     sub->close_after_send = true;
-                                    process_out(i, sd); // Отправляем ошибку перед закрытием
-                                    
+                                    process_out(i, sd);
                                     if (sub->in_buffer) free(sub->in_buffer);
                                     sub->in_buffer = NULL;
                                     sub->in_pos = 0;
                                     continue;
                                 }
 
-                                /* Переключаемся в быстрый режим чтения сообщения целиком */
+                                /* Переключаемся в быстрый режим чтения сообщения целиком (READ_MSG) */
                                 sub->expected_msg_len = temp_len;
                                 char *new_binary_buf = malloc(sub->expected_msg_len + 1);
                                 if (!new_binary_buf) {
@@ -401,15 +401,16 @@ void run_server(int server_fd) {
                                 sub->in_pos = 0;
                                 sub->read_state = READ_MSG;
                                 
-                                if (verbose) printf("Sniffer: Binary detected for fd %d, switching to fast mode (len: %u)\n", sd, temp_len);
+                                if (verbose) printf("Sniffer: Binary detected for fd %d, switching to fast read (len: %u)\n", sd, temp_len);
                                 continue;
-                            } else {
-                                /* Это ТЕКСТОВЫЙ режим (команды) */
-                                if (verbose) printf("Sniffer: Text mode detected for fd %d (starts with '%c')\n", sd, first_byte);
-                                /* Просто продолжаем копить байты по одному в этом же режиме до '\n' */
+                            } 
+                            else {
+                                /* ЭТО ТЕКСТОВЫЙ ПРОТОКОЛ */
+                                if (verbose) printf("Sniffer: Text mode confirmed for fd %d\n", sd);
+                                /* Продолжаем копить байты в sub->in_buffer до появления '\n' */
                                 continue;
                             }
-                        }
+                        } 
                     } else if (valread == 0) {
                         /* The client disconnected */
                         if (log_file && strcmp(log_level, "info") == 0) {
