@@ -221,6 +221,7 @@ void run_server(int server_fd) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
                     inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
+                    subscribers[i].port = ntohs(address.sin_port); /* Store port */
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;
@@ -231,13 +232,9 @@ void run_server(int server_fd) {
                     subscribers[i].mode = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
                     subscribers[i].close_after_send = false;
-                    if (log_file && strcmp(log_level, "info") == 0) {
-                        char time_str[32];
-                        get_utc_time_str(time_str, sizeof(time_str));
-                        fprintf(log_file, "%s New connection, socket fd %d, ip [%s], port %d\n",
-                                time_str, new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
-                        fflush(log_file);
-                        rotate_log();
+
+                    if (strcmp(log_level, "info") == 0) {
+                        log_event("INFO", new_socket, subscribers[i].ip_address, subscribers[i].port, "New connection");
                     }
                     break;
                 }
@@ -355,7 +352,8 @@ void run_server(int server_fd) {
                                         sub->close_after_send = true;
                                     } 
                                     else {
-                                        /* Неизвестный текст */
+                                        /* Log connection info and the bad command in one line */
+                                        log_event("WARN", sd, sub->ip_address, sub->port, "Unknown text command: %s", sub->in_buffer);
                                         enqueue_text_only(i, "Error: Unknown command\n", 23);
                                         sub->close_after_send = true;
                                     }
@@ -684,11 +682,9 @@ void run_server(int server_fd) {
                         }
                     } else if (valread == 0) {
                         /* Client disconnected */
-                        if (log_file && strcmp(log_level, "info") == 0) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Client disconnected, fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
-                            fflush(log_file);
+                        if (strcmp(log_level, "info") == 0) {
+                            time_t session_time = time(NULL) - sub->connect_time;
+                            log_event("INFO", sd, sub->ip_address, sub->port, "Disconnected (session: %ld sec)", (long)session_time);
                         }
                         close(sd);
                         client_sockets[i] = 0;

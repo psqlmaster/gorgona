@@ -70,6 +70,7 @@ typedef struct {
 typedef struct {
     int sock;
     char ip_address[INET_ADDRSTRLEN]; 
+    int port;
     char pubkey_hash[64]; 
     int mode; 
     time_t connect_time;
@@ -130,5 +131,8 @@ void enqueue_message(int sub_index, const char *msg, size_t msg_len);
 void process_out(int sub_index, int sd);
 int has_pending_data(int sub_index);
 void free_out_queue(int sub_index);
+
+/* log_event */
+void log_event(const char *level, int fd, const char *ip, int port, const char *fmt, ...);
 
 #endif

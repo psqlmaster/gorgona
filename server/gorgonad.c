@@ -20,18 +20,9 @@ int verbose = 0;
 
 /* Shutdown handler for graceful exit */
 void shutdown_handler(int sig) {
-    if (log_file) {
-        char time_str[32];
-        get_utc_time_str(time_str, sizeof(time_str));
-        fprintf(log_file, "%s Received signal %d, shutting down gracefully\n", time_str, sig);
-        fflush(log_file);
-    }
+    log_event("INFO", -1, NULL, 0, "Received signal %d, shutting down gracefully", sig);
 
-    /* 1. Ключевой момент: Закрываем все mmap и файлы */
-    /* Это заставит ядро ОС сбросить все грязные страницы на диск перед выходом */
     alert_db_close_all();
-
-    /* 2. Закрываем сокеты */
     for (int i = 0; i < max_clients; i++) {
         if (client_sockets[i] > 0) close(client_sockets[i]);
     }
@@ -40,7 +31,6 @@ void shutdown_handler(int sig) {
         fclose(log_file);
         log_file = NULL;
     }
-
     exit(0);
 }
 
@@ -144,13 +134,10 @@ int main(int argc, char *argv[]) {
             perror("Failed to open gorgonad.log");
             exit(EXIT_FAILURE);
         } else {
-            rotate_log();
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Server started\n", time_str);
-            fflush(log_file);
+            /* Now using log_event for the start message */
+            log_event("INFO", -1, NULL, 0, "Server version %s is starting...", VERSION ? VERSION : "1.0");
         }
-    }
+    } 
 
     if (use_disk_db && alert_db_init() != 0) { 
         fprintf(stderr, "Failed to initialize alert database\n");

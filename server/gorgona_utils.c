@@ -12,6 +12,7 @@ All rights reserved. */
 #include <sys/stat.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <stdarg.h>
 
 FILE *log_file = NULL;
 Recipient *recipients = NULL;
@@ -26,6 +27,34 @@ char log_level[32] = DEFAULT_LOG_LEVEL;
 size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 int use_disk_db = 0;
 static time_t last_rotation_check = 0;
+
+void log_event(const char *level, int fd, const char *ip, int port, const char *fmt, ...) {
+    if (!log_file) return;
+
+    /* Check if log rotation is needed */
+    rotate_log();
+
+    char time_str[32];
+    get_utc_time_str(time_str, sizeof(time_str));
+
+    /* Print header: [Time] [Level] [fd] [IP:Port] */
+    if (ip != NULL && port > 0) {
+        fprintf(log_file, "%s [%s] [fd:%d] [%s:%d] ", time_str, level, fd, ip, port);
+    } else if (fd > 0) {
+        fprintf(log_file, "%s [%s] [fd:%d] ", time_str, level, fd);
+    } else {
+        fprintf(log_file, "%s [%s] [SERVER] ", time_str, level);
+    }
+
+    /* Print the actual message using variadic arguments */
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(log_file, fmt, args);
+    va_end(args);
+
+    fprintf(log_file, "\n");
+    fflush(log_file);
+}
 
 void get_utc_time_str(char *buffer, size_t buffer_size) {
     time_t now = time(NULL);
