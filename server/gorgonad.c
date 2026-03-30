@@ -76,6 +76,8 @@ int main(int argc, char *argv[]) {
         {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0}
     };
+
+    /* Parse command line arguments */
     while ((opt = getopt_long(argc, argv, "vhV", long_options, NULL)) != -1) {
         switch (opt) {
             case 'v':
@@ -88,38 +90,38 @@ int main(int argc, char *argv[]) {
                 printf("Gorgona Server Version %s\n", VERSION);
                 return 0;
             case '?':
-                fprintf(stderr, "Unknown option: %s. Use -h for help.\n", argv[optind-1]);
+                fprintf(stderr, "Unknown option. Use -h for help.\n");
                 return 1;
             default:
-                fprintf(stderr, "Error processing options\n");
                 return 1;
         }
     }
 
-    /* Register signal handlers */
+    /* Register signal handlers for graceful shutdown */
     signal(SIGINT, shutdown_handler);
     signal(SIGTERM, shutdown_handler);
     signal(SIGPIPE, SIG_IGN); 
 
-    /* Read configuration */
+    /* Load configuration from file or use defaults */
     int port, max_alerts_config, max_clients_config, vacuum_threshold_config; 
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
+
     read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
                 log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config); 
+
     max_alerts = max_alerts_config;
     vacuum_threshold = vacuum_threshold_config;
     max_clients = max_clients_config;
-    max_log_size = max_log_size_config;  /* MB */  
-    max_message_size = max_message_size_config;  /* MB */
+    max_log_size = max_log_size_config;
+    max_message_size = max_message_size_config;
     use_disk_db = use_disk_db_config;
 
-    /* Initialize recipients */
+    /* Initialize internal data structures */
     recipients = NULL;
     recipient_count = 0;
     recipient_capacity = 0;
 
-    /* Initialize arrays for clients */
     for (int i = 0; i < max_clients; i++) {
         client_sockets[i] = 0;
         subscribers[i].sock = 0;
@@ -127,56 +129,45 @@ int main(int argc, char *argv[]) {
         subscribers[i].pubkey_hash[0] = '\0';
     }
 
-    /* Initialize logging */
+    /**
+     * Initialize logging system.
+     * After opening the file, all subsequent logs must use log_event().
+     */
     if (log_file == NULL) {
         log_file = fopen("gorgonad.log", "a");
         if (!log_file) {
             perror("Failed to open gorgonad.log");
             exit(EXIT_FAILURE);
         } else {
-            /* Now using log_event for the start message */
-            log_event("INFO", -1, NULL, 0, "Server version %s is starting...", VERSION ? VERSION : "1.0");
+            /* Log rotation is handled internally by log_event() */
+            log_event("INFO", -1, NULL, 0, "Gorgona Server %s is starting...", VERSION ? VERSION : "1.0");
         }
-    } 
-
-    if (use_disk_db && alert_db_init() != 0) { 
-        fprintf(stderr, "Failed to initialize alert database\n");
-        fclose(log_file);
-        return 1;
     }
 
-    if (use_disk_db && alert_db_load_recipients() != 0) {
-        fprintf(stderr, "Failed to load recipients from database\n");
-        fclose(log_file);
-        return 1;
+    /* Initialize database if disk storage is enabled */
+    if (use_disk_db) {
+        if (alert_db_init() != 0) { 
+            log_event("ERROR", -1, NULL, 0, "Failed to initialize alert database directory");
+            return 1;
+        }
+        if (alert_db_load_recipients() != 0) {
+            log_event("ERROR", -1, NULL, 0, "Failed to load recipient data from database");
+            return 1;
+        }
     }
 
-    /* Create socket */
+    /* Create master TCP socket */
     int server_fd;
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        if (log_file) {
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Socket creation failed: %s\n", time_str, strerror(errno));
-            fflush(log_file);
-            fclose(log_file);
-            log_file = NULL;
-        }
+        log_event("ERROR", -1, NULL, 0, "Socket creation failed: %s", strerror(errno));
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
 
-    /* Set socket options */
+    /* Set socket options: allow immediate reuse of the port after restart */
     int opt_val = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt_val, sizeof(opt_val)) < 0) {
-        if (log_file) {
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Setsockopt failed: %s\n", time_str, strerror(errno));
-            fflush(log_file);
-            fclose(log_file);
-            log_file = NULL;
-        }
+        log_event("ERROR", -1, NULL, 0, "Setsockopt SO_REUSEADDR failed: %s", strerror(errno));
         perror("setsockopt");
         exit(EXIT_FAILURE);
     }
@@ -186,46 +177,31 @@ int main(int argc, char *argv[]) {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
 
-    /* Bind socket */
+    /* Bind the socket to the specified port */
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        if (log_file) {
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Bind failed: %s\n", time_str, strerror(errno));
-            fflush(log_file);
-            fclose(log_file);
-            log_file = NULL;
-        }
+        log_event("ERROR", -1, NULL, 0, "Bind failed on port %d: %s", port, strerror(errno));
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
 
-    /* Listen */
-    if (listen(server_fd, 3) < 0) {
-        if (log_file) {
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Listen failed: %s\n", time_str, strerror(errno));
-            fflush(log_file);
-            fclose(log_file);
-            log_file = NULL;
-        }
+    /* Start listening for incoming connections */
+    if (listen(server_fd, 5) < 0) {
+        log_event("ERROR", -1, NULL, 0, "Listen failed: %s", strerror(errno));
         perror("listen");
         exit(EXIT_FAILURE);
     }
 
+    /* Log successful startup */
     printf("Server running on port %d\n", port);
-    if (log_file) {
-        char time_str[32];
-        get_utc_time_str(time_str, sizeof(time_str));
-        fprintf(log_file, "%s Server running on port %d\n", time_str, port);
-        fflush(log_file);
-    }
+    log_event("INFO", -1, NULL, 0, "Server is up and listening on port %d", port);
 
-    /* Run the server loop */
+    /* Enter the main server loop (defined in server_handler.c) */
     run_server(server_fd);
 
-    /* Free resources (unreachable in infinite loop, but for completeness) */
+    /**
+     * Cleanup (this part is normally reached only via shutdown_handler).
+     * Included for completeness and to assist memory leak detectors.
+     */
     for (int r = 0; r < recipient_count; r++) {
         for (int j = 0; j < recipients[r].count; j++) {
             free_alert(&recipients[r].alerts[j]);
@@ -233,13 +209,14 @@ int main(int argc, char *argv[]) {
         free(recipients[r].alerts);
     }
     free(recipients);
+
+    log_event("INFO", -1, NULL, 0, "Server shutting down cleanly");
+    
     if (log_file) {
-        char time_str[32];
-        get_utc_time_str(time_str, sizeof(time_str));
-        fprintf(log_file, "%s Server shutting down\n", time_str);
-        fflush(log_file);
         fclose(log_file);
+        log_file = NULL;
     }
     close(server_fd);
+
     return 0;
 }
