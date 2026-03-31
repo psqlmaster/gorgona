@@ -52,7 +52,7 @@ void print_server_help(const char *program_name) {
     printf(" max_alerts = <number> (default: 1000, example: 2000)\n");
     printf(" max_clients = <number> (default: 100, example: 100)\n");
     printf(" max_log_size = <MB> (default: 10, example: 50 for 50 MB before rotation)\n");
-    printf(" log_level = \"info\"|\"error\" (default: \"info\")\n");
+    printf(" log_level = \"info\"|\"error\"|\"error\" (default: \"info\")\n");
     printf(" max_message_size = <MB> (default: 5, example: 10 for 10 MB)\n");
     printf(" use_disk_db = <boolean> (default: false, example: true to enable disk-based storage)\n");
     printf(" vacuum_threshold_percent = <int> (default: 25, Cleanup threshold %%: higher reduces disk I/O, lower saves disk space)\n");

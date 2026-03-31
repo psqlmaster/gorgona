@@ -1,6 +1,7 @@
 /* BSD 3-Clause License
 Copyright (c) 2025, Alexander Shcheglov
 All rights reserved. */
+
 #include "gorgona_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@ All rights reserved. */
 #include <time.h>
 #include <stdbool.h>
 #include <fcntl.h>
+#include "commands.h"
 
 extern int verbose;
 extern FILE *log_file;
@@ -24,13 +26,19 @@ extern Subscriber subscribers[];
 
 static time_t server_start_time = 0;
 
+/**
+ * Queue a binary message (length + payload) for sending.
+ */
 void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
+    log_event("DEBUG", subscribers[sub_index].sock, subscribers[sub_index].ip_address, 
+              subscribers[sub_index].port, "Enqueued response (%zu bytes): %.*s", 
+              msg_len, (int)msg_len, msg);
     OutBuffer *new_buf;
     uint32_t len_net = htonl(msg_len);
 
-    /* Enqueue len_net */
+    /* 1. Enqueue 4-byte length header */
     new_buf = malloc(sizeof(OutBuffer));
-    if (!new_buf) return;  /* Error handling omitted for brevity */
+    if (!new_buf) return;
     new_buf->data = malloc(sizeof(uint32_t));
     if (!new_buf->data) { free(new_buf); return; }
     memcpy(new_buf->data, &len_net, sizeof(uint32_t));
@@ -45,7 +53,7 @@ void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
         subscribers[sub_index].out_head = subscribers[sub_index].out_tail = new_buf;
     }
 
-    /* Enqueue msg */
+    /* 2. Enqueue actual message data */
     new_buf = malloc(sizeof(OutBuffer));
     if (!new_buf) return;
     new_buf->data = malloc(msg_len);
@@ -63,6 +71,9 @@ void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
     }
 }
 
+/**
+ * Queue plain text for sending (used for info/version commands).
+ */
 void enqueue_text_only(int sub_index, const char *msg, size_t msg_len) {
     OutBuffer *new_buf = malloc(sizeof(OutBuffer));
     if (!new_buf) return;
@@ -80,8 +91,13 @@ void enqueue_text_only(int sub_index, const char *msg, size_t msg_len) {
     }
 }
 
+/**
+ * Handle outgoing data for a specific client.
+ */
 void process_out(int sub_index, int sd) {
     OutBuffer *head = subscribers[sub_index].out_head;
+    Subscriber *sub = &subscribers[sub_index];
+
     while (head) {
         ssize_t sent = send(sd, head->data + head->pos, head->len - head->pos, 0);
         if (sent > 0) {
@@ -95,22 +111,17 @@ void process_out(int sub_index, int sd) {
                 head = subscribers[sub_index].out_head;
             }
         } else if (sent == 0) {
-            /* Client closed */
+            /* Client closed connection while we were sending */
+            log_event("INFO", sd, sub->ip_address, sub->port, "Connection closed by client during send");
             close(sd);
             client_sockets[sub_index] = 0;
             free_out_queue(sub_index);
             break;
         } else {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                break;  /* Wait for next select */
+                break;  /* Socket buffer full, wait for next select */
             } else {
-                /* Error */
-                if (log_file) {
-                    char time_str[32];
-                    get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s Send error for fd %d [%s]: %s\n", time_str, sd, subscribers[sub_index].ip_address, strerror(errno));
-                    fflush(log_file);
-                }
+                log_event("ERROR", sd, sub->ip_address, sub->port, "Send error: %s", strerror(errno));
                 close(sd);
                 client_sockets[sub_index] = 0;
                 free_out_queue(sub_index);
@@ -118,18 +129,20 @@ void process_out(int sub_index, int sd) {
             }
         }
     }
-    /* Check if queue is empty and close is pending */
+
+    /* Handle graceful shutdown after sending requested info (like 'info' or 'version') */
     if (subscribers[sub_index].out_head == NULL && subscribers[sub_index].close_after_send) {
+        log_event("INFO", sd, sub->ip_address, sub->port, "Closing connection (task completed)");
         close(sd);
         client_sockets[sub_index] = 0;
-        subscribers[sub_index].sock = 0;
-        subscribers[sub_index].mode = 0;
-        subscribers[sub_index].pubkey_hash[0] = '\0';
-        free_out_queue(sub_index);  /* Already empty, but for consistency */
-        if (subscribers[sub_index].in_buffer) free(subscribers[sub_index].in_buffer);
-        subscribers[sub_index].in_buffer = NULL;
-        subscribers[sub_index].in_pos = 0;
-        subscribers[sub_index].close_after_send = false;
+        sub->sock = 0;
+        sub->mode = 0;
+        sub->pubkey_hash[0] = '\0';
+        free_out_queue(sub_index);
+        if (sub->in_buffer) free(sub->in_buffer);
+        sub->in_buffer = NULL;
+        sub->in_pos = 0;
+        sub->close_after_send = false;
     }
 }
 
@@ -149,6 +162,9 @@ void free_out_queue(int sub_index) {
     subscribers[sub_index].out_tail = NULL;
 }
 
+/**
+ * Main server loop using select().
+ */
 void run_server(int server_fd) {
     int new_socket, activity, valread, sd;
     int max_sd;
@@ -156,9 +172,11 @@ void run_server(int server_fd) {
     int addrlen = sizeof(address);
     fd_set readfds;
     fd_set writefds;
+
     if (server_start_time == 0) {
         server_start_time = time(NULL);
     }
+
     while (1) {
         FD_ZERO(&readfds);
         FD_ZERO(&writefds);
@@ -168,7 +186,6 @@ void run_server(int server_fd) {
         for (int i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (sd > 0) {
-                // Если мы уже готовимся закрыть сокет, НЕ добавляем его в readfds
                 if (!subscribers[i].close_after_send) {
                     FD_SET(sd, &readfds);
                 }
@@ -182,35 +199,20 @@ void run_server(int server_fd) {
         activity = select(max_sd + 1, &readfds, &writefds, NULL, NULL);
 
         if ((activity < 0) && (errno != EINTR)) {
-            if (log_file) {
-                char time_str[32];
-                get_utc_time_str(time_str, sizeof(time_str));
-                fprintf(log_file, "%s Select error: %s\n", time_str, strerror(errno));
-                fflush(log_file);
-            }
+            log_event("ERROR", -1, NULL, 0, "Select error: %s", strerror(errno));
             continue;
         }
 
+        /* Handle new incoming connection */
         if (FD_ISSET(server_fd, &readfds)) {
             if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-                if (log_file) {
-                    char time_str[32];
-                    get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s Accept failed: %s\n", time_str, strerror(errno));
-                    fflush(log_file);
-                }
-                perror("accept");
+                log_event("ERROR", -1, NULL, 0, "Accept failed: %s", strerror(errno));
                 continue;
             }
 
             int flags = fcntl(new_socket, F_GETFL, 0);
             if (flags == -1 || fcntl(new_socket, F_SETFL, flags | O_NONBLOCK) == -1) {
-                if (log_file) {
-                    char time_str[32];
-                    get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s fcntl failed for fd %d: %s\n", time_str, new_socket, strerror(errno));
-                    fflush(log_file);
-                }
+                log_event("ERROR", new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port), "fcntl O_NONBLOCK failed");
                 close(new_socket);
                 continue;
             }
@@ -221,7 +223,7 @@ void run_server(int server_fd) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
                     inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
-                    subscribers[i].port = ntohs(address.sin_port); /* Store port */
+                    subscribers[i].port = ntohs(address.sin_port);
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;
@@ -233,27 +235,20 @@ void run_server(int server_fd) {
                     subscribers[i].pubkey_hash[0] = '\0';
                     subscribers[i].close_after_send = false;
 
-                    if (strcmp(log_level, "info") == 0) {
-                        log_event("INFO", new_socket, subscribers[i].ip_address, subscribers[i].port, "New connection");
-                    }
+                    log_event("INFO", new_socket, subscribers[i].ip_address, subscribers[i].port, "New connection");
                     break;
                 }
             }
             if (i == max_clients) {
                 char *error_msg = "Error: Too many clients\n";
                 send(new_socket, error_msg, strlen(error_msg), 0);
+                log_event("WARN", new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port), "Connection refused: MAX_CLIENTS reached");
                 close(new_socket);
-                if (log_file) {
-                    char time_str[32];
-                    get_utc_time_str(time_str, sizeof(time_str));
-                    fprintf(log_file, "%s Too many clients, connection refused\n", time_str);
-                    fflush(log_file);
-                    rotate_log();
-                }
                 continue;
             }
         }
 
+        /* Process client activity */
         for (int i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (sd <= 0) continue;
@@ -267,9 +262,7 @@ void run_server(int server_fd) {
             if (FD_ISSET(sd, &readfds)) {
                 Subscriber *sub = &subscribers[i];
                 valread = 0;
- 
                 if (sub->read_state == READ_LEN) {
-                    /* 1. Инициализация буфера при первом чтении */
                     if (!sub->in_buffer) {
                         sub->in_buffer = malloc(max_message_size + 1);
                         if (!sub->in_buffer) {
@@ -283,19 +276,22 @@ void run_server(int server_fd) {
                     valread = read(sd, &byte, 1);
                     if (valread > 0) {
                         sub->in_buffer[sub->in_pos++] = byte;
-
-                        /* ОПРЕДЕЛЯЕМ ПРОТОКОЛ ПО ПЕРВОМУ БАЙТУ */
                         unsigned char first_byte = (unsigned char)sub->in_buffer[0];
 
-                        /* Если первый байт 0x00 — это бинарный заголовок длины (до 16Мб) */
-                        if (first_byte == 0) {
-                            /* --- БИНАРНЫЙ РЕЖИМ --- */
-                            /* Ждем накопления ровно 4-х байт заголовка.
-                               ВАЖНО: Мы НЕ проверяем тут byte == '\n', поэтому 0x0A в длине не мешает. */
+                        /** 
+                         * PROTOCOL SNIFFER 
+                         * Binary lengths for messages > 16MB start with bytes 0x01, 0x02, etc.
+                         * Text commands (SEND, LISTEN, info) start with ASCII letters (> 31).
+                         * We treat any first byte < 32 as a Binary Length Header.
+                         */
+                        if (first_byte < 32 && first_byte != '\n' && first_byte != '\r' && first_byte != '\t') { 
+                            /* Binary Mode: Wait for 4 bytes of length header */
                             if (sub->in_pos == 4) {
                                 uint32_t temp_len;
                                 memcpy(&temp_len, sub->in_buffer, 4);
                                 temp_len = ntohl(temp_len);
+                                sub->expected_msg_len = temp_len;
+                                log_event("DEBUG", sd, sub->ip_address, sub->port, "Incoming binary message, expected length: %u", temp_len);
 
                                 if (temp_len > max_message_size || temp_len == 0) {
                                     char err_size[256];
@@ -303,13 +299,12 @@ void run_server(int server_fd) {
                                                      "Error: Message size (%u) exceeds limit (%zu).\n", 
                                                      temp_len, max_message_size);
                                     enqueue_message(i, err_size, l);
-                                    sub->close_after_send = true;
+                                    log_event("WARN", sd, sub->ip_address, sub->port, "Binary limit exceeded: %u > %zu", temp_len, max_message_size);
                                     if (sub->in_buffer) free(sub->in_buffer);
                                     sub->in_buffer = NULL; sub->in_pos = 0;
                                     continue;
                                 }
 
-                                /* Переключаемся в быстрый режим чтения сообщения целиком */
                                 sub->expected_msg_len = temp_len;
                                 char *new_binary_buf = malloc(sub->expected_msg_len + 1);
                                 if (!new_binary_buf) { close(sd); client_sockets[i] = 0; return; }
@@ -317,21 +312,16 @@ void run_server(int server_fd) {
                                 sub->in_buffer = new_binary_buf;
                                 sub->in_pos = 0;
                                 sub->read_state = READ_MSG;
-                                if (verbose) printf("Sniffer: Binary detected, length %u\n", temp_len);
                                 continue;
                             }
                         } 
                         else {
-                            /* --- ТЕКСТОВЫЙ РЕЖИМ (команды SEND, info, version и т.д.) --- */
-                            if (byte == '\r') {
-                                sub->in_pos--; // Игнорируем символ возврата каретки
-                                continue;
-                            }
-
-                            /* Текстовая команда завершается символом перевода строки */
+                            /* Text Mode: Commands like 'info', 'version' or raw 'SEND|...' via nc */
+                            if (byte == '\r') { sub->in_pos--; continue; }
                             if (byte == '\n') {
                                 sub->in_buffer[sub->in_pos] = '\0';
                                 trim_string(sub->in_buffer);
+                                log_event("DEBUG", sd, sub->ip_address, sub->port, "Received text command: %s", sub->in_buffer);
 
                                 if (strlen(sub->in_buffer) > 0) {
                                     if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
@@ -361,8 +351,6 @@ void run_server(int server_fd) {
                                 sub->in_pos = 0;
                                 continue;
                             }
-
-                            /* Защита от переполнения текстового буфера */
                             if (sub->in_pos >= max_message_size) {
                                 enqueue_message(i, "Error: Text limit exceeded\n", 27);
                                 sub->close_after_send = true;
@@ -370,11 +358,17 @@ void run_server(int server_fd) {
                             }
                         }
                     } else if (valread == 0) {
-                        /* Клиент отключился во время ожидания команды/длины */
+                        /* Client disconnected while idle */
+                        log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected (idle)");
                         close(sd); client_sockets[i] = 0;
                         if (sub->in_buffer) free(sub->in_buffer);
                         sub->in_buffer = NULL; sub->in_pos = 0;
                         continue;
+                    } else {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            log_event("ERROR", sd, sub->ip_address, sub->port, "Read error: %s", strerror(errno));
+                            close(sd); client_sockets[i] = 0;
+                        }
                     }
                 }  else if (sub->read_state == READ_MSG) {
                     valread = read(sd, sub->in_buffer + sub->in_pos, sub->expected_msg_len - sub->in_pos);
@@ -382,310 +376,16 @@ void run_server(int server_fd) {
                         sub->in_pos += valread;
                         if (sub->in_pos == sub->expected_msg_len) {
                             sub->in_buffer[sub->expected_msg_len] = '\0';
-                            char *buffer = sub->in_buffer;
-
-                            if (verbose) {
-                                printf("Received: %s\n", buffer);
-                                if (log_file) {
-                                    char time_str[32];
-                                    get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Received from fd %d: %s\n", time_str, sd, buffer);
-                                    fflush(log_file);
-                                }
-                            }
-
-                            if (strncmp(buffer, "SEND|", 5) == 0) {
-                                char *rest = strdup(buffer + 5);
-                                if (!rest) {
-                                    char *error_msg = "Error: Memory allocation failed";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    free(buffer);
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-                                char *pubkey_hash_b64 = strtok(rest, "|");
-                                char *unlock_at_str = strtok(NULL, "|");
-                                char *expire_at_str = strtok(NULL, "|");
-                                char *base64_text = strtok(NULL, "|");
-                                char *base64_encrypted_key = strtok(NULL, "|");
-                                char *base64_iv = strtok(NULL, "|");
-                                char *base64_tag = strtok(NULL, "|");
-
-                                if (!pubkey_hash_b64 || !unlock_at_str || !expire_at_str || !base64_text || !base64_encrypted_key || !base64_iv || !base64_tag) {
-                                    char *error_msg = "Error: Incomplete data in SEND";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Incomplete SEND from fd %d [%s]\n", time_str, sd, subscribers[i].ip_address);
-                                        fflush(log_file);
-                                    }
-                                    free(rest);
-                                    free(buffer);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-
-                                trim_string(pubkey_hash_b64);
-                                if (strlen(pubkey_hash_b64) == 0) {
-                                    char *error_msg = "Error: Empty pubkey hash in SEND";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Empty pubkey hash in SEND from %d\n", time_str, sd);
-                                        fflush(log_file);
-                                    }
-                                    free(rest);
-                                    free(buffer);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-
-                                size_t pubkey_hash_len;
-                                unsigned char *pubkey_hash = base64_decode(pubkey_hash_b64, &pubkey_hash_len);
-                                if (!pubkey_hash || pubkey_hash_len != PUBKEY_HASH_LEN) {
-                                    char *error_msg = "Error: Invalid pubkey hash";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    free(pubkey_hash);
-                                    free(rest);
-                                    free(buffer);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-
-                                time_t unlock_at = atol(unlock_at_str);
-                                time_t expire_at = atol(expire_at_str);
-
-                                add_alert(pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
-
-                                char *success_msg = "Alert added successfully";
-                                enqueue_message(i, success_msg, strlen(success_msg));
-                                Recipient *rec = find_recipient(pubkey_hash);
-                                if (rec) {
-                                    notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
-                                }
-                                free(pubkey_hash);
-                                free(rest);
-                            } 
-                            else if (strncmp(buffer, "LISTEN|", 7) == 0) {
-                                char *rest = strdup(buffer + 7);
-                                if (!rest) {
-                                    char *error_msg = "Error: Memory allocation failed ";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    free(buffer);
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-                                
-                                char *pubkey_hash_b64 = strtok(rest, "| ");
-                                char *mode_str = strtok(NULL, "| ");
-                                char *count_str = strtok(NULL, "| ");
-                                
-                                /* ОПРЕДЕЛЯЕМ РЕЖИМ */
-                                int sub_mode = MODE_SINGLE;
-                                if (mode_str) {
-                                    trim_string(mode_str);
-                                    char upper_mode[16];
-                                    strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
-                                    upper_mode[sizeof(upper_mode) - 1] = '\0';
-                                    for (char *p = upper_mode; *p; p++) *p = toupper(*p); 
-                                    if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
-                                    else if (strcmp(upper_mode, "NEW") == 0) sub_mode = MODE_NEW;  /* <-- ДОБАВИТЬ */
-                                }
-                                
-                                int count = 1;
-                                if (count_str) {
-                                    trim_string(count_str);
-                                    char *endptr;
-                                    count = strtol(count_str, &endptr, 10);
-                                    if (*endptr != '\0' || count <= 0) {
-                                        char *error_msg = "Error: Invalid count in LISTEN last mode ";
-                                        enqueue_message(i, error_msg, strlen(error_msg));
-                                        free(rest);
-                                        free(buffer);
-                                        close(sd);
-                                        client_sockets[i] = 0;
-                                        sub->in_buffer = NULL;
-                                        sub->read_state = READ_LEN;
-                                        sub->in_pos = 0;
-                                        continue;
-                                    }
-                                }
-                                
-                                /* ПРОВЕРЯЕМ pubkey_hash - пустой разрешён ТОЛЬКО для MODE_LAST */
-                                trim_string(pubkey_hash_b64);
-                                if (strlen(pubkey_hash_b64) == 0) {
-                                    if (sub_mode != MODE_LAST) {
-                                        char *error_msg = "Error: Empty pubkey hash in LISTEN ";
-                                        enqueue_message(i, error_msg, strlen(error_msg));
-                                        if (log_file) {
-                                            char time_str[32];
-                                            get_utc_time_str(time_str, sizeof(time_str));
-                                            fprintf(log_file, "%s Empty pubkey hash in LISTEN from %d\n", time_str, sd);
-                                            fflush(log_file);
-                                        }
-                                        free(rest);
-                                        free(buffer);
-                                        close(sd);
-                                        client_sockets[i] = 0;
-                                        sub->in_buffer = NULL;
-                                        sub->read_state = READ_LEN;
-                                        sub->in_pos = 0;
-                                        continue;
-                                    }
-                                    sub->pubkey_hash[0] = '\0';
-                                } else {
-                                    strncpy(sub->pubkey_hash, pubkey_hash_b64, sizeof(sub->pubkey_hash) - 1);
-                                    sub->pubkey_hash[sizeof(sub->pubkey_hash) - 1] = '\0';
-                                }
-                                
-                                sub->mode = sub_mode;
-                                
-                                /* Для MODE_NEW не отправляем историю, только будущие алерты */
-                                if (sub_mode != MODE_NEW) {
-                                    send_current_alerts(i, sub_mode, pubkey_hash_b64, count);
-                                }
-                                
-                                char sub_msg[256];
-                                if (sub_mode == MODE_SINGLE) {
-                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to SINGLE for %s ", pubkey_hash_b64);
-                                    enqueue_message(i, sub_msg, sub_len);
-                                } else if (sub_mode == MODE_LAST && strlen(pubkey_hash_b64) == 0) {
-                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to LAST for ALL keys (count=%d) ", count);
-                                    enqueue_message(i, sub_msg, sub_len);
-                                } else if (sub_mode == MODE_LAST) {
-                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to LAST for %s (count=%d) ", pubkey_hash_b64, count);
-                                    enqueue_message(i, sub_msg, sub_len);
-                                } else if (sub_mode == MODE_NEW) {
-                                    int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to NEW for %s ", pubkey_hash_b64);
-                                    enqueue_message(i, sub_msg, sub_len);
-                                }
-                                
-                                free(rest);
-                            } 
-                            else if (strncmp(buffer, "SUBSCRIBE ", 10) == 0) {
-                                fprintf(stderr, "Processing SUBSCRIBE request: %s\n", buffer);
-                                char *rest = strdup(buffer + 10);
-                                if (!rest) {
-                                    char *error_msg = "Error: Memory allocation failed";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    free(buffer);
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-                                char *mode_str = strtok(rest, "|");
-                                char *pubkey_hash_b64 = strtok(NULL, "|");
-                                if (!mode_str) {
-                                    char *error_msg = "Error: Missing mode in SUBSCRIBE";
-                                    enqueue_message(i, error_msg, strlen(error_msg));
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Missing mode in SUBSCRIBE from %d\n", time_str, sd);
-                                        fflush(log_file);
-                                    }
-                                    free(rest);
-                                    free(buffer);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-                                trim_string(mode_str);
-                                int sub_mode = 0;
-                                char upper_mode[16];
-                                strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
-                                upper_mode[sizeof(upper_mode) - 1] = '\0';
-                                for (char *p = upper_mode; *p; p++) *p = toupper(*p);
-                                if (strcmp(upper_mode, "LIVE") == 0) sub_mode = MODE_LIVE;
-                                else if (strcmp(upper_mode, "ALL") == 0) sub_mode = MODE_ALL;
-                                else if (strcmp(upper_mode, "LOCK") == 0) sub_mode = MODE_LOCK;
-                                else if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
-                                else if (strcmp(upper_mode, "NEW") == 0) sub_mode = MODE_NEW;
-                                else {
-                                    char error_msg[256];
-                                    int err_len = snprintf(error_msg, sizeof(error_msg), "Error: Unknown mode %s", mode_str);
-                                    enqueue_message(i, error_msg, err_len);
-                                    if (log_file) {
-                                        char time_str[32];
-                                        get_utc_time_str(time_str, sizeof(time_str));
-                                        fprintf(log_file, "%s Unknown mode from fd %d [%s]: %s\n", time_str, sd, subscribers[i].ip_address, mode_str);
-                                        fflush(log_file);
-                                    }
-                                    free(rest);
-                                    free(buffer);
-                                    close(sd);
-                                    client_sockets[i] = 0;
-                                    sub->in_buffer = NULL;
-                                    sub->read_state = READ_LEN;
-                                    sub->in_pos = 0;
-                                    continue;
-                                }
-                                sub->mode = sub_mode;
-                                if (pubkey_hash_b64 && strlen(pubkey_hash_b64) > 0) {
-                                    trim_string(pubkey_hash_b64);
-                                    strncpy(sub->pubkey_hash, pubkey_hash_b64, sizeof(sub->pubkey_hash) - 1);
-                                    sub->pubkey_hash[sizeof(sub->pubkey_hash) - 1] = '\0';
-                                } else {
-                                    sub->pubkey_hash[0] = '\0';
-                                }
-                                if (sub_mode != MODE_NEW) {
-                                    send_current_alerts(i, sub_mode, pubkey_hash_b64, 1);
-                                }
-                                char sub_msg[256];
-                                int sub_len = snprintf(sub_msg, sizeof(sub_msg), "Subscribed to %s%s", mode_str, pubkey_hash_b64 ? " for the specified key" : "");
-                                enqueue_message(i, sub_msg, sub_len);
-                                free(rest);
-                            } else {
-                                /* Unknown command in binary mode */
-                                char *error_msg = "Error: Unknown command";
-                                enqueue_message(i, error_msg, strlen(error_msg));
-                                if (log_file) {
-                                    char time_str[32];
-                                    get_utc_time_str(time_str, sizeof(time_str));
-                                    fprintf(log_file, "%s Unknown command from fd %d: %s\n", time_str, sd, buffer);
-                                    fflush(log_file);
-                                    rotate_log();
-                                }
-                            }
-                            free(buffer);
+                            handle_command(i, sub->in_buffer);
+                            free(sub->in_buffer);
                             sub->in_buffer = NULL;
                             sub->read_state = READ_LEN;
                             sub->in_pos = 0;
                         }
                     } else if (valread == 0) {
-                        /* Client disconnected */
-                        if (strcmp(log_level, "info") == 0) {
-                            time_t session_time = time(NULL) - sub->connect_time;
-                            log_event("INFO", sd, sub->ip_address, sub->port, "Disconnected (session: %ld sec)", (long)session_time);
-                        }
+                        /* Client disconnected during message transmission */
+                        time_t duration = time(NULL) - sub->connect_time;
+                        log_event("INFO", sd, sub->ip_address, sub->port, "Disconnected (session duration: %ld sec)", (long)duration);
                         close(sd);
                         client_sockets[i] = 0;
                         sub->sock = 0;
@@ -697,25 +397,10 @@ void run_server(int server_fd) {
                         sub->in_pos = 0;
                         continue;
                     } else {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            continue;
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            log_event("ERROR", sd, sub->ip_address, sub->port, "Read error: %s", strerror(errno));
+                            close(sd); client_sockets[i] = 0;
                         }
-                        if (log_file) {
-                            char time_str[32];
-                            get_utc_time_str(time_str, sizeof(time_str));
-                            fprintf(log_file, "%s Read error from fd %d: %s\n", time_str, sd, strerror(errno));
-                            fflush(log_file);
-                        }
-                        close(sd);
-                        client_sockets[i] = 0;
-                        sub->sock = 0;
-                        sub->mode = 0;
-                        sub->pubkey_hash[0] = '\0';
-                        free_out_queue(i);
-                        if (sub->in_buffer) free(sub->in_buffer);
-                        sub->in_buffer = NULL;
-                        sub->in_pos = 0;
-                        continue;
                     }
                 }
             }

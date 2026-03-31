@@ -13,6 +13,7 @@ All rights reserved. */
 #include <stdbool.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <strings.h> 
 
 FILE *log_file = NULL;
 Recipient *recipients = NULL;
@@ -28,33 +29,73 @@ size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 int use_disk_db = 0;
 static time_t last_rotation_check = 0;
 
+/**
+ * Main logging function.
+ * Handles independent output to the log file (based on config level)
+ * and the system console (based on the verbose flag).
+ */
 void log_event(const char *level, int fd, const char *ip, int port, const char *fmt, ...) {
-    if (!log_file) return;
-
-    /* Check if log rotation is needed */
-    rotate_log();
-
     char time_str[32];
+    char header[256];
+    bool write_to_file = false;
+
     get_utc_time_str(time_str, sizeof(time_str));
 
-    /* Print header: [Time] [Level] [fd] [IP:Port] */
+    /* 1. Format the log prefix: [Time] [Level] [Source Info] */
     if (ip != NULL && port > 0) {
-        fprintf(log_file, "%s [%s] [fd:%d] [%s:%d] ", time_str, level, fd, ip, port);
+        snprintf(header, sizeof(header), "%s [%s] [fd:%d] [%s:%d] ", time_str, level, fd, ip, port);
     } else if (fd > 0) {
-        fprintf(log_file, "%s [%s] [fd:%d] ", time_str, level, fd);
+        snprintf(header, sizeof(header), "%s [%s] [fd:%d] ", time_str, level, fd);
     } else {
-        fprintf(log_file, "%s [%s] [SERVER] ", time_str, level);
+        snprintf(header, sizeof(header), "%s [%s] [SERVER] ", time_str, level);
     }
 
-    /* Print the actual message using variadic arguments */
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(log_file, fmt, args);
-    va_end(args);
+    /* 2. Determine if the event should be recorded in the log file based on log_level */
+    if (strcasecmp(log_level, "debug") == 0) {
+        /* In DEBUG mode, all events are recorded */
+        write_to_file = true;
+    } 
+    else if (strcasecmp(log_level, "info") == 0) {
+        /* In INFO mode, record everything except DEBUG messages */
+        if (strcmp(level, "DEBUG") != 0) {
+            write_to_file = true;
+        }
+    } 
+    else if (strcasecmp(log_level, "error") == 0) {
+        /* In ERROR mode, record only messages with ERROR priority */
+        if (strcmp(level, "ERROR") == 0) {
+            write_to_file = true;
+        }
+    }
 
-    fprintf(log_file, "\n");
-    fflush(log_file);
-}
+    /* 3. Output to the log file */
+    if (log_file && write_to_file) {
+        rotate_log(); /* Check if rotation is necessary before writing */
+        fprintf(log_file, "%s", header);
+        
+        va_list args_file;
+        va_start(args_file, fmt);
+        vfprintf(log_file, fmt, args_file);
+        va_end(args_file);
+        
+        fprintf(log_file, "\n");
+        fflush(log_file);
+    }
+
+    /* 4. Output to the system console if verbose mode is enabled.
+       This bypasses log_level filters to provide full debug visibility in the terminal. */
+    if (verbose) {
+        printf("%s", header);
+        
+        va_list args_stdout;
+        va_start(args_stdout, fmt);
+        vfprintf(stdout, fmt, args_stdout);
+        va_end(args_stdout);
+        
+        printf("\n");
+        fflush(stdout); /* Ensure immediate output to terminal */
+    }
+} 
 
 void get_utc_time_str(char *buffer, size_t buffer_size) {
     time_t now = time(NULL);

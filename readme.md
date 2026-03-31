@@ -202,7 +202,17 @@ gorgona listen lock RWTPQzuhzBw=
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "test message" "RWTPQzuhzBw=.pub"
 # After ~10s the listener without -e prints: "Unlocked pending message ID=..." and the decrypted text
 gorgona -ed listen new RWTPQzuhzBw=     # Listens for new messages and executes them as background daemons
-gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background with logging
+gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background with logging command output to a central log
+```
+
+- You can check server status from any device using standard telnet/nc
+```bash 
+echo "info" | nc 46.138.247.148 7777
+# Output:
+# Gorgona Server 2.7.2
+# Uptime: 12d 4h 20m
+# Max message size: 5242880 bytes
+# Max clients: 100
 ```
 
 ##### Run Server
@@ -337,9 +347,13 @@ sysadmin = /usr/local/bin/gorgona_sysadmin.sh
 ```
 **Usage Examples**
 ```bash
-# Restart nginx service
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" \
-"sysadmin restart nginx" "RWTPQzuhzBw=.pub" && gorgona listen new
+# Terminal 1: Start listener to execute commands at the exact 'unlock' moment
+gorgona -e listen lock RWTPQzuhzBw=
+
+# Terminal 2: Send a command to unlock exactly in 60 seconds
+gorgona send "$(date -u -d '+60 seconds' '+%Y-%m-%d %H:%M:%S')" \
+             "$(date -u -d '+1 day' '+%Y-%m-%d %H:%M:%S')" \
+             "systemctl restart nginx" "RWTPQzuhzBw=.pub"
 # example output:
 # Decrypted message:
 # [2026-03-01 14:49:48] restart nginx 
@@ -400,155 +414,147 @@ Edit `/etc/gorgona/gorgonad.conf`:
 
 ```ini
 [server]
-port = 7777                      # Server port
-max_alerts = 10000               # Max alerts for one key
-max_clients = 100                # Max counts parallel clients
-max_log_size = 10                # MB (default: 10)
-log_level = error                # info or error (default: info)
-max_message_size = 5             # MB (default: 5)
-use_disk_db = false              # Enable (true) or disable (false) persistent disk storage for alerts (default: false)
-vacuum_threshold_percent = 25    # Cleanup threshold %: higher reduces disk I/O, lower saves disk space (default: 25)
+port = 7777                      # Listen port (default: 5555)
+max_alerts = 10000               # Max alerts stored per recipient key
+max_clients = 100                # Max simultaneous TCP connections
+max_message_size = 5             # Max message size in MB (default: 5)
+use_disk_db = false              # Enable persistent storage in /var/lib/gorgona/alerts/
+vacuum_threshold_percent = 25    # Auto-cleanup threshold for deleted/expired alerts
+
+# Logging levels:
+# error: Only critical errors.
+# info : Connections, disconnections, and status changes (Default).
+# debug: Full trace including raw command payloads and message metadata.
+log_level = info                 
+max_log_size = 10                # Log rotation limit in MB
 ```
 
-- `port`: TCP port (default: 5555).
-- `max_alerts`: Max alerts per recipient (default: 1000).
-- `max_clients`: Max simultaneous connections (default: 100).
-- `max_log_size`: Log file size limit in MB before rotation (default: 10).
-- `log_level`: Logging verbosity - "info" (default) or "error".
-- `max_message_size`: Max message size in MB (default: 5).
+> **Pro Tip: Debugging**
+> Running `gorgonad -v` (verbose) will print **all** levels (including DEBUG) to your terminal in real-time, regardless of the `log_level` set in the config file. This is ideal for troubleshooting without bloating your `gorgonad.log`.
 
-If the file is missing, defaults are used.  
-Logs are written to `gorgona.log` with rotation when exceeding 10 MB.
+---
 
-## Flowchart of Server Operation
+### Flowchart of Server Operation
+
+The server uses a high-performance `select()`-based multiplexing loop to handle binary and text protocols simultaneously.
+
+```mermaid
+graph TD
+    A[Start Server] --> B{Incoming Event}
+    B -->|New Connection| C[Accept & Non-blocking setup]
+    B -->|Data Received| D{Sniff Protocol}
+    D -->|First Byte < 32| E[Binary Mode: Parse Length + Payload]
+    D -->|First Byte >= 32| F[Text Mode: Interactive Commands / Telnet]
+    E --> G[Command Dispatcher]
+    F --> G
+    G --> H[Process: SEND / LISTEN / SUBSCRIBE]
+    H --> I[Queue Outbound Data]
+    B -->|Socket Writable| J[Process Send Queue]
+    J --> K[Rotate Logs & Cleanup Expired]
+```
+
+<details>
+<summary><b>Click to view detailed internal logic (Packet parsing, State machine, DB Sync)</b></summary>
+
 ```ini
-[Server Start]  
-   |  
-   v  
-[Initialization]  
-   - Read configuration (/etc/gorgona/gorgonad.conf), including use_disk_db  
-   - Initialize client_sockets and subscribers arrays  
-   - Allocate memory for recipients (INITIAL_RECIPIENT_CAPACITY)  
-   - Open log file (gorgonad.log)  
-   - If use_disk_db == true: Initialize and load alerts from disk (/var/lib/gorgona/alerts/)  
-   |  
-   v  
-[Socket Creation]  
-   - socket(), setsockopt(SO_REUSEADDR), bind(), listen()  
-   - Register signal handlers (SIGINT, SIGTERM, SIGPIPE ignored)  
-   - Set sockets to non-blocking mode (O_NONBLOCK)  
-   |  
-   v  
-[Main Loop (run_server)]  
-   |  
-   v  
-[select: Wait for Activity]  
-   - Prepare fd_set for readfds (server_fd + client_sockets) and writefds (client_sockets with pending data via has_pending_data)  
-   - Call select() to monitor sockets for read/write events  
-   |  
-   |----> [New Client (accept)]  
-   |         - Check max_clients limit  
-   |         - If limit reached: Send "Too many clients" error and close socket  
-   |         - Add to client_sockets and subscribers (initialize out_head, out_tail, read_state, etc.)  
-   |         - Set socket to non-blocking mode (fcntl O_NONBLOCK)  
-   |         - Log connection (if log_level == "info")  
-   |         - Rotate log if needed (check max_log_size)  
-   |  
-   |----> [Client Readable (FD_ISSET in readfds)]  
-   |         |  
-   |         v  
-   |      [Read Message Length (read_state == READ_LEN)]  
-   |         - Read up to 4 bytes (uint32_t) for message length  
-   |         - Handle errors (EAGAIN/EWOULDBLOCK: retry, other errors: log, close socket, free_out_queue, free in_buffer)  
-   |         - If length complete: Convert to host order (ntohl), verify against max_message_size  
-   |         - If too large: Enqueue error message, log, close socket, free resources  
-   |         - Allocate in_buffer for message, set read_state to READ_MSG  
-   |         |  
-   |         v  
-   |      [Read Message (read_state == READ_MSG)]  
-   |         - Read into in_buffer up to expected_msg_len  
-   |         - Handle errors (EAGAIN/EWOULDBLOCK: retry, other errors: log, close socket, free_out_queue, free in_buffer)  
-   |         - If client disconnects (valread == 0): Log, close socket, free_out_queue, free in_buffer  
-   |         - If message complete: Null-terminate buffer, process command  
-   |         |  
-   |         |----> [telnet, ?]  
-   |         |  
-   |         |----> [SEND Command]  
-   |         |       - Parse: pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag  
-   |         |       - Validate fields; if incomplete: Enqueue error, log, close socket, free resources  
-   |         |       - Decode pubkey_hash (base64); validate length (PUBKEY_HASH_LEN)  
-   |         |       - add_alert:  
-   |         |          - Find/create Recipient (add_recipient if needed)  
-   |         |          - Clean expired alerts (sync to disk if use_disk_db == true)  
-   |         |          - If count >= max_alerts: Remove oldest alert (sync to disk if use_disk_db == true)  
-   |         |          - Decode base64 data (text, key, iv, tag); validate tag length (GCM_TAG_LEN)  
-   |         |          - Create Alert (set id, create_at, unlock_at, expire_at, active)  
-   |         |          - If use_disk_db == true: Save alert to disk (alert_db_save_alert)  
-   |         |       - Enqueue success message ("Alert added successfully")  
-   |         |       - notify_subscribers:  
-   |         |          - Encode alert data to base64, format ALERT message  
-   |         |          - For each subscriber: Check mode (LIVE/ALL/LOCK/SINGLE/NEW) and pubkey_hash match  
-   |         |          - Enqueue ALERT message for matching subscribers  
-   |         |       - Free in_buffer, reset read_state to READ_LEN  
-   |         |  
-   |         |----> [LISTEN Command]  
-   |         |       - Parse: pubkey_hash, mode (SINGLE/LAST), count  
-   |         |       - Validate pubkey_hash; if empty: Enqueue error, log, close socket, free resources  
-   |         |       - Set subscriber mode and pubkey_hash  
-   |         |       - If mode == LAST: Validate count; if invalid: Enqueue error, close socket, free resources  
-   |         |       - send_current_alerts:  
-   |         |          - Decode pubkey_hash, find Recipient  
-   |         |          - Clean expired alerts  
-   |         |          - Sort alerts by id (descending)  
-   |         |          - Select up to count (for LAST) or all (for SINGLE) active, non-expired alerts  
-   |         |          - Sort selected alerts by id (ascending) for sending  
-   |         |          - For each alert: Encode to base64, format ALERT message, enqueue_message  
-   |         |       - Enqueue subscription confirmation message  
-   |         |       - If mode == LAST: Set close_after_send = true  
-   |         |       - Free in_buffer, reset read_state to READ_LEN  
-   |         |  
-   |         |----> [SUBSCRIBE Command]  
-   |         |       - Parse: mode (LIVE/ALL/LOCK/LAST/NEW), pubkey_hash (optional)  
-   |         |       - Validate mode; if invalid: Enqueue error, log, close socket, free resources  
-   |         |       - Set subscriber mode and pubkey_hash (if provided)  
-   |         |       - If mode != MODE_NEW: Call send_current_alerts  
-   |         |          - For all recipients (or filtered by pubkey_hash):  
-   |         |            - Clean expired alerts  
-   |         |            - Sort alerts by id (descending)  
-   |         |            - Select active, non-expired alerts based on mode (ALL/LIVE/LOCK/LAST)  
-   |         |            - Sort selected alerts by id (ascending) for sending  
-   |         |            - Enqueue ALERT messages  
-   |         |       - Enqueue subscription confirmation message  
-   |         |       - If mode == LAST: Set close_after_send = true  
-   |         |       - Free in_buffer, reset read_state to READ_LEN  
-   |         |  
-   |         v  
-   |      [Free Input Buffer]  
-   |         - Free in_buffer, reset in_pos, set read_state to READ_LEN  
-   |  
-   |----> [Client Writable (FD_ISSET in writefds)]  
-   |         - Call process_out:  
-   |            - For each OutBuffer in subscriber’s out_head:  
-   |               - Send remaining data (data + pos, len - pos)  
-   |               - If sent > 0: Update pos; if pos == len, free OutBuffer, advance out_head  
-   |               - If sent == 0: Client closed, close socket, free_out_queue, reset subscriber  
-   |               - If sent < 0:  
-   |                  - If EAGAIN/EWOULDBLOCK: Break and retry next select  
-   |                  - Other errors: Log, close socket, free_out_queue, reset subscriber  
-   |            - If out_head == NULL and close_after_send == true:  
-   |               - Close socket, reset subscriber (sock, mode, pubkey_hash, in_buffer, etc.)  
-   |  
-   |----> [Log Rotation Check]  
-   |         - If log file size > max_log_size: Rename to gorgonad.log.1, open new gorgonad.log  
-   |  
-   v  
-[Cleanup on Shutdown]  
-   - Free memory for recipients and alerts  
-   - Close all client sockets  
-   - Close server socket  
-   - Close log file  
-   - If use_disk_db == true: Ensure all alerts are synced to disk (alert_db_sync)  
+[Server Start]
+   |
+   v
+[Initialization]
+   - Read configuration (/etc/gorgona/gorgonad.conf)
+   - Initialize Global Data: client_sockets[MAX_CLIENTS], subscribers[MAX_CLIENTS]
+   - Setup Logging: Open gorgonad.log (Level: error, info, or debug)
+   - If use_disk_db == true:
+   |  - Load Recipients from /var/lib/gorgona/alerts/
+   |  - mmap() existing .alerts files into memory
+   |  - Scan files for active/corrupted records -> Set used_size & count
+   |
+   v
+[Socket Creation]
+   - socket(), setsockopt(SO_REUSEADDR), bind(), listen()
+   - Set server_fd to O_NONBLOCK
+   - Register Signal Handlers (SIGINT/SIGTERM for graceful shutdown, SIGPIPE ignore)
+   |
+   v
+[Main Loop (run_server)]
+   |
+   |--[1] Prepare select() FD Sets:
+   |      - Add server_fd to readfds
+   |      - For each active client:
+   |         - Add to readfds (if close_after_send is false)
+   |         - Add to writefds (if has_pending_data is true: out_head != NULL)
+   |
+   |--[2] select(max_sd + 1, &readfds, &writefds, NULL, NULL)
+   |
+   |--[3] Handle NEW CONNECTION (FD_ISSET server_fd):
+   |      - accept() -> check max_clients limit
+   |      - If full: Send error -> close()
+   |      - If OK: fcntl(O_NONBLOCK) -> Initialize Subscriber struct
+   |         - Set read_state = READ_LEN, in_pos = 0, close_after_send = false
+   |
+   |--[4] Handle WRITABLE Client (FD_ISSET in writefds):
+   |      - Call process_out(sub_index, sd):
+   |         - Loop through OutBuffer queue -> send() payload chunks
+   |         - If sent < len: Update pos -> Break (wait for next select)
+   |         - If sent == len: Free buffer -> Move to next OutBuffer
+   |         - If queue empty AND close_after_send == true:
+   |            - Log "Task completed" -> close(sd) -> Reset Subscriber struct
+   |
+   |--[5] Handle READABLE Client (FD_ISSET in readfds):
+   |      |
+   |      |----> [State: READ_LEN (Protocol Sniffer)]
+   |      |         - Read 1 byte into in_buffer
+   |      |         - If byte < 32 AND not (\n, \r, \t): BINARY PROTOCOL
+   |      |            - Collect 4 bytes -> ntohl() -> expected_msg_len
+   |      |            - Check max_message_size -> Allocate in_buffer -> read_state = READ_MSG
+   |      |         - Else: TEXT PROTOCOL (Interactive/Telnet)
+   |      |            - Buffer bytes until '\n' -> trim_string()
+   |      |            - If "info"/"version"/"?":
+   |      |               - Format text response -> enqueue_text_only()
+   |      |               - Set close_after_send = true (Graceful exit)
+   |      |            - Else: log_event("WARN", "Unknown text command")
+   |      |
+   |      |----> [State: READ_MSG (Data Collection)]
+   |      |         - Read up to expected_msg_len into allocated in_buffer
+   |      |         - If complete: 
+   |      |            - handle_command(sub_index, in_buffer) -> See [Dispatcher]
+   |      |            - Free in_buffer -> Reset in_pos -> read_state = READ_LEN
+   |
+   v
+[Command Dispatcher (handle_command)]
+   |
+   |----> [SEND|...]
+   |         - Parse fields: hash, unlock_at, expire_at, payload, key, iv, tag
+   |         - add_alert():
+   |            - find_recipient() -> clean_expired_alerts()
+   |            - If count >= max_alerts: remove_oldest_alert() (Ring Buffer)
+   |            - base64_decode() content -> Save to Recipient.alerts
+   |            - If use_disk_db: alert_db_save_alert() (Write to mmap, msync)
+   |         - notify_subscribers():
+   |            - Loop all clients -> Check mode/hash match
+   |            - If match: format ALERT|... message -> enqueue_message()
+   |
+   |----> [LISTEN|... / SUBSCRIBE ]
+   |         - Parse: mode (LIVE, ALL, LOCK, SINGLE, LAST, NEW), hash, count
+   |         - Update Subscriber mode/pubkey_hash
+   |         - send_current_alerts():
+   |            - Sort alerts by ID (descending for LAST/SINGLE)
+   |            - Filter by unlock_at/expire_at/mode
+   |            - For each match: base64_encode() -> enqueue_message()
+   |         - If mode == LAST: Set close_after_send = true
+   |
+   v
+[Background Maintenance]
+   - Log Rotation: If size > max_log_size -> rename gorgonad.log to .log.1
+   - DB Vacuum: If use_disk_db AND waste_count > vacuum_threshold_percent:
+   |  - alert_db_sync(): Compact .alerts file (remove inactive) -> remap mmap
+   - Logging: log_event(level, ...)
+      - If verbose (-v): Always print to stdout
+      - If log_level (config) matches: Write to gorgonad.log
 ```
+</details>
+
+---
 
 ##### Future Plans
 
