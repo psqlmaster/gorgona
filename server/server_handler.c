@@ -248,7 +248,7 @@ void run_server(int server_fd) {
             }
         }
 
-        /* Process client activity */
+        /* Process client activity inside the main loop */
         for (int i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (sd <= 0) continue;
@@ -257,15 +257,20 @@ void run_server(int server_fd) {
                 process_out(i, sd);
             }
 
+            /* Check if the socket was closed during process_out */
             if (client_sockets[i] <= 0) continue; 
 
             if (FD_ISSET(sd, &readfds)) {
                 Subscriber *sub = &subscribers[i];
                 valread = 0;
+
+                /* STATE: Waiting for message length or text command */
                 if (sub->read_state == READ_LEN) {
+                    /* Initialize buffer if it's a new connection cycle */
                     if (!sub->in_buffer) {
                         sub->in_buffer = malloc(max_message_size + 1);
                         if (!sub->in_buffer) {
+                            log_event("ERROR", sd, sub->ip_address, sub->port, "Memory allocation failed");
                             close(sd); client_sockets[i] = 0;
                             return;
                         }
@@ -279,35 +284,48 @@ void run_server(int server_fd) {
                         unsigned char first_byte = (unsigned char)sub->in_buffer[0];
 
                         /** 
-                         * PROTOCOL SNIFFER 
-                         * Binary lengths for messages > 16MB start with bytes 0x01, 0x02, etc.
-                         * Text commands (SEND, LISTEN, info) start with ASCII letters (> 31).
-                         * We treat any first byte < 32 as a Binary Length Header.
+                         * PROTOCOL SNIFFER
+                         * Distinguishes between Binary Length Headers and Text-based Commands.
                          */
-                        if (first_byte < 32 && first_byte != '\n' && first_byte != '\r' && first_byte != '\t') { 
-                            /* Binary Mode: Wait for 4 bytes of length header */
+
+                        /* 1. BINARY MODE DETECTION */
+                        /* Since max_message_size is typically < 16MB, the first byte of 
+                           a valid 4-byte big-endian length should be 0x00. 
+                           This effectively rejects TLS (0x16), SSH (0x53), etc. */
+                        if (first_byte < 32 && first_byte != '\n' && first_byte != '\r' && first_byte != '\t') {
                             if (sub->in_pos == 4) {
                                 uint32_t temp_len;
                                 memcpy(&temp_len, sub->in_buffer, 4);
                                 temp_len = ntohl(temp_len);
-                                sub->expected_msg_len = temp_len;
-                                log_event("DEBUG", sd, sub->ip_address, sub->port, "Incoming binary message, expected length: %u", temp_len);
-
+                                log_event("DEBUG", sd, sub->ip_address, sub->port, 
+                                          "Binary header detected. Expected length: %u", temp_len);
+                                /* VALIDATION: Check if length is within allowed bounds */
                                 if (temp_len > max_message_size || temp_len == 0) {
                                     char err_size[256];
+                                    /* Формируем детальное сообщение об ошибке */
                                     int l = snprintf(err_size, sizeof(err_size), 
                                                      "Error: Message size (%u) exceeds limit (%zu).\n", 
                                                      temp_len, max_message_size);
                                     enqueue_message(i, err_size, l);
-                                    log_event("WARN", sd, sub->ip_address, sub->port, "Binary limit exceeded: %u > %zu", temp_len, max_message_size);
+                                    sub->close_after_send = true; 
+                                    log_event("ERROR", sd, sub->ip_address, sub->port, 
+                                              "Protocol Violation: Declared length %u exceeds max limit %zu. Dropping connection.", 
+                                              temp_len, max_message_size);
                                     if (sub->in_buffer) free(sub->in_buffer);
-                                    sub->in_buffer = NULL; sub->in_pos = 0;
-                                    continue;
+                                    sub->in_buffer = NULL;
+                                    sub->in_pos = 0;
+                                    continue; 
                                 }
 
+                                /* Reallocate buffer to match the exact expected binary message size */
                                 sub->expected_msg_len = temp_len;
                                 char *new_binary_buf = malloc(sub->expected_msg_len + 1);
-                                if (!new_binary_buf) { close(sd); client_sockets[i] = 0; return; }
+                                if (!new_binary_buf) {
+                                    log_event("ERROR", sd, sub->ip_address, sub->port, "Allocation failed for payload");
+                                    close(sd); client_sockets[i] = 0; 
+                                    return; 
+                                }
+
                                 free(sub->in_buffer);
                                 sub->in_buffer = new_binary_buf;
                                 sub->in_pos = 0;
@@ -315,15 +333,19 @@ void run_server(int server_fd) {
                                 continue;
                             }
                         } 
-                        else {
-                            /* Text Mode: Commands like 'info', 'version' or raw 'SEND|...' via nc */
-                            if (byte == '\r') { sub->in_pos--; continue; }
+                        /* 2. TEXT MODE DETECTION */
+                        else if (first_byte >= 32 || first_byte == '\n' || first_byte == '\r' || first_byte == '\t') {
+                            if (byte == '\r') {
+                                sub->in_pos--; /* Ignore carriage returns */
+                                continue;
+                            }
                             if (byte == '\n') {
                                 sub->in_buffer[sub->in_pos] = '\0';
                                 trim_string(sub->in_buffer);
-                                log_event("DEBUG", sd, sub->ip_address, sub->port, "Received text command: %s", sub->in_buffer);
 
                                 if (strlen(sub->in_buffer) > 0) {
+                                    log_event("DEBUG", sd, sub->ip_address, sub->port, "Text command received: %s", sub->in_buffer);
+
                                     if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
                                         char v_msg[128];
                                         int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server %s\nGoodbye Sir.\n", VERSION ? VERSION : "1.0");
@@ -334,7 +356,9 @@ void run_server(int server_fd) {
                                         char info_msg[512];
                                         time_t now = time(NULL);
                                         double uptime_sec = difftime(now, server_start_time);
-                                        int d = (int)(uptime_sec / 86400), h = (int)((uptime_sec / 3600) - (d * 24)), m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
+                                        int d = (int)(uptime_sec / 86400);
+                                        int h = (int)((uptime_sec / 3600) - (d * 24));
+                                        int m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
                                         int info_len = snprintf(info_msg, sizeof(info_msg),
                                             "Gorgona Version %s\nUptime: %dd %dh %dm\nMax message size: %zu\nMax clients: %d\n",
                                             VERSION ? VERSION : "1.0", d, h, m, max_message_size, max_clients);
@@ -342,7 +366,6 @@ void run_server(int server_fd) {
                                         sub->close_after_send = true;
                                     } 
                                     else {
-                                        /* Log connection info and the bad command in one line */
                                         log_event("WARN", sd, sub->ip_address, sub->port, "Unknown text command: %s", sub->in_buffer);
                                         enqueue_text_only(i, "Error: Unknown command\n", 23);
                                         sub->close_after_send = true;
@@ -351,14 +374,27 @@ void run_server(int server_fd) {
                                 sub->in_pos = 0;
                                 continue;
                             }
+
+                            /* Prevent text buffer overflow */
                             if (sub->in_pos >= max_message_size) {
-                                enqueue_message(i, "Error: Text limit exceeded\n", 27);
+                                log_event("WARN", sd, sub->ip_address, sub->port, "Text command limit exceeded");
+                                enqueue_text_only(i, "Error: Text limit exceeded\n", 27);
                                 sub->close_after_send = true;
                                 sub->in_pos = 0;
                             }
                         }
+                        /* 3. INVALID PROTOCOL (e.g., non-zero binary garbage) */
+                        else {
+                            log_event("WARN", sd, sub->ip_address, sub->port, "Protocol mismatch (byte 0x%02X). Closing.", first_byte);
+                            close(sd);
+                            client_sockets[i] = 0;
+                            if (sub->in_buffer) free(sub->in_buffer);
+                            sub->in_buffer = NULL;
+                            sub->in_pos = 0;
+                            continue;
+                        }
                     } else if (valread == 0) {
-                        /* Client disconnected while idle */
+                        /* Connection closed by client while idle */
                         log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected (idle)");
                         close(sd); client_sockets[i] = 0;
                         if (sub->in_buffer) free(sub->in_buffer);
@@ -370,35 +406,31 @@ void run_server(int server_fd) {
                             close(sd); client_sockets[i] = 0;
                         }
                     }
-                }  else if (sub->read_state == READ_MSG) {
+                } 
+                /* STATE: Reading the actual binary message body */
+                else if (sub->read_state == READ_MSG) {
                     valread = read(sd, sub->in_buffer + sub->in_pos, sub->expected_msg_len - sub->in_pos);
                     if (valread > 0) {
                         sub->in_pos += valread;
                         if (sub->in_pos == sub->expected_msg_len) {
                             sub->in_buffer[sub->expected_msg_len] = '\0';
                             handle_command(i, sub->in_buffer);
+                            
+                            /* Cleanup and return to length-waiting state */
                             free(sub->in_buffer);
                             sub->in_buffer = NULL;
                             sub->read_state = READ_LEN;
                             sub->in_pos = 0;
                         }
                     } else if (valread == 0) {
-                        /* Client disconnected during message transmission */
-                        time_t duration = time(NULL) - sub->connect_time;
-                        log_event("INFO", sd, sub->ip_address, sub->port, "Disconnected (session duration: %ld sec)", (long)duration);
-                        close(sd);
-                        client_sockets[i] = 0;
-                        sub->sock = 0;
-                        sub->mode = 0;
-                        sub->pubkey_hash[0] = '\0';
-                        free_out_queue(i);
+                        log_event("INFO", sd, sub->ip_address, sub->port, "Disconnected during payload transmission");
+                        close(sd); client_sockets[i] = 0;
                         if (sub->in_buffer) free(sub->in_buffer);
-                        sub->in_buffer = NULL;
-                        sub->in_pos = 0;
+                        sub->in_buffer = NULL; sub->in_pos = 0;
                         continue;
                     } else {
                         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                            log_event("ERROR", sd, sub->ip_address, sub->port, "Read error: %s", strerror(errno));
+                            log_event("ERROR", sd, sub->ip_address, sub->port, "Payload read error: %s", strerror(errno));
                             close(sd); client_sockets[i] = 0;
                         }
                     }
