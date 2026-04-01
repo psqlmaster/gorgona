@@ -132,7 +132,7 @@ void process_out(int sub_index, int sd) {
 
     /* Handle graceful shutdown after sending requested info (like 'info' or 'version') */
     if (subscribers[sub_index].out_head == NULL && subscribers[sub_index].close_after_send) {
-        log_event("INFO", sd, sub->ip_address, sub->port, "Closing connection (task completed)");
+        log_event("INFO", sd, sub->ip_address, sub->port, "Closing connection");
         close(sd);
         client_sockets[sub_index] = 0;
         sub->sock = 0;
@@ -395,7 +395,7 @@ void run_server(int server_fd) {
                         }
                     } else if (valread == 0) {
                         /* Connection closed by client while idle */
-                        log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected (idle)");
+                        log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected");
                         close(sd); client_sockets[i] = 0;
                         if (sub->in_buffer) free(sub->in_buffer);
                         sub->in_buffer = NULL; sub->in_pos = 0;
