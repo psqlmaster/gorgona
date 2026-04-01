@@ -31,20 +31,14 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 ##### Features
 
-- **Time Capsule**: A decentralized crontab with 1ms UTC precision for time-locked message execution between unlock_at and expire_at.
-- **End-to-End Encryption**: Messages are encrypted on the client and decrypted only by the recipient with their private key.
-- **Optional Persistent Storage**: Enable disk-based storage for alerts (default: disabled, configurable via `use_disk_db`). When enabled, alerts are saved to `/var/lib/gorgona/alerts/` for persistence across restarts; otherwise, operate in memory-only mode for lightweight deployments.
-- **Privacy-First**: The server handles only encrypted data, ensuring no access to message content.
-- **Key Management**: Generates RSA key pairs named by the base64-encoded hash of the public key for secure sharing and local private key storage. The `hash` in `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gorgona/` are retrieved. To decrypt messages, the recipient must have the sender’s `hash.key` private key in `/etc/gorgona/`, which must be securely shared by the user.
-- **Flexible Subscription Modes**: Listen in "live" (unlocked messages), "all" (non-expired messages, including locked), "lock" (locked messages only), "single" (specific recipient), or "last" (most recent message(s), optionally with count).
-- **Command Execution Mode**: Use the `-e/--exec` flag with `listen` to execute received messages as system commands (requires specifying `pubkey_hash_b64` for security; messages from the specified key are treated as executable commands upon decryption).
-- **When combined with the -d flag**: commands are executed in the background as detached daemons, making them immune to parent process termination (e.g., when running under systemd). This is especially useful for long-running processes like gpstart or custom services. All stdout/stderr from such commands is redirected to the path in gorgona_LOG_FILE, enabling centralized logging.
-- **Sub-Second Time-Locked Execution**: In `lock/new` mode with `-e/--exec`, the client precisely executes commands at the exact `unlock_at` moment (±10ms), using a `select()`-based event loop. No busy-waiting - ideal for cron-like automation with cryptographic security.
-- **Efficient Storage**: Uses a ring buffer, limiting alerts per recipient to a configurable number (default: 1000), automatically removing the oldest or expired messages.
-- **Decentralized Design**: Users control keys, and the lightweight server supports self-hosting.
-- **Fast and Lightweight**: Built with OpenSSL, requiring minimal dependencies.
-- **Tamper-Proof**: GCM authentication tags and RSA-OAEP padding protect against tampering.
-- **Interactive Server Status via Telnet**: Connect via `telnet <server> <port>` and use commands like `info`, `version`, or `?` to instantly view server version, uptime (e.g., `1d 21h 45m`), max clients, and message size limits - ideal for quick health checks without logs.
+- **End-to-End Security**: Messages are encrypted using RSA-OAEP (key exchange) and AES-GCM (content). The server only handles encrypted blobs and never sees raw data.
+- **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Messages unlock exactly at `unlock_at` and expire after `expire_at`.
+- **Anti-Replay Protection**: Integrated defense against network packet re-injection using staleness filters and sliding-window deduplication.
+- **Remote Command Execution (RCE)**: Use the `-e/--exec` flag to trigger system commands upon decryption. Supports background daemons (`-d`) with centralized logging via `gorgona_LOG_FILE`.
+- **Hybrid Protocol Sniffer**: Automatically detects and handles both binary length-prefixed packets (for data) and plain-text commands (for interactive telnet/health checks).
+- **Flexible Persistence**: High-speed In-Memory mode or optional `mmap`-backed disk storage (`use_disk_db`) for reliability across server restarts.
+- **Efficient Storage**: Automatic ring-buffer management and "Vacuum" auto-compacting to keep the database lean and fast.
+- **Fast & Lightweight**: Zero-dependency implementation in pure C with OpenSSL; designed for high-concurrency and minimal resource footprint.
 
 ##### Advantages
 
@@ -112,7 +106,19 @@ sudo dpkg -i ./gorgonad_2.5.8_amd64.deb
 ```bash
 gorgona [-v|--verbose] [-e|--exec] [-d|--daemon-exec] [-h|--help] [-V|--version] <command> [arguments]
 ```
+---
 
+##### Anti-Replay Protection
+
+Gorgona includes a dual-layer defense mechanism to prevent attackers from capturing and re-sending encrypted command packets:
+
+1. **Staleness Filter**: The server rejects any message where the `unlock_at` timestamp is older than 120 seconds from the current server time. This prevents the re-injection of old captured traffic.
+2. **Binary Deduplication**: The server maintains a sliding window of the last 50 payloads per recipient. Since AES-GCM ensures a unique ciphertext for every legitimate encryption (due to unique IVs), any identical binary payload is instantly flagged as a replay attack and rejected.
+
+If an attack is detected, the server logs the event as a `WARN` (including client IP) and returns a specific error to the sender:
+`Error: Replay attack detected (duplicate payload)`
+
+---
 ##### Flags
 
 - `-v, --verbose`: Enables verbose output for debugging.
@@ -441,16 +447,32 @@ The server uses a high-performance `select()`-based multiplexing loop to handle 
 ```mermaid
 graph TD
     A[Start Server] --> B{Incoming Event}
-    B -->|New Connection| C[Accept & Non-blocking setup]
-    B -->|Data Received| D{Sniff Protocol}
-    D -->|First Byte < 32| E[Binary Mode: Parse Length + Payload]
-    D -->|First Byte >= 32| F[Text Mode: Interactive Commands / Telnet]
-    E --> G[Command Dispatcher]
+    B -->|New Connection| C[Accept & Non-blocking Setup]
+    B -->|Data Received| D{Protocol Sniffer}
+
+    D -->|First Byte < 32| E[Binary Mode: Parse Header & Payload]
+    D -->|First Byte >= 32| F[Text Mode: Handle Tabs/Whitespace & Commands]
+
+    E --> G{Command Dispatcher}
     F --> G
-    G --> H[Process: SEND / LISTEN / SUBSCRIBE]
-    H --> I[Queue Outbound Data]
-    B -->|Socket Writable| J[Process Send Queue]
-    J --> K[Rotate Logs & Cleanup Expired]
+
+    G -->|SEND| H{Anti-Replay Check}
+    G -->|LISTEN / SUBSCRIBE| I[Filter & Fetch Alerts]
+
+    H -->|Invalid: Stale or Duplicate| J[Queue Error Response]
+    H -->|Valid| K[Add to DB & Notify Subscribers]
+
+    I --> L[Queue Data/Success Msg]
+    K --> L
+
+    L --> M{Close After Send?}
+    M -->|Yes| N[Set Graceful Shutdown Flag]
+
+    B -->|Socket Writable| O[Process Outbound Queue]
+    O --> P{Flag Set & Queue Empty?}
+    P -->|Yes| Q[Graceful Socket Close]
+
+    O --> R[Rotate Logs & DB Vacuum]
 ```
 
 <details>
@@ -463,17 +485,17 @@ graph TD
 [Initialization]
    - Read configuration (/etc/gorgona/gorgonad.conf)
    - Initialize Global Data: client_sockets[MAX_CLIENTS], subscribers[MAX_CLIENTS]
-   - Setup Logging: Open gorgonad.log (Level: error, info, or debug)
+   - Setup Logging: Open gorgonad.log (Supports: error, info, debug)
    - If use_disk_db == true:
    |  - Load Recipients from /var/lib/gorgona/alerts/
    |  - mmap() existing .alerts files into memory
-   |  - Scan files for active/corrupted records -> Set used_size & count
+   |  - Scan files for active records -> Set used_size & recipient_count
    |
    v
 [Socket Creation]
    - socket(), setsockopt(SO_REUSEADDR), bind(), listen()
    - Set server_fd to O_NONBLOCK
-   - Register Signal Handlers (SIGINT/SIGTERM for graceful shutdown, SIGPIPE ignore)
+   - Register Signal Handlers (SIGINT/SIGTERM for shutdown, SIGPIPE ignore)
    |
    v
 [Main Loop (run_server)]
@@ -481,14 +503,13 @@ graph TD
    |--[1] Prepare select() FD Sets:
    |      - Add server_fd to readfds
    |      - For each active client:
-   |         - Add to readfds (if close_after_send is false)
+   |         - Add to readfds (only if close_after_send is false)
    |         - Add to writefds (if has_pending_data is true: out_head != NULL)
    |
    |--[2] select(max_sd + 1, &readfds, &writefds, NULL, NULL)
    |
    |--[3] Handle NEW CONNECTION (FD_ISSET server_fd):
    |      - accept() -> check max_clients limit
-   |      - If full: Send error -> close()
    |      - If OK: fcntl(O_NONBLOCK) -> Initialize Subscriber struct
    |         - Set read_state = READ_LEN, in_pos = 0, close_after_send = false
    |
@@ -498,7 +519,7 @@ graph TD
    |         - If sent < len: Update pos -> Break (wait for next select)
    |         - If sent == len: Free buffer -> Move to next OutBuffer
    |         - If queue empty AND close_after_send == true:
-   |            - Log "Task completed" -> close(sd) -> Reset Subscriber struct
+   |            - Close socket -> Reset Subscriber struct -> Log "Task completed"
    |
    |--[5] Handle READABLE Client (FD_ISSET in readfds):
    |      |
@@ -506,54 +527,53 @@ graph TD
    |      |         - Read 1 byte into in_buffer
    |      |         - If byte < 32 AND not (\n, \r, \t): BINARY PROTOCOL
    |      |            - Collect 4 bytes -> ntohl() -> expected_msg_len
-   |      |            - Check max_message_size -> Allocate in_buffer -> read_state = READ_MSG
+   |      |            - If length > max_message_size:
+   |      |               - Enqueue Error Msg -> Set close_after_send = true -> continue
+   |      |            - Allocate in_buffer -> Set read_state = READ_MSG
    |      |         - Else: TEXT PROTOCOL (Interactive/Telnet)
    |      |            - Buffer bytes until '\n' -> trim_string()
    |      |            - If "info"/"version"/"?":
-   |      |               - Format text response -> enqueue_text_only()
-   |      |               - Set close_after_send = true (Graceful exit)
-   |      |            - Else: log_event("WARN", "Unknown text command")
+   |      |               - Format response -> enqueue_text_only() -> Set close_after_send = true
+   |      |            - Else: Log "Unknown text command" -> Set close_after_send = true
    |      |
    |      |----> [State: READ_MSG (Data Collection)]
-   |      |         - Read up to expected_msg_len into allocated in_buffer
+   |      |         - Read up to expected_msg_len into in_buffer
    |      |         - If complete: 
    |      |            - handle_command(sub_index, in_buffer) -> See [Dispatcher]
-   |      |            - Free in_buffer -> Reset in_pos -> read_state = READ_LEN
+   |      |            - Free in_buffer -> Reset in_pos -> Set read_state = READ_LEN
    |
    v
 [Command Dispatcher (handle_command)]
    |
    |----> [SEND|...]
    |         - Parse fields: hash, unlock_at, expire_at, payload, key, iv, tag
-   |         - add_alert():
-   |            - find_recipient() -> clean_expired_alerts()
-   |            - If count >= max_alerts: remove_oldest_alert() (Ring Buffer)
-   |            - base64_decode() content -> Save to Recipient.alerts
-   |            - If use_disk_db: alert_db_save_alert() (Write to mmap, msync)
+   |         - add_alert() -> Security Checks:
+   |            - Layer 1: Staleness Check (Reject if unlock_at is > 120s in the past)
+   |            - Layer 2: Binary Deduplication (Compare payload with last 50 alerts)
+   |            - If Security Check Fails: Enqueue Error (Stale/Replay) -> return
+   |            - If Valid: Save to DB (mmap if enabled) -> Log success
    |         - notify_subscribers():
-   |            - Loop all clients -> Check mode/hash match
-   |            - If match: format ALERT|... message -> enqueue_message()
+   |            - Filter active clients by mode (LIVE/ALL/LOCK/NEW) and hash match
+   |            - Format ALERT|... message -> enqueue_message() for each match
    |
    |----> [LISTEN|... / SUBSCRIBE ]
-   |         - Parse: mode (LIVE, ALL, LOCK, SINGLE, LAST, NEW), hash, count
+   |         - Parse: mode, hash, count
    |         - Update Subscriber mode/pubkey_hash
    |         - send_current_alerts():
-   |            - Sort alerts by ID (descending for LAST/SINGLE)
-   |            - Filter by unlock_at/expire_at/mode
+   |            - Sort & Filter alerts by ID/mode/timestamps
    |            - For each match: base64_encode() -> enqueue_message()
    |         - If mode == LAST: Set close_after_send = true
    |
    v
 [Background Maintenance]
    - Log Rotation: If size > max_log_size -> rename gorgonad.log to .log.1
-   - DB Vacuum: If use_disk_db AND waste_count > vacuum_threshold_percent:
-   |  - alert_db_sync(): Compact .alerts file (remove inactive) -> remap mmap
+   - DB Vacuum: If use_disk_db AND waste_count exceeds threshold:
+   |  - alert_db_sync(): Rebuild .alerts file (compact) -> remap mmap
    - Logging: log_event(level, ...)
-      - If verbose (-v): Always print to stdout
-      - If log_level (config) matches: Write to gorgonad.log
-```
+      - If verbose (-v): Always print to stdout (ignore config filters)
+      - If log_level matches config (debug/info/error): Write to file```
 </details>
-
+```
 ---
 
 ##### Future Plans

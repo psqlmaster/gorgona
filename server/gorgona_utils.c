@@ -15,6 +15,9 @@ All rights reserved. */
 #include <stdarg.h>
 #include <strings.h> 
 
+#define REPLAY_WINDOW_SIZE 50    /* Number of recent alerts to check for duplicates */
+#define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
+
 FILE *log_file = NULL;
 Recipient *recipients = NULL;
 int recipient_count = 0;
@@ -229,42 +232,94 @@ void remove_oldest_alert(Recipient *rec) {
     }
 }
 
-void add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
+/**
+ * Adds a new encrypted alert to the recipient's record.
+ * Includes Anti-Replay protection via staleness threshold and payload deduplication.
+ * Returns: 0 on success, -1 if stale, -2 if replay, -3 on error.
+ */
+int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd) {
+    
     Recipient *rec = find_recipient(pubkey_hash);
     if (!rec) rec = add_recipient(pubkey_hash);
-    if (!rec) return;
+    if (!rec) return -3; /* Memory error */
 
+    /* Find Client IP and Port for security logging */
+    const char *client_ip = NULL;
+    int client_port = 0;
+    for (int i = 0; i < max_clients; i++) {
+        if (subscribers[i].sock == client_fd) {
+            client_ip = subscribers[i].ip_address;
+            client_port = subscribers[i].port;
+            break;
+        }
+    }
+
+    time_t now = time(NULL);
+
+    /* --- ANTI-REPLAY LAYER 1: Staleness Check --- */
+    if (unlock_at < (now - STALE_THRESHOLD_SEC)) {
+        log_event("WARN", client_fd, client_ip, client_port, 
+                  "Rejected stale alert (unlock_at is %ld seconds behind)", (long)(now - unlock_at));
+        return -1; /* Код ошибки: Сообщение протухло */
+    }
+
+    size_t new_text_len;
+    unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
+    if (!decoded_text) return -3;
+
+    /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication --- */
+    int start_check = (rec->count > REPLAY_WINDOW_SIZE) ? (rec->count - REPLAY_WINDOW_SIZE) : 0;
+    for (int j = start_check; j < rec->count; j++) {
+        if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
+            if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
+                log_event("WARN", client_fd, client_ip, client_port, 
+                          "Replay attack detected: Duplicate binary payload found.");
+                free(decoded_text);
+                return -2; /* Код ошибки: Атака повтора */
+            }
+        }
+    }
+
+    /* --- HOUSEKEEPING: Cleanup expired or overflowed alerts --- */
     clean_expired_alerts(rec);
+    if (rec->count >= max_alerts) {
+        remove_oldest_alert(rec);
+    }
 
-    if (rec->count >= max_alerts) remove_oldest_alert(rec);
-
+    /* --- INITIALIZATION: Setup the new Alert structure --- */
     Alert *alert = &rec->alerts[rec->count];
     memset(alert, 0, sizeof(Alert));
     
-    alert->text = base64_decode(base64_text, &alert->text_len);
+    alert->text = decoded_text;
+    alert->text_len = new_text_len;
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     
-    size_t tag_len;
-    unsigned char *tag_raw = base64_decode(base64_tag, &tag_len);
-    if (tag_raw && tag_len == GCM_TAG_LEN) memcpy(alert->tag, tag_raw, GCM_TAG_LEN);
+    size_t tag_len_actual;
+    unsigned char *tag_raw = base64_decode(base64_tag, &tag_len_actual);
+    if (tag_raw && tag_len_actual == GCM_TAG_LEN) {
+        memcpy(alert->tag, tag_raw, GCM_TAG_LEN);
+    }
     free(tag_raw);
 
-    alert->create_at = time(NULL);
+    alert->create_at = now;
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->id = generate_snowflake_id();
     alert->active = 1;
 
+    /* --- PERSISTENCE --- */
     if (use_disk_db) {
         if (alert_db_save_alert(rec, alert) != 0) {
-            fprintf(stderr, "Failed to save alert via mmap\n");
+            log_event("ERROR", client_fd, client_ip, client_port, "Failed to persist alert via mmap");
         }
     } else {
         alert->is_mmaped = false;
     }
+
     rec->count++;
+    return 0;
 }
 
 

@@ -71,16 +71,27 @@ static void process_send(int i, char *buffer) {
     time_t unlock_at = atol(unlock_at_str);
     time_t expire_at = atol(expire_at_str);
 
-    /* Add alert to database */
-    add_alert(pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
+    /* Add alert to database and catch the return value */
+    int result = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
 
-    char *success_msg = "Alert added successfully";
-    enqueue_message(i, success_msg, strlen(success_msg));
-
-    /* Notify subscribers who are listening for this key */
-    Recipient *rec = find_recipient(pubkey_hash);
-    if (rec) {
-        notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
+    if (result == 0) {
+        char *success_msg = "Alert added successfully";
+        enqueue_message(i, success_msg, strlen(success_msg));
+        
+        /* Notify subscribers only on REAL success */
+        Recipient *rec = find_recipient(pubkey_hash);
+        if (rec) {
+            notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
+        }
+    } else if (result == -1) {
+        char *err = "Error: Stale alert (unlock_at time is too old)";
+        enqueue_message(i, err, strlen(err));
+    } else if (result == -2) {
+        char *err = "Error: Replay attack detected (duplicate payload)";
+        enqueue_message(i, err, strlen(err));
+    } else {
+        char *err = "Error: Failed to add alert";
+        enqueue_message(i, err, strlen(err));
     }
 
     free(pubkey_hash);
