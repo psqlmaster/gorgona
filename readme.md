@@ -474,7 +474,6 @@ graph TD
 
     O --> R[Rotate Logs & DB Vacuum]
 ```
-
 <details>
 <summary><b>Click to view detailed internal logic (Packet parsing, State machine, DB Sync)</b></summary>
 
@@ -571,9 +570,10 @@ graph TD
    |  - alert_db_sync(): Rebuild .alerts file (compact) -> remap mmap
    - Logging: log_event(level, ...)
       - If verbose (-v): Always print to stdout (ignore config filters)
-      - If log_level matches config (debug/info/error): Write to file```
-</details>
+      - If log_level matches config (debug/info/error): Write to file
 ```
+</details>
+
 ---
 
 ##### Future Plans
