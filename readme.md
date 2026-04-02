@@ -32,6 +32,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 ##### Features
 
 - **End-to-End Security**: Messages are encrypted using RSA-OAEP (key exchange) and AES-GCM (content). The server only handles encrypted blobs and never sees raw data.
+- **Distributed Active-Active Replication**: Built-in P2P protocol for real-time alert synchronization and historical state reconciliation (Mutual Sync) between multiple servers.
 - **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Messages unlock exactly at `unlock_at` and expire after `expire_at`.
 - **Anti-Replay Protection**: Integrated defense against network packet re-injection using staleness filters and sliding-window deduplication.
 - **Remote Command Execution (RCE)**: Use the `-e/--exec` flag to trigger system commands upon decryption. Supports background daemons (`-d`) with centralized logging via `gorgona_LOG_FILE`.
@@ -42,11 +43,11 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 ##### Advantages
 
+- **High Availability**: If one server goes down, messages are preserved and accessible via other replicated nodes.
 - **Uncompromised Security**: Messages remain confidential even if the server is breached.
 - **Versatile Use Cases**: Ideal for personal reminders, corporate alerts, whistleblower tools, or automated data releases.
-- **Scalable Architecture**: Simple TCP server handles multiple clients (default: 100, configurable), with potential for load balancing.
+- **Scalable Architecture**: P2P replication allows building a fault-tolerant network without a single point of failure.
 - **No Third-Party Reliance**: Operates locally or via direct client-server communication.
-- **Creative Applications**: Build time capsules, gamified messaging, or secure delayed backups.
 - **Flexible Storage Options**: Run in memory-only mode for high-speed, ephemeral operations or enable disk persistence for durability without losing alerts on server restarts.
 
 ##### Quick Start
@@ -73,7 +74,7 @@ cd gorgona
 
 Install dependencies (OpenSSL required):
 
-- On Debian/Ubuntu: `sudo apt install -y libssl-dev git gcc make`
+- On Debian/Ubuntu: `sudo apt update && sudo apt install -y libssl-dev git gcc make`
 - On Fedora: `sudo dnf install openssl-devel`
 - On REDOS: `sudo yum install openssl11 openssl11-devel`
 - On centos: `sudo yum install -y git gcc make pkgconfig check check-devel openssl-devel`
@@ -420,19 +421,18 @@ Edit `/etc/gorgona/gorgonad.conf`:
 
 ```ini
 [server]
-port = 7777                      # Listen port (default: 5555)
-max_alerts = 10000               # Max alerts stored per recipient key
-max_clients = 100                # Max simultaneous TCP connections
-max_message_size = 5             # Max message size in MB (default: 5)
-use_disk_db = false              # Enable persistent storage in /var/lib/gorgona/alerts/
-vacuum_threshold_percent = 25    # Auto-cleanup threshold for deleted/expired alerts
+port = 7777                      # Server port
+max_alerts = 10000               # Max alerts for one key
+max_clients = 100                # Max counts parallel clients
+max_log_size = 10                # MB (default: 10)
+log_level = info                 # info or error (default: info)
+max_message_size = 5             # MB (default: 5)
+use_disk_db = true               # Enable (true) or disable (false) persistent disk storage for alerts (default: false)
+vacuum_threshold_percent = 100   # Cleanup threshold %: higher reduces disk I/O, lower saves disk space (default: 25)
 
-# Logging levels:
-# error: Only critical errors.
-# info : Connections, disconnections, and status changes (Default).
-# debug: Full trace including raw command payloads and message metadata.
-log_level = info                 
-max_log_size = 10                # Log rotation limit in MB
+[replication]
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # sync_node_password
+peer = 64.188.70.158:7777        # Remote peer address to sync with
 ```
 
 > **Pro Tip: Debugging**
@@ -449,18 +449,23 @@ graph TD
     A[Start Server] --> B{Incoming Event}
     B -->|New Connection| C[Accept & Non-blocking Setup]
     B -->|Data Received| D{Protocol Sniffer}
+    B -->|Timer: 10s| REPL_MGR[Peer Connection Manager]
 
     D -->|First Byte < 32| E[Binary Mode: Parse Header & Payload]
-    D -->|First Byte >= 32| F[Text Mode: Handle Tabs/Whitespace & Commands]
+    D -->|First Byte >= 32| F[Text Mode: Handle Interactive Commands]
 
     E --> G{Command Dispatcher}
     F --> G
 
-    G -->|SEND| H{Anti-Replay Check}
+    G -->|AUTH / SYNC| REPL_LOGIC[P2P Reconciliation]
+    G -->|SEND / REPL| H{Security & Anti-Replay}
     G -->|LISTEN / SUBSCRIBE| I[Filter & Fetch Alerts]
 
-    H -->|Invalid: Stale or Duplicate| J[Queue Error Response]
     H -->|Valid| K[Add to DB & Notify Subscribers]
+    K -->|If new local| FORWARD[Broadcast to Peers]
+
+    REPL_LOGIC --> REPL_SYNC[Mutual History Reconciliation]
+    REPL_MGR -->|Reconnect| C
 
     I --> L[Queue Data/Success Msg]
     K --> L
@@ -471,8 +476,6 @@ graph TD
     B -->|Socket Writable| O[Process Outbound Queue]
     O --> P{Flag Set & Queue Empty?}
     P -->|Yes| Q[Graceful Socket Close]
-
-    O --> R[Rotate Logs & DB Vacuum]
 ```
 <details>
 <summary><b>Click to view detailed internal logic (Packet parsing, State machine, DB Sync)</b></summary>
