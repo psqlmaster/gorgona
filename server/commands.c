@@ -1,6 +1,8 @@
-/* BSD 3-Clause License
-Copyright (c) 2025, Alexander Shcheglov
-All rights reserved. */
+/* 
+* BSD 3-Clause License
+* Copyright (c) 2025, Alexander Shcheglov
+* All rights reserved. 
+*/
 
 #include "gorgona_utils.h"
 #include "commands.h"
@@ -13,7 +15,7 @@ All rights reserved. */
 
 /* Helpers for command processing */
 
-/**
+/*
  * Handles the "SEND|" command logic
  */
 static void process_send(int i, char *buffer) {
@@ -72,7 +74,8 @@ static void process_send(int i, char *buffer) {
     time_t expire_at = atol(expire_at_str);
 
     /* Add alert to database and catch the return value */
-    int result = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, base64_encrypted_key, base64_iv, base64_tag, sd);
+    int result = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, 
+                       base64_encrypted_key, base64_iv, base64_tag, sd, 0, 0); 
 
     if (result == 0) {
         char *success_msg = "Alert added successfully";
@@ -81,7 +84,10 @@ static void process_send(int i, char *buffer) {
         /* Notify subscribers only on REAL success */
         Recipient *rec = find_recipient(pubkey_hash);
         if (rec) {
-            notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
+            Alert *new_a = &rec->alerts[rec->count - 1];
+            notify_subscribers(pubkey_hash, new_a);
+            /* Рассылаем всем пирам, кроме того, кто прислал (если это был пир) */
+            broadcast_replication(pubkey_hash, new_a, sd);
         }
     } else if (result == -1) {
         char *err = "Error: Stale alert (unlock_at time is too old)";
@@ -98,7 +104,7 @@ static void process_send(int i, char *buffer) {
     free(rest);
 }
 
-/**
+/*
  * Handles the "LISTEN|" command logic
  */
 static void process_listen(int i, char *buffer) {
@@ -164,7 +170,7 @@ static void process_listen(int i, char *buffer) {
     free(rest);
 }
 
-/**
+/*
  * Handles the legacy "SUBSCRIBE " command logic
  */
 static void process_subscribe(int i, char *buffer) {
@@ -215,16 +221,166 @@ static void process_subscribe(int i, char *buffer) {
     free(rest);
 }
 
-/**
+/*
+ * Command processing AUTH|psk
+ * Called on the server side when a PIR client connects to it
+ */
+static void process_auth(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    char *psk = buffer + 5; 
+    trim_string(psk);
+
+    if (strcmp(psk, sync_psk) == 0) {
+        sub->type = SUB_TYPE_PEER;
+        sub->auth_state = AUTH_OK;
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer authenticated successfully");
+        
+        /* We confirm to peer that peer is authorized */
+        enqueue_message(i, "AUTH_SUCCESS", 12);
+
+        /* The SERVER now also requests the history from a peer that has connected.
+           This resolves the issue that occurs when a peer has accumulated data while offline and then connects to us. */
+        uint64_t my_max = get_max_alert_id();
+        char sync_req[64];
+        int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);
+        enqueue_message(i, sync_req, (size_t)len);
+
+    } else {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Peer failed authentication");
+        enqueue_message(i, "AUTH_FAILED", 11);
+        sub->close_after_send = true;
+    }
+}
+
+/*
+ * Handles the "REPL|" command.
+ * Used for receiving replicated alerts from peers.
+ * Preserves the original ID and creation timestamp.
+ */
+static void process_repl(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    if (sub->auth_state != AUTH_OK) {
+        enqueue_message(i, "Error: Peer not authorized", 26);
+        return;
+    }
+
+    char *rest = strdup(buffer + 5);
+    if (!rest) return;
+
+    char *id_str = strtok(rest, "|");
+    char *create_str = strtok(NULL, "|");
+    char *unlock_str = strtok(NULL, "|");
+    char *expire_str = strtok(NULL, "|");
+    char *hash_b64 = strtok(NULL, "|");
+    char *text_b64 = strtok(NULL, "|");
+    char *key_b64 = strtok(NULL, "|");
+    char *iv_b64 = strtok(NULL, "|");
+    char *tag_b64 = strtok(NULL, "|");
+
+    if (!tag_b64) {
+        free(rest);
+        return;
+    }
+
+    uint64_t original_id = strtoull(id_str, NULL, 10);
+    time_t create_at = (time_t)atol(create_str);
+    time_t unlock_at = (time_t)atol(unlock_str);
+    time_t expire_at = (time_t)atol(expire_str);
+
+    size_t h_len;
+    unsigned char *pubkey_hash = base64_decode(hash_b64, &h_len);
+
+    if (pubkey_hash && h_len == PUBKEY_HASH_LEN) {
+        /* REPL specific: pass original_id and create_at to prevent ID mutation */
+        int res = add_alert(pubkey_hash, unlock_at, expire_at, text_b64, 
+                            key_b64, iv_b64, tag_b64, sub->sock, original_id, create_at);
+        
+        if (res == 0) {
+            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                      "Saved replicated alert %" PRIu64, original_id);
+        }
+    }
+
+    if (pubkey_hash) free(pubkey_hash);
+    free(rest);
+}
+
+/*
+ * Обработка команды SYNC|last_id
+ * Пир просит прислать ему всё, что появилось после last_id
+ */
+static void process_sync(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    if (sub->auth_state != AUTH_OK) return;
+
+    uint64_t last_id = strtoull(buffer + 5, NULL, 10);
+    log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer requested sync from ID: %" PRIu64, last_id);
+
+    int count = 0;
+    for (int r = 0; r < recipient_count; r++) {
+        Recipient *rec = &recipients[r];
+        for (int a = 0; a < rec->count; a++) {
+            if (rec->alerts[a].id > last_id) {
+                send_alert_to_peer(i, rec->hash, &rec->alerts[a]);
+                count++;
+            }
+        }
+    }
+    log_event("INFO", sub->sock, sub->ip_address, sub->port, "Sent %d historical alerts to peer", count);
+}
+
+/*
  * THE DISPATCHER
  * Routes received messages to appropriate command handlers.
  */
 void handle_command(int sub_index, char *buffer) {
-    log_event("DEBUG", subscribers[sub_index].sock, subscribers[sub_index].ip_address, 
-              subscribers[sub_index].port, "Processing command payload: %s", buffer);
+    Subscriber *sub = &subscribers[sub_index];
+
+    /* 1. RESPONSES (Ответы других серверов - просто логируем и выходим) */
+    if (strcmp(buffer, "AUTH_SUCCESS") == 0) {
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed our authentication");
+        sub->auth_state = AUTH_OK;
+        
+        /* Сразу запрашиваем историю у этого пира */
+        uint64_t my_max = get_max_alert_id();
+        char sync_req[64];
+        int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);
+        enqueue_message(sub_index, sync_req, (size_t)len);
+        return; 
+    }
+    
+    if (strcmp(buffer, "AUTH_FAILED") == 0) {
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Remote peer rejected our authentication!");
+        return;
+    }
+
+    if (strncmp(buffer, "Error:", 6) == 0) {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Remote peer returned error: %s", buffer);
+        return; 
+    }
+
+    if (strncmp(buffer, "Alert added successfully", 24) == 0 || 
+        strncmp(buffer, "Subscribed to", 13) == 0 ||
+        strncmp(buffer, "Subscription updated", 20) == 0 ||
+        strncmp(buffer, "AUTH_SUCCESS", 12) == 0) {
+        return;
+    }
+
+    /* 2. COMMANDS (Парсинг входящих команд) */
+    log_event("DEBUG", sub->sock, sub->ip_address, sub->port, "Processing command: %s", buffer);
+
     if (strncmp(buffer, "SEND|", 5) == 0) {
         process_send(sub_index, buffer);
     } 
+    else if (strncmp(buffer, "REPL|", 5) == 0) {
+        process_repl(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "AUTH|", 5) == 0) {
+        process_auth(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "SYNC|", 5) == 0) {
+        process_sync(sub_index, buffer);
+    }
     else if (strncmp(buffer, "LISTEN|", 7) == 0) {
         process_listen(sub_index, buffer);
     } 
@@ -232,12 +388,9 @@ void handle_command(int sub_index, char *buffer) {
         process_subscribe(sub_index, buffer);
     } 
     else {
-        /* Unknown command in binary/message mode */
+        /* Неизвестный протокол - шлем ошибку только если это не ответ на наш запрос */
         char *error_msg = "Error: Unknown command";
         enqueue_message(sub_index, error_msg, strlen(error_msg));
-        
-        /* Log unknown command with context */
-        log_event("WARN", subscribers[sub_index].sock, subscribers[sub_index].ip_address, subscribers[sub_index].port, 
-                  "Unknown command received: %s", buffer);
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command received: %s", buffer);
     }
 }

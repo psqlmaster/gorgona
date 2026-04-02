@@ -22,6 +22,19 @@ All rights reserved. */
 #define MODE_NEW 6
 #define INITIAL_RECIPIENT_CAPACITY 16
 
+#define MAX_PEERS 8
+#define REPL_RING_SIZE 1000
+#define PEER_RECONNECT_INTERVAL 10
+
+/* Типы сущностей в массиве subscribers/client_sockets */
+#define SUB_TYPE_CLIENT 0
+#define SUB_TYPE_PEER   1
+
+/* Состояния рукопожатия (Handshake) */
+#define AUTH_NONE       0
+#define AUTH_SENT       1
+#define AUTH_OK         2
+
 extern int max_alerts;
 extern int vacuum_threshold; 
 
@@ -74,6 +87,9 @@ typedef struct {
     char pubkey_hash[64]; 
     int mode; 
     time_t connect_time;
+    int type;              /* SUB_TYPE_CLIENT или SUB_TYPE_PEER */
+    int auth_state;        /* Состояние проверки PSK */
+    uint64_t last_repl_id; /* Последний ID, который подтвердил этот пир */
     OutBuffer *out_head;
     OutBuffer *out_tail;
     enum { READ_LEN, READ_MSG } read_state;
@@ -82,6 +98,22 @@ typedef struct {
     size_t in_pos;
     bool close_after_send;
 } Subscriber;
+
+typedef struct {
+    char ip[INET_ADDRSTRLEN];
+    int port;
+    int sd;             /* Дескриптор исходящего соединения */
+    time_t last_try;    /* Время последней попытки реконнекта */
+    bool active;
+} PeerConfig;
+
+/* Элемент лога репликации для кольцевого буфера */
+typedef struct {
+    uint64_t id;
+    unsigned char pubkey_hash[PUBKEY_HASH_LEN];
+    /* Мы храним только ID и хеш, чтобы найти Alert в основной памяти/mmap 
+       и переотправить его опоздавшему пиру */
+} ReplLogEntry;
 
 /* Global variables */
 extern FILE *log_file;
@@ -97,6 +129,12 @@ extern char log_level[32];
 extern size_t max_message_size;
 extern int verbose;
 extern int use_disk_db;
+/* Глобальные переменные репликации */
+extern PeerConfig remote_peers[MAX_PEERS];
+extern int remote_peer_count;
+extern char sync_psk[64];
+extern ReplLogEntry repl_ring[REPL_RING_SIZE];
+extern int repl_ring_head;
 
 /* Function declarations */
 void trim_string(char *str);
@@ -107,8 +145,10 @@ Recipient *find_recipient(const unsigned char *hash);
 Recipient *add_recipient(const unsigned char *hash);
 void clean_expired_alerts(Recipient *rec);
 void remove_oldest_alert(Recipient *rec);
+/* gorgona_utils.h */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
-               char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd);
+               char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
+               int client_fd, uint64_t forced_id, time_t forced_create_at);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
 void send_current_alerts(int sub_index, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
@@ -134,5 +174,13 @@ void free_out_queue(int sub_index);
 
 /* log_event */
 void log_event(const char *level, int fd, const char *ip, int port, const char *fmt, ...);
+
+/* Repl */
+void init_replication();
+void add_to_repl_ring(uint64_t id, const unsigned char *hash);
+void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd);
+void try_connect_peers();
+uint64_t get_max_alert_id();
+void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert);
 
 #endif

@@ -8,6 +8,7 @@
 #define DEFAULT_LOG_LEVEL "info" 
 #define DEFAULT_MAX_MESSAGE_SIZE (5 * 1024 * 1024) /* 5 MB by default */
 #define DEFAULT_VACUUM_THRESHOLD 25 /* 25% by default */
+#define DEFAULT_SYNC_PSK "change-me-immediately"
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
                  char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold);
 #endif

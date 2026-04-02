@@ -2,6 +2,7 @@
 Copyright (c) 2025, Alexander Shcheglov
 All rights reserved. */
 
+#include "commands.h"
 #include "gorgona_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,7 @@ All rights reserved. */
 #include <time.h>
 #include <stdbool.h>
 #include <fcntl.h>
-#include "commands.h"
+#include <fcntl.h>
 
 extern int verbose;
 extern FILE *log_file;
@@ -163,6 +164,67 @@ void free_out_queue(int sub_index) {
 }
 
 /**
+ * Пытается подключиться к пирам, которые сейчас не активны.
+ */
+void try_connect_peers() {
+    static time_t last_check = 0;
+    time_t now = time(NULL);
+    if (now - last_check < PEER_RECONNECT_INTERVAL) return;
+    last_check = now;
+
+    for (int p = 0; p < remote_peer_count; p++) {
+        if (remote_peers[p].active) continue;
+
+        int sd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sd < 0) continue;
+
+        /* Делаем сокет неблокирующим сразу */
+        fcntl(sd, F_SETFL, O_NONBLOCK);
+
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(remote_peers[p].port);
+        inet_pton(AF_INET, remote_peers[p].ip, &addr.sin_addr);
+
+        log_event("DEBUG", -1, remote_peers[p].ip, remote_peers[p].port, "Attempting to connect to peer...");
+        
+        if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            if (errno != EINPROGRESS) {
+                close(sd);
+                continue;
+            }
+        }
+
+        /* 
+           Важный момент: так как мы используем общую структуру Subscriber для всех, 
+           мы должны найти свободный слот в массиве клиентов и поместить туда этот сокет.
+        */
+        for (int i = 0; i < max_clients; i++) {
+            if (client_sockets[i] == 0) {
+                client_sockets[i] = sd;
+                Subscriber *sub = &subscribers[i];
+                sub->sock = sd;
+                strncpy(sub->ip_address, remote_peers[p].ip, INET_ADDRSTRLEN);
+                sub->port = remote_peers[p].port;
+                sub->type = SUB_TYPE_PEER; // Метка, что это ПИР, а не клиент
+                sub->auth_state = AUTH_NONE;
+                sub->connect_time = now;
+                
+                /* Сразу отправляем приветствие с PSK для авторизации */
+                char auth_msg[128];
+                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s", sync_psk);
+                enqueue_message(i, auth_msg, (size_t)auth_len);
+                sub->auth_state = AUTH_SENT;
+
+                remote_peers[p].active = true;
+                remote_peers[p].sd = sd;
+                break;
+            }
+        }
+    }
+}
+
+/**
  * Main server loop using select().
  */
 void run_server(int server_fd) {
@@ -196,7 +258,13 @@ void run_server(int server_fd) {
             }
         }
 
-        activity = select(max_sd + 1, &readfds, &writefds, NULL, NULL);
+        struct timeval timeout;
+        timeout.tv_sec = 5;  // Просыпаться каждую секунду
+        timeout.tv_usec = 0;
+
+        try_connect_peers();
+
+        activity = select(max_sd + 1, &readfds, &writefds, NULL, &timeout);  
 
         if ((activity < 0) && (errno != EINTR)) {
             log_event("ERROR", -1, NULL, 0, "Select error: %s", strerror(errno));

@@ -31,6 +31,11 @@ char log_level[32] = DEFAULT_LOG_LEVEL;
 size_t max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
 int use_disk_db = 0;
 static time_t last_rotation_check = 0;
+ReplLogEntry repl_ring[REPL_RING_SIZE];
+int repl_ring_head = 0;
+PeerConfig remote_peers[MAX_PEERS];
+int remote_peer_count = 0;
+char sync_psk[64] = DEFAULT_SYNC_PSK;
 
 /**
  * Main logging function.
@@ -234,17 +239,37 @@ void remove_oldest_alert(Recipient *rec) {
 
 /**
  * Adds a new encrypted alert to the recipient's record.
- * Includes Anti-Replay protection via staleness threshold and payload deduplication.
- * Returns: 0 on success, -1 if stale, -2 if replay, -3 on error.
+ * 
+ * Supports both locally generated alerts (from clients) and replicated alerts (from peers).
+ * Includes Anti-Replay protection via staleness threshold and binary payload deduplication.
+ * 
+ * @param pubkey_hash Binary hash of the recipient's public key.
+ * @param unlock_at Timestamp when the alert becomes decryptable.
+ * @param expire_at Timestamp when the alert should be deleted.
+ * @param base64_text Base64 encoded encrypted message body.
+ * @param base64_encrypted_key Base64 encoded encrypted AES key.
+ * @param base64_iv Base64 encoded Initialization Vector.
+ * @param base64_tag Base64 encoded GCM authentication tag.
+ * @param client_fd Socket descriptor of the sender.
+ * @param forced_id Original Snowflake ID (used for replication, 0 for new local alerts).
+ * @param forced_create_at Original creation timestamp (used for replication, 0 for new local alerts).
+ * 
+ * @return 0 on success, -1 if stale, -2 if replay detected, -3 on memory/logic error.
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
-               char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, int client_fd) {
+               char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
+               int client_fd, uint64_t forced_id, time_t forced_create_at) {
     
+    /* 1. Ensure the recipient exists in memory; create if necessary */
     Recipient *rec = find_recipient(pubkey_hash);
-    if (!rec) rec = add_recipient(pubkey_hash);
-    if (!rec) return -3; /* Memory error */
+    if (!rec) {
+        rec = add_recipient(pubkey_hash);
+    }
+    if (!rec) {
+        return -3; /* Critical memory allocation failure */
+    }
 
-    /* Find Client IP and Port for security logging */
+    /* 2. Identify sender metadata for security logging context */
     const char *client_ip = NULL;
     int client_port = 0;
     for (int i = 0; i < max_clients; i++) {
@@ -257,18 +282,24 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     time_t now = time(NULL);
 
-    /* --- ANTI-REPLAY LAYER 1: Staleness Check --- */
-    if (unlock_at < (now - STALE_THRESHOLD_SEC)) {
+    /* --- ANTI-REPLAY LAYER 1: Staleness Check --- 
+       Reject alerts that are too far in the past to prevent processing of old captures. */
+    if (forced_id == 0 && unlock_at < (now - STALE_THRESHOLD_SEC)) {
         log_event("WARN", client_fd, client_ip, client_port, 
                   "Rejected stale alert (unlock_at is %ld seconds behind)", (long)(now - unlock_at));
-        return -1; /* Код ошибки: Сообщение протухло */
+        return -1;
     }
 
+    /* 3. Decode the primary payload for deduplication check 
+       If the data is being replicated (forced_id > 0), we trust it, even if it is old. */
     size_t new_text_len;
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
-    if (!decoded_text) return -3;
+    if (!decoded_text) {
+        return -3;
+    }
 
-    /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication --- */
+    /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication --- 
+       Check the most recent alerts for this recipient to catch duplicate binary payloads. */
     int start_check = (rec->count > REPLAY_WINDOW_SIZE) ? (rec->count - REPLAY_WINDOW_SIZE) : 0;
     for (int j = start_check; j < rec->count; j++) {
         if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
@@ -276,18 +307,20 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
                 free(decoded_text);
-                return -2; /* Код ошибки: Атака повтора */
+                return -2;
             }
         }
     }
 
-    /* --- HOUSEKEEPING: Cleanup expired or overflowed alerts --- */
+    /* --- HOUSEKEEPING --- 
+       Remove expired alerts and enforce capacity limits before adding new data. */
     clean_expired_alerts(rec);
     if (rec->count >= max_alerts) {
         remove_oldest_alert(rec);
     }
 
-    /* --- INITIALIZATION: Setup the new Alert structure --- */
+    /* --- INITIALIZATION --- 
+       Prepare the Alert structure in the recipient's alert array. */
     Alert *alert = &rec->alerts[rec->count];
     memset(alert, 0, sizeof(Alert));
     
@@ -296,6 +329,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     
+    /* Handle GCM Tag decoding */
     size_t tag_len_actual;
     unsigned char *tag_raw = base64_decode(base64_tag, &tag_len_actual);
     if (tag_raw && tag_len_actual == GCM_TAG_LEN) {
@@ -303,22 +337,41 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
     free(tag_raw);
 
-    alert->create_at = now;
+    /* --- IDENTITY ASSIGNMENT --- 
+       If forced_id is provided, this alert comes from a peer (Replication). 
+       Otherwise, it is a new local alert that needs an ID and must be queued for replication. */
+    if (forced_id > 0) {
+        alert->id = forced_id;
+        alert->create_at = forced_create_at;
+        /* Note: We DO NOT call add_to_repl_ring here to prevent infinite gossip loops */
+    } else {
+        alert->id = generate_snowflake_id();
+        alert->create_at = now;
+        /* Queue this new local alert for replication to other peers */
+        add_to_repl_ring(alert->id, pubkey_hash);
+    }
+
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
-    alert->id = generate_snowflake_id();
     alert->active = 1;
 
-    /* --- PERSISTENCE --- */
+    /* --- PERSISTENCE --- 
+       Write the alert to the disk-backed database if enabled. */
     if (use_disk_db) {
         if (alert_db_save_alert(rec, alert) != 0) {
             log_event("ERROR", client_fd, client_ip, client_port, "Failed to persist alert via mmap");
+            /* Continue even if persistence fails, as it is still in memory */
         }
     } else {
         alert->is_mmaped = false;
     }
 
     rec->count++;
+    
+    log_event("DEBUG", client_fd, client_ip, client_port, 
+              "Alert %" PRIu64 " added to recipient [Hash: %.16s...]", 
+              alert->id, base64_text);
+
     return 0;
 }
 
@@ -470,4 +523,104 @@ int alert_cmp_asc(const void *a, const void *b) {
 
 int alert_cmp_desc(const void *a, const void *b) {
     return alert_cmp_asc(b, a);
+}
+
+/**
+ * Добавляет запись о новом алерте в кольцевой лог.
+ */
+void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
+    repl_ring[repl_ring_head].id = id;
+    memcpy(repl_ring[repl_ring_head].pubkey_hash, hash, PUBKEY_HASH_LEN);
+    
+    repl_ring_head = (repl_ring_head + 1) % REPL_RING_SIZE;
+}
+
+/**
+ * Рассылает новый алерт всем подключенным и авторизованным пирам.
+ */
+void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
+    char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
+    char *bt = base64_encode(alert->text, alert->text_len);
+    char *bk = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
+    char *bi = base64_encode(alert->iv, alert->iv_len);
+    char *bg = base64_encode(alert->tag, GCM_TAG_LEN);
+
+    if (!ph_b64 || !bt || !bk || !bi || !bg) {
+        free(ph_b64); free(bt); free(bk); free(bi); free(bg);
+        return;
+    }
+
+    // Используем динамическую память для сообщения репликации
+    size_t msg_capacity = max_message_size + 2048; 
+    char *repl_msg = malloc(msg_capacity);
+    if (!repl_msg) {
+        free(ph_b64); free(bt); free(bk); free(bi); free(bg);
+        return;
+    }
+
+    int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%s|%s|%s|%s|%s",
+                       alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
+                       ph_b64, bt, bk, bi, bg);
+
+    if (len > 0) {
+        for (int i = 0; i < max_clients; i++) {
+            /* Рассылаем только авторизованным ПИРАМ и не отправляем назад тому, от кого получили */
+            if (client_sockets[i] > 0 && 
+                subscribers[i].type == SUB_TYPE_PEER && 
+                subscribers[i].auth_state == AUTH_OK &&
+                client_sockets[i] != exclude_fd) {
+                
+                enqueue_message(i, repl_msg, (size_t)len);
+            }
+        }
+    }
+
+    free(repl_msg);
+    free(ph_b64); free(bt); free(bk); free(bi); free(bg);
+}
+
+/**
+ * Находит самый большой Snowflake ID во всей базе данных.
+ * Возвращает 0, если база пуста.
+ */
+uint64_t get_max_alert_id() {
+    uint64_t max_id = 0;
+    for (int r = 0; r < recipient_count; r++) {
+        for (int i = 0; i < recipients[r].count; i++) {
+            if (recipients[r].alerts[i].id > max_id) {
+                max_id = recipients[r].alerts[i].id;
+            }
+        }
+    }
+    return max_id;
+}
+
+/**
+ * Отправляет конкретный алерт конкретному пиру.
+ * (Выносим логику из broadcast_replication в отдельную функцию)
+ */
+void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert) {
+    char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
+    char *bt = base64_encode(alert->text, alert->text_len);
+    char *bk = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
+    char *bi = base64_encode(alert->iv, alert->iv_len);
+    char *bg = base64_encode(alert->tag, GCM_TAG_LEN);
+
+    if (!ph_b64 || !bt || !bk || !bi || !bg) {
+        free(ph_b64); free(bt); free(bk); free(bi); free(bg);
+        return;
+    }
+
+    size_t msg_capacity = max_message_size + 2048;
+    char *repl_msg = malloc(msg_capacity);
+    if (repl_msg) {
+        int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%s|%s|%s|%s|%s",
+                           alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
+                           ph_b64, bt, bk, bi, bg);
+        if (len > 0) {
+            enqueue_message(sub_index, repl_msg, (size_t)len);
+        }
+        free(repl_msg);
+    }
+    free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }
