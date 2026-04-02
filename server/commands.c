@@ -296,8 +296,9 @@ static void process_repl(int i, char *buffer) {
                             key_b64, iv_b64, tag_b64, sub->sock, original_id, create_at);
         
         if (res == 0) {
-            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                      "Saved replicated alert %" PRIu64, original_id);
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                      "Alert %" PRIu64 " replicated (Recipient: %.12s...)", 
+                      original_id, hash_b64);
         }
     }
 
@@ -305,28 +306,43 @@ static void process_repl(int i, char *buffer) {
     free(rest);
 }
 
-/*
- * Обработка команды SYNC|last_id
- * Пир просит прислать ему всё, что появилось после last_id
+/**
+ * Handles the "SYNC|last_id" command.
+ * The remote peer requests all historical alerts created after the specified last_id.
+ * This ensures that a newly connected or previously offline node can catch up 
+ * with the current state of the cluster.
  */
 static void process_sync(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    if (sub->auth_state != AUTH_OK) return;
+    
+    /* Ensure the peer is authenticated before processing synchronization */
+    if (sub->auth_state != AUTH_OK) {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unauthorized sync request ignored");
+        return;
+    }
 
+    /* Parse the last known ID provided by the peer */
     uint64_t last_id = strtoull(buffer + 5, NULL, 10);
-    log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer requested sync from ID: %" PRIu64, last_id);
+    log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+              "Peer requested historical sync starting from ID: %" PRIu64, last_id);
 
     int count = 0;
+
+    /* Iterate through all recipients and their alert records */
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         for (int a = 0; a < rec->count; a++) {
+            /* Only send alerts that are newer than the peer's last known ID */
             if (rec->alerts[a].id > last_id) {
                 send_alert_to_peer(i, rec->hash, &rec->alerts[a]);
                 count++;
             }
         }
     }
-    log_event("INFO", sub->sock, sub->ip_address, sub->port, "Sent %d historical alerts to peer", count);
+
+    /* Log the completion of the synchronization task */
+    log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+              "Sync completed: %d historical alerts transferred to peer", count);
 }
 
 /*
