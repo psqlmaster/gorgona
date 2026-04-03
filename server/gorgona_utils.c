@@ -304,6 +304,20 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     for (int j = start_check; j < rec->count; j++) {
         if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
+                
+                /* ИСПРАВЛЕНИЕ ЛОГИКИ ДЛЯ РЕПЛИКАЦИИ */
+                if (forced_id > 0) {
+                    /* Это дубликат, пришедший через другой узел сети или второе соединение.
+                       В P2P это нормальная ситуация (idempotency). Просто выходим без ошибки. */
+                    if (verbose) {
+                        log_event("DEBUG", client_fd, client_ip, client_port, 
+                                  "Ignored duplicate replicated alert %" PRIu64, forced_id);
+                    }
+                    free(decoded_text);
+                    return 0; // Возвращаем успех, так как данные у нас уже есть
+                }
+
+                /* Если же это НОВОЕ сообщение (SEND) от клиента — тогда это атака повтора */
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
                 free(decoded_text);
