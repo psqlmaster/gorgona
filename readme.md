@@ -23,13 +23,13 @@
 - [More examples](#more-examples)
 
 ---
-##### Introduction
+#### Introduction
 
 `gorgona` is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, `gorgona` ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing, telemetry transport.).
 
 The project includes a client (`gorgona`) for key generation, sending messages, and listening for alerts, and a server (`gorgonad`) for securely storing and delivering them.
 
-##### Features
+#### Features
 
 - **End-to-End Security**: Messages are encrypted using RSA-OAEP (key exchange) and AES-GCM (content). The server only handles encrypted blobs and never sees raw data.
 - **Distributed Active-Active Replication**: Built-in P2P protocol for real-time alert synchronization and historical state reconciliation (Mutual Sync) between multiple servers.
@@ -41,7 +41,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Efficient Storage**: Automatic ring-buffer management and "Vacuum" auto-compacting to keep the database lean and fast.
 - **Fast & Lightweight**: Zero-dependency implementation in pure C with OpenSSL; designed for high-concurrency and minimal resource footprint.
 
-##### Advantages
+#### Advantages
 
 - **High Availability**: If one server goes down, messages are preserved and accessible via other replicated nodes.
 - **Uncompromised Security**: Messages remain confidential even if the server is breached.
@@ -49,15 +49,15 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Scalable Architecture**: P2P replication allows building a fault-tolerant network without a single point of failure.
 - **No Third-Party Reliance**: Operates locally or via direct client-server communication.
 - **Flexible Storage Options**: Run in memory-only mode for high-speed, ephemeral operations or enable disk persistence for durability without losing alerts on server restarts.
-##### Database & Cluster Administration (PostgreSQL, Greenplum)
 
-Gorgona is uniquely suited for managing distributed database systems like **Greenplum** or large-scale **PostgreSQL** farms. It provides a secure, time-locked channel to orchestrate operations across multiple segment nodes simultaneously.
+#### Database & Cluster Administration (PostgreSQL, Greenplum)
 
+- Gorgona is uniquely suited for managing distributed database systems like **Greenplum** or large-scale **PostgreSQL** farms. It provides a secure, time-locked channel to orchestrate operations across multiple segment nodes simultaneously.
 - **Orchestration**: Restart nodes, trigger backups (`pg_dump`), or rotate logs on 100+ servers with a single encrypted command.
 - **Security**: Commands are E2E encrypted; even if your monitoring server is compromised, the attacker cannot forge commands without the private RSA keys.
 - **Survivability**: Thanks to P2P replication, management commands reach all nodes even if some network segments are unstable.
 
-##### Quick Start
+#### Quick Start
 
 ```bash
 git clone --depth 1 https://github.com/psqlmaster/gorgona.git && \
@@ -70,7 +70,7 @@ sudo cp ./gorgona /usr/bin && \
 gorgona listen last 4 RWTPQzuhzBw=
 ```
 
-##### Installation
+#### Installation
 
 Clone the repository:
 
@@ -107,14 +107,14 @@ sudo dpkg -i ./gorgona_<version>_amd64.deb
 sudo dpkg -i ./gorgonad_<version>_amd64.deb
 ```
 
-##### Usage
+#### Usage
 
 ```bash
 gorgona [-v|--verbose] [-e|--exec] [-d|--daemon-exec] [-h|--help] [-V|--version] <command> [arguments]
 ```
 ---
 
-##### Anti-Replay Protection
+#### Anti-Replay Protection
 
 Gorgona includes a dual-layer defense mechanism to prevent attackers from capturing and re-sending encrypted command packets:
 
@@ -125,7 +125,7 @@ If an attack is detected, the server logs the event as a `WARN` (including clien
 `Error: Replay attack detected (duplicate payload)`
 
 ---
-##### Flags
+#### Flags
 
 - `-v, --verbose`: Enables verbose output for debugging.
 - `-e, --exec`: For 'listen' command: execute messages as system commands (requires `pubkey_hash_b64`).
@@ -139,7 +139,7 @@ If an attack is detected, the server logs the event as a `WARN` (including clien
 
 > Note: Flags `-v` and `-e` can be combined (e.g., `-ve`) for verbose output during command execution.
 
-##### Generate Keys
+#### Generate Keys
 
 ```bash
 sudo gorgona genkeys
@@ -157,7 +157,7 @@ To decrypt messages, the recipient must have the sender’s `hash.key` private k
 ls -la /etc/gorgona
 ```
 
-### Send Message 
+#### Send Message 
 - (datetime UTC) or date -u '+%Y-%m-%d %H:%M:%S'
 
 ```bash
@@ -176,7 +176,7 @@ gorgona send "$(date -u -d '+30 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+
 cat message.txt | gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" - "RWTPQzuhzBw=.pub"
 ```
 
-### Listen for Messages
+#### Listen for Messages
 
 ```bash
 gorgona listen <mode> [<count>] [pubkey_hash_b64]
@@ -227,7 +227,7 @@ echo "info" | nc 64.188.70.158 7777
 # Max clients: 100
 ```
 
-##### Run Server
+#### Run Server
 
 ```bash
 gorgonad [-v|--verbose] [-h|--help] [-V|--version]
@@ -242,7 +242,7 @@ strace -e network gorgona -v listen new RWTPQzuhzBw=
 
 The server reads settings from `/etc/gorgona/gorgonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
 
-##### Configuration
+#### Configuration
 
 ##### Client Configuration (Variant A)
 
@@ -420,7 +420,7 @@ gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%
 gorgona -ed listen new RWTPQzuhzBw=
 ```
 
-### Server Configuration
+#### Server Configuration
 
 Edit `/etc/gorgona/gorgonad.conf`:
 
@@ -618,7 +618,7 @@ graph TD
 </details>
 
 ---
-##### Future Plans & Evolution
+#### Future Plans & Evolution
 
 `gorgona` has evolved from a standalone server into a **fully decentralized, distributed system**. The current version features a custom, zero-dependency Active-Active P2P replication engine with mutual state reconciliation and automatic self-healing connections.
 
@@ -632,7 +632,7 @@ graph TD
 - **Observability**: A built-in Prometheus exporter or a lightweight web-based dashboard for real-time cluster health and replication monitoring.
 - **Consensus Hardening**: Exploring lightweight versions of the **Raft** or **Paxos** algorithms for advanced cluster-wide configuration management.
 
-##### Suggestions and contributions are welcome!
+#### Suggestions and contributions are welcome!
 ---
 
 ##### Testing
@@ -645,7 +645,7 @@ Watch the quick 30‑minute demo on YouTube: https://youtu.be/3JodTvfr88c
 make clean && make test
 ```
 
-##### More examples
+#### More examples
 ```bash
 # send
 lsblk | gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" - "RWTPQzuhzBw=.pub"
