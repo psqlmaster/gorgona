@@ -9,6 +9,7 @@ All rights reserved. */
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <errno.h>
 #include <ctype.h>
@@ -26,6 +27,55 @@ extern int client_sockets[];
 extern Subscriber subscribers[];
 
 static time_t server_start_time = 0;
+
+/**
+ * Настраивает TCP Keepalive для поддержания стабильности соединения
+ * и обнаружения "мертвых" узлов.
+ */
+static void set_tcp_keepalive(int fd) {
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
+#ifdef __linux__
+    int idle = 30;     // Начинать проверку через 30 сек простоя
+    int interval = 5;  // Интервал между пробами 5 сек
+    int keep_count = 3; // 3 неудачных пробы = обрыв
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
+#endif
+}
+
+/**
+ * Полная очистка состояния клиента/пира при отключении.
+ */
+static void cleanup_subscriber(int index) {
+    int sd = client_sockets[index];
+    if (sd <= 0) return;
+
+    /* Если это был исходящий пир, помечаем его в глобальном списке как неактивного */
+    for (int p = 0; p < remote_peer_count; p++) {
+        if (remote_peers[p].sd == sd) {
+            remote_peers[p].active = false;
+            remote_peers[p].sd = -1;
+            break;
+        }
+    }
+
+    close(sd);
+    client_sockets[index] = 0;
+    subscribers[index].sock = 0;
+    subscribers[index].type = SUB_TYPE_CLIENT;
+    subscribers[index].auth_state = AUTH_NONE;
+    subscribers[index].last_repl_id = 0;
+    subscribers[index].mode = 0;
+    subscribers[index].pubkey_hash[0] = '\0';
+    subscribers[index].close_after_send = false;
+    
+    free_out_queue(index);
+    if (subscribers[index].in_buffer) free(subscribers[index].in_buffer);
+    subscribers[index].in_buffer = NULL;
+    subscribers[index].in_pos = 0;
+}
 
 /**
  * Queue a binary message (length + payload) for sending.
@@ -179,15 +229,12 @@ void try_connect_peers() {
         if (sd < 0) continue;
 
         /* Делаем сокет неблокирующим сразу */
+        set_tcp_keepalive(sd);
         fcntl(sd, F_SETFL, O_NONBLOCK);
 
-        struct sockaddr_in addr;
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(remote_peers[p].port);
+        struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(remote_peers[p].port) };
         inet_pton(AF_INET, remote_peers[p].ip, &addr.sin_addr);
 
-        log_event("DEBUG", -1, remote_peers[p].ip, remote_peers[p].port, "Attempting to connect to peer...");
-        
         if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno != EINPROGRESS) {
                 close(sd);
@@ -202,22 +249,20 @@ void try_connect_peers() {
         for (int i = 0; i < max_clients; i++) {
             if (client_sockets[i] == 0) {
                 client_sockets[i] = sd;
-                Subscriber *sub = &subscribers[i];
-                sub->sock = sd;
-                strncpy(sub->ip_address, remote_peers[p].ip, INET_ADDRSTRLEN);
-                sub->port = remote_peers[p].port;
-                sub->type = SUB_TYPE_PEER; // Метка, что это ПИР, а не клиент
-                sub->auth_state = AUTH_NONE;
-                sub->connect_time = now;
+                subscribers[i].sock = sd;
+                strncpy(subscribers[i].ip_address, remote_peers[p].ip, INET_ADDRSTRLEN);
+                subscribers[i].port = remote_peers[p].port;
+                subscribers[i].type = SUB_TYPE_PEER;
+                subscribers[i].auth_state = AUTH_NONE; // Сбрасываем до AUTH_SENT при отправке
                 
-                /* Сразу отправляем приветствие с PSK для авторизации */
                 char auth_msg[128];
                 int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s", sync_psk);
                 enqueue_message(i, auth_msg, (size_t)auth_len);
-                sub->auth_state = AUTH_SENT;
+                subscribers[i].auth_state = AUTH_SENT;
 
                 remote_peers[p].active = true;
                 remote_peers[p].sd = sd;
+                log_event("INFO", sd, remote_peers[p].ip, remote_peers[p].port, "Replication: Connecting to peer...");
                 break;
             }
         }
@@ -292,6 +337,10 @@ void run_server(int server_fd) {
                     subscribers[i].sock = new_socket;
                     inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
                     subscribers[i].port = ntohs(address.sin_port);
+                    subscribers[i].type = SUB_TYPE_CLIENT; 
+                    subscribers[i].auth_state = AUTH_NONE;
+                    subscribers[i].last_repl_id = 0;
+                    subscribers[i].close_after_send = false;
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;
@@ -342,7 +391,7 @@ void run_server(int server_fd) {
                         sub->in_buffer = malloc(max_message_size + 1);
                         if (!sub->in_buffer) {
                             log_event("ERROR", sd, sub->ip_address, sub->port, "Memory allocation failed");
-                            close(sd); client_sockets[i] = 0;
+                            cleanup_subscriber(i); 
                             return;
                         }
                         sub->in_pos = 0;
@@ -393,7 +442,7 @@ void run_server(int server_fd) {
                                 char *new_binary_buf = malloc(sub->expected_msg_len + 1);
                                 if (!new_binary_buf) {
                                     log_event("ERROR", sd, sub->ip_address, sub->port, "Allocation failed for payload");
-                                    close(sd); client_sockets[i] = 0; 
+                                    cleanup_subscriber(i);
                                     return; 
                                 }
 
@@ -466,15 +515,15 @@ void run_server(int server_fd) {
                         }
                     } else if (valread == 0) {
                         /* Connection closed by client while idle */
-                        log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected");
-                        close(sd); client_sockets[i] = 0;
+                        log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected") ;
+                        cleanup_subscriber(i); 
                         if (sub->in_buffer) free(sub->in_buffer);
                         sub->in_buffer = NULL; sub->in_pos = 0;
                         continue;
                     } else {
                         if (errno != EAGAIN && errno != EWOULDBLOCK) {
                             log_event("ERROR", sd, sub->ip_address, sub->port, "Read error: %s", strerror(errno));
-                            close(sd); client_sockets[i] = 0;
+                            cleanup_subscriber(i); 
                         }
                     }
                 } 
@@ -495,14 +544,14 @@ void run_server(int server_fd) {
                         }
                     } else if (valread == 0) {
                         log_event("INFO", sd, sub->ip_address, sub->port, "Disconnected during payload transmission");
-                        close(sd); client_sockets[i] = 0;
+                        cleanup_subscriber(i); 
                         if (sub->in_buffer) free(sub->in_buffer);
                         sub->in_buffer = NULL; sub->in_pos = 0;
                         continue;
                     } else {
                         if (errno != EAGAIN && errno != EWOULDBLOCK) {
                             log_event("ERROR", sd, sub->ip_address, sub->port, "Payload read error: %s", strerror(errno));
-                            close(sd); client_sockets[i] = 0;
+                            cleanup_subscriber(i); 
                         }
                     }
                 }
