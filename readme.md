@@ -611,10 +611,22 @@ graph TD
 </details>
 
 ---
+##### Future Plans & Evolution
 
-##### Future Plans
+`gorgona` has evolved from a standalone server into a **fully decentralized, distributed system**. The current version features a custom, zero-dependency Active-Active P2P replication engine with mutual state reconciliation and automatic self-healing connections.
 
-`gorgona` works efficiently with a single server. Future plans include server mirroring (replication) without external services (Redis, PostgreSQL) for speed, decentralization, and reliability. Possible approaches: gossip protocol for peer-to-peer synchronization or lightweight consensus (e.g., adapted Raft). Also considering blockchain-inspired ledgers (without mining) or CRDT for seamless sync. Suggestions welcome!
+**Current Milestones Achieved:**
+- **Decentralized Sync**: Multi-node synchronization without external databases (No Redis/PostgreSQL required).
+- **Mutual History Reconciliation**: Automatic "catch-up" logic for nodes returning from offline state.
+- **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
+
+**Next Frontiers:**
+- **High-Concurrency Architecture**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support tens of thousands of simultaneous connections per node.
+- **Observability**: A built-in Prometheus exporter or a lightweight web-based dashboard for real-time cluster health and replication monitoring.
+- **Consensus Hardening**: Exploring lightweight versions of the **Raft** or **Paxos** algorithms for advanced cluster-wide configuration management.
+
+##### Suggestions and contributions are welcome!
+---
 
 ##### Testing
 
