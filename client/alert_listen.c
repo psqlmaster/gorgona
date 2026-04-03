@@ -309,104 +309,141 @@ cleanup:
     free(tag_dec);
 }
 
-/* Parses server response and processes message */
-void parse_response(const char *response, const char *expected_pubkey_hash_b64, int verbose, int execute, Config *config, int daemon_exec_flag) {
-    if (strncmp(response, "ALERT|", 6) != 0) {
-        printf("Server response: %s\n", response);
+/**
+ * Parses the raw server response and processes incoming alert data.
+ * 
+ * This function acts as the primary protocol handler for the client. It handles 
+ * new alerts, manages time-locked queues, and executes commands while silently 
+ * filtering out internal P2P replication traffic (REPL, SYNC, AUTH) to ensure 
+ * the user interface remains clean.
+ * 
+ * @param response The raw null-terminated string received from the server.
+ * @param expected_pubkey_hash_b64 Optional filter to ignore alerts not belonging to this hash.
+ * @param verbose Enables detailed debug logging to stdout.
+ * @param execute Boolean flag: if true, decrypted messages are treated as system commands.
+ * @param config Pointer to the configuration containing execution ACLs and scripts.
+ * @param daemon_exec_flag If true, commands are executed as background processes.
+ */
+void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
+                    int verbose, int execute, Config *config, int daemon_exec_flag) {
+    
+    /* -------------------------------------------------------------------------
+     * 1. PROTOCOL FILTERING: P2P NOISE REDUCTION
+     * -------------------------------------------------------------------------
+     * Ignore internal replication and synchronization traffic. These messages 
+     * are intended for server-to-server communication and should not be 
+     * processed or displayed by a standard client.
+     */
+    if (strncmp(response, "REPL|", 5) == 0 || 
+        strncmp(response, "SYNC|", 5) == 0 || 
+        strncmp(response, "AUTH|", 5) == 0 ||
+        strcmp(response, "AUTH_SUCCESS") == 0 ||
+        strcmp(response, "AUTH_FAILED") == 0) {
         return;
     }
+
+    /* -------------------------------------------------------------------------
+     * 2. STATUS & ERROR HANDLING
+     * -------------------------------------------------------------------------
+     * Check for plain-text status updates or error messages from the server.
+     */
+    if (strncmp(response, "ALERT|", 6) != 0) {
+        /* Standard server feedback (e.g., "Subscription updated", "Error: ...") */
+        printf("Server: %s\n", response);
+        return;
+    }
+
+    /* -------------------------------------------------------------------------
+     * 3. ALERT PACKET PARSING
+     * -------------------------------------------------------------------------
+     * Format: ALERT|pubkey_hash|id|unlock_at|expire_at|text|key|iv|tag
+     */
     char *copy = strdup(response + 6);
     if (!copy) {
-        fprintf(stderr, "Failed to allocate memory for response\n");
+        fprintf(stderr, "Critical: Memory allocation failed during packet parsing\n");
         return;
     }
+
     char *pubkey_hash_b64 = strtok(copy, "|");
-    if (!pubkey_hash_b64) {
-        fprintf(stderr, "Error: Invalid ALERT format\n");
+    char *id_str          = strtok(NULL, "|");
+    char *unlock_at_str   = strtok(NULL, "|");
+    char *expire_at_str   = strtok(NULL, "|");
+    char *encrypted_text  = strtok(NULL, "|");
+    char *encrypted_key   = strtok(NULL, "|");
+    char *iv_str          = strtok(NULL, "|");
+    char *tag_str         = strtok(NULL, "|");
+
+    if (!tag_str) {
+        fprintf(stderr, "Protocol Error: Incomplete data received in ALERT packet\n");
         free(copy);
         return;
     }
 
-    // REPLACE START: Добавляем парсинг id_str вместо create_at_str
-    char *id_str = strtok(NULL, "|");
-    char *unlock_at_str = strtok(NULL, "|");
-    char *expire_at_str = strtok(NULL, "|");
-    char *encrypted_text = strtok(NULL, "|");
-    char *encrypted_key = strtok(NULL, "|");
-    char *iv = strtok(NULL, "|");
-    char *tag = strtok(NULL, "|");
-    if (!id_str || !unlock_at_str || !expire_at_str || !encrypted_text ||
-        !encrypted_key || !iv || !tag) {
-        fprintf(stderr, "Error: Incomplete data in ALERT\n");
-        free(copy);
-        return;
-    }
-    // Вычисляем create_at из id
+    /* -------------------------------------------------------------------------
+     * 4. IDENTITY & TIMESTAMP RECONSTRUCTION
+     * -------------------------------------------------------------------------
+     */
     uint64_t id = strtoull(id_str, NULL, 10);
+    
+    /* Snowflake ID Logic: 
+     * Extract the timestamp (bits 63-12), add custom epoch, and convert to seconds. */
     time_t create_at = ((id >> 12) + SNOWFLAKE_EPOCH) / 1000;
-    // REPLACE END
-
     time_t unlock_at = atol(unlock_at_str);
     time_t expire_at = atol(expire_at_str);
     time_t now = time(NULL);
-    /* Check filter by pubkey_hash_b64 */
+
+    /* -------------------------------------------------------------------------
+     * 5. SECURITY & ACCESS CONTROL
+     * -------------------------------------------------------------------------
+     */
+
+    /* Apply Pubkey Filter if specified */
     if (expected_pubkey_hash_b64 && strcmp(pubkey_hash_b64, expected_pubkey_hash_b64) != 0) {
-        if (verbose) {
-            printf("Skipped message for another pubkey_hash: %s\n", pubkey_hash_b64);
-        }
+        if (verbose) printf("Filter: Skipping alert for different recipient [%s]\n", pubkey_hash_b64);
         free(copy);
         return;
     }
-    /* Check for private key early; if missing, skip silently */
+
+    /* Check for local Private Key. Decryption is impossible without it. */
     if (!has_private_key(pubkey_hash_b64, verbose)) {
+        if (verbose) printf("Security: Private key missing for hash %s. Skipping.\n", pubkey_hash_b64);
         free(copy);
         return;
     }
 
-    printf("Received message: Pubkey_Hash=%s\n", pubkey_hash_b64);
-    printf("ID: %" PRIu64 "\n", id);
+    /* -------------------------------------------------------------------------
+     * 6. METADATA DISPLAY
+     * -------------------------------------------------------------------------
+     */
+    printf("Received Alert: Recipient_Hash=%s\n", pubkey_hash_b64);
+    printf("Alert ID: %" PRIu64 "\n", id);
 
-    /* format and show both UTC and localtime to avoid confusion */
-    char buf_create_utc[32], buf_unlock_utc[32], buf_expire_utc[32];
-    char buf_create_local[32], buf_unlock_local[32], buf_expire_local[32];
+    char buf_create[32], buf_unlock[32], buf_expire[32];
+    struct tm tm_info;
 
-    /* UTC */
-    time_to_utc_string(create_at, buf_create_utc, sizeof(buf_create_utc));
-    time_to_utc_string(unlock_at, buf_unlock_utc, sizeof(buf_unlock_utc));
-    time_to_utc_string(expire_at, buf_expire_utc, sizeof(buf_expire_utc));
+    /* Format timestamps for human-readable local time output */
+    if (localtime_r(&create_at, &tm_info)) strftime(buf_create, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
+    if (localtime_r(&unlock_at, &tm_info)) strftime(buf_unlock, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
+    if (localtime_r(&expire_at, &tm_info)) strftime(buf_expire, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
 
-    /* local time for clarity */
-    struct tm tm_local;
-    if (localtime_r(&create_at, &tm_local))
-        strftime(buf_create_local, sizeof(buf_create_local), "%Y-%m-%d %H:%M:%S", &tm_local);
-    else
-        snprintf(buf_create_local, sizeof(buf_create_local), "(invalid)");
+    printf("Timestamps (Local): Created: %s, Unlock: %s, Expire: %s\n", 
+           buf_create, buf_unlock, buf_expire);
 
-    if (localtime_r(&unlock_at, &tm_local))
-        strftime(buf_unlock_local, sizeof(buf_unlock_local), "%Y-%m-%d %H:%M:%S", &tm_local);
-    else
-        snprintf(buf_unlock_local, sizeof(buf_unlock_local), "(invalid)");
+    /* -------------------------------------------------------------------------
+     * 7. LIFECYCLE MANAGEMENT (EXPIRY & TIME-LOCK)
+     * -------------------------------------------------------------------------
+     */
 
-    if (localtime_r(&expire_at, &tm_local))
-        strftime(buf_expire_local, sizeof(buf_expire_local), "%Y-%m-%d %H:%M:%S", &tm_local);
-    else
-        snprintf(buf_expire_local, sizeof(buf_expire_local), "(invalid)");
-    if (verbose) {
-        printf("Metadata (UTC):   Create=%s, Unlock=%s, Expire=%s\n",
-               buf_create_utc, buf_unlock_utc, buf_expire_utc);
-    }
-    printf("Metadata (local): Create=%s, Unlock=%s, Expire=%s\n",
-           buf_create_local, buf_unlock_local, buf_expire_local);
-
-    /* Now check expiry / lock BEFORE an expensive decryption */
     if (expire_at <= now) {
-        printf("Message expired\n");
+        printf("Status: Alert has expired and is no longer valid.\n");
         free(copy);
         return;
     }
+
     if (unlock_at > now) {
-        printf("Locked message until %s (UTC) / %s (local)\n",
-               buf_unlock_utc, buf_unlock_local);
+        /* Message is still locked. Queue it for future processing. */
+        printf("Status: Alert is TIME-LOCKED. Will unlock at %s\n", buf_unlock);
+        
         PendingAlert *pa = malloc(sizeof(PendingAlert));
         if (pa) {
             pa->pubkey_hash_b64 = strdup(pubkey_hash_b64);
@@ -415,124 +452,94 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
             pa->expire_at = expire_at;
             pa->encrypted_text = strdup(encrypted_text);
             pa->encrypted_key = strdup(encrypted_key);
-            pa->iv = strdup(iv);
-            pa->tag = strdup(tag);
+            pa->iv = strdup(iv_str);
+            pa->tag = strdup(tag_str);
             pa->next = pending_alerts;
             pending_alerts = pa;
+
             if (verbose) {
-                if (execute) {
-                    printf("Queued locked message ID=%" PRIu64 " for execution at %s\n", id, buf_unlock_utc);
-                } else {
-                    printf("Queued locked message ID=%" PRIu64 " for display at %s\n", id, buf_unlock_utc);
-                }
+                printf("Queue: ID %" PRIu64 " added to background wait list.\n", id);
             }
         }
         free(copy);
         return;
     }
 
-    /* At this point the message is valid to attempt decoding / decryption.
-       Perform base64 decode and RSA/AES decryption here. 
-       Decode base64 data */
-    size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
-    unsigned char *encrypted = base64_decode(encrypted_text, &encrypted_len);
-    unsigned char *encrypted_key_dec = base64_decode(encrypted_key, &encrypted_key_len);
-    unsigned char *iv_dec = base64_decode(iv, &iv_len);
-    unsigned char *tag_dec = base64_decode(tag, &tag_len);
-    if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
-        fprintf(stderr, "Error decoding base64 data\n");
-        free(copy);
-        free(encrypted);
-        free(encrypted_key_dec);
-        free(iv_dec);
-        free(tag_dec);
-        return;
+    /* -------------------------------------------------------------------------
+     * 8. DECRYPTION & EXECUTION
+     * -------------------------------------------------------------------------
+     * If we reach here, the alert is unlocked and valid.
+     */
+    size_t e_len, k_len, i_len, t_len;
+    unsigned char *e_raw = base64_decode(encrypted_text, &e_len);
+    unsigned char *k_raw = base64_decode(encrypted_key, &k_len);
+    unsigned char *i_raw = base64_decode(iv_str, &i_len);
+    unsigned char *t_raw = base64_decode(tag_str, &t_len);
+
+    if (!e_raw || !k_raw || !i_raw || !t_raw) {
+        fprintf(stderr, "Error: Base64 decoding failed for alert ID %" PRIu64 "\n", id);
+        goto decryption_cleanup;
     }
-    char priv_file[256];
-    snprintf(priv_file, sizeof(priv_file), "/etc/gorgona/%s.key", pubkey_hash_b64);
+
+    char priv_path[256];
+    snprintf(priv_path, sizeof(priv_path), "/etc/gorgona/%s.key", pubkey_hash_b64);
+    
     char *plaintext = NULL;
-    int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
-                             iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
-    free(encrypted);
-    free(encrypted_key_dec);
-    free(iv_dec);
-    free(tag_dec);
-    if (ret != 0 || !plaintext) {
-        fprintf(stderr, "Failed to decrypt message\n");
-        free(copy);
-        return;
-    }
-    if (execute) {
-        char *final_command = NULL;
-        if (config->exec_count == 0) {
-            /* Config [exec_commands] is empty: execute the decrypted message directly */
-            final_command = strdup(plaintext);
+    int status = decrypt_message(e_raw, e_len, k_raw, k_len, i_raw, i_len, t_raw, 
+                                 &plaintext, priv_path, verbose);
+
+    if (status == 0 && plaintext) {
+        if (!execute) {
+            printf("Decrypted Content:\n%s\n", plaintext);
         } else {
-            /* Config has specific allowed commands: check for matching entries */
-            for (int i = 0; i < config->exec_count; i++) {
-                ExecCommand *cmd = &config->exec_commands[i];
-
-                /* 
-                 * If the config entry requires a specific key (ACL), ensure it matches the sender.
-                 * If cmd->required_key is empty, the command is considered 'public' 
-                 * for any authorized sender whose key is known to the system.
-                 */
-                if (cmd->required_key[0] != '\0') {
-                    if (pubkey_hash_b64 == NULL || strcmp(cmd->required_key, pubkey_hash_b64) != 0) {
-                        continue; /* Sender key does not match the required key for this command */
-                    }
-                }
-
-                size_t key_len = strlen(cmd->key);
-
-                /* Check if the received message starts with the configured command name */
-                if (strncmp(plaintext, cmd->key, key_len) == 0) {
-                    
-                    /* Verify boundary: exact match or followed by a space (to separate arguments) */
-                    if (plaintext[key_len] == '\0' || plaintext[key_len] == ' ') {
-                        const char *dynamic_part = plaintext + key_len;
-
-                        /* Skip any spaces between the command name and its arguments */
-                        while (*dynamic_part == ' ') {
-                            dynamic_part++;
-                        }
-
-                        /* 
-                         * Concatenate the pre-configured script path with the dynamic arguments.
-                         * sanitize_and_concat should handle shell injection protection.
-                         */
-                        final_command = sanitize_and_concat(cmd->value, dynamic_part);
-
-                        if (verbose && final_command) {
-                            printf("Found match: command='%s', script='%s', key_restriction='%s'\n",
-                                   cmd->key, cmd->value, 
-                                   cmd->required_key[0] ? cmd->required_key : "NONE (PUBLIC)");
-                        }
-                        
-                        break; /* Command match found, exit the loop */
-                    }
-                }
-            }
-        }
-        if (final_command) {
-            if (daemon_exec_flag) {
-                if (verbose) printf("Executing command in background: %s\n", final_command);
-                daemon_exec(final_command, verbose);
+            /* Command Execution Logic */
+            char *final_cmd = NULL;
+            if (config->exec_count == 0) {
+                /* No ACLs defined: run raw message as command */
+                final_cmd = strdup(plaintext);
             } else {
-                if (verbose) printf("Executing command: %s\n", final_command);
-                int exec_ret = system(final_command);
-                if (exec_ret != 0 && verbose) {
-                    fprintf(stderr, "Command returned non-zero exit code: %d\n", exec_ret);
+                /* ACL Check: match message to allowed scripts */
+                for (int j = 0; j < config->exec_count; j++) {
+                    ExecCommand *ec = &config->exec_commands[j];
+                    
+                    /* Key restriction (if defined in config) */
+                    if (ec->required_key[0] != '\0' && strcmp(ec->required_key, pubkey_hash_b64) != 0) {
+                        continue;
+                    }
+
+                    size_t k_match_len = strlen(ec->key);
+                    if (strncmp(plaintext, ec->key, k_match_len) == 0) {
+                        if (plaintext[k_match_len] == '\0' || isspace(plaintext[k_match_len])) {
+                            const char *args = plaintext + k_match_len;
+                            while (isspace(*args)) args++;
+                            final_cmd = sanitize_and_concat(ec->value, args);
+                            break;
+                        }
+                    }
                 }
             }
-            free(final_command);
-        } else if (verbose) {
-            printf("Security: No matching key found in [exec_commands] for message: %s\n", plaintext);
+
+            if (final_cmd) {
+                if (daemon_exec_flag) {
+                    if (verbose) printf("Execution: Launching daemon: %s\n", final_cmd);
+                    daemon_exec(final_cmd, verbose);
+                } else {
+                    if (verbose) printf("Execution: Running: %s\n", final_cmd);
+                    int res = system(final_cmd);
+                    if (res != 0 && verbose) fprintf(stderr, "Execution: Process exited with code %d\n", res);
+                }
+                free(final_cmd);
+            } else if (verbose) {
+                printf("Security: Content does not match any configured execution triggers.\n");
+            }
         }
+        free(plaintext);
     } else {
-        printf("Decrypted message:\n%s\n", plaintext);
+        fprintf(stderr, "Error: RSA/AES Decryption failed for alert ID %" PRIu64 "\n", id);
     }
-    free(plaintext);
+
+decryption_cleanup:
+    free(e_raw); free(k_raw); free(i_raw); free(t_raw);
     free(copy);
 }
 

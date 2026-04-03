@@ -299,6 +299,12 @@ static void process_repl(int i, char *buffer) {
             log_event("INFO", sub->sock, sub->ip_address, sub->port, 
                       "Alert %" PRIu64 " replicated (Recipient: %.12s...)", 
                       original_id, hash_b64);
+            /* notifying the local clients of this server */
+            Recipient *rec = find_recipient(pubkey_hash);
+            if (rec) {
+                /* Let's take the most recently added alert */
+                notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
+            }
         }
     }
 

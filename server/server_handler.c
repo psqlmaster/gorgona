@@ -300,6 +300,9 @@ void run_server(int server_fd) {
                     subscribers[i].in_buffer = NULL;
                     subscribers[i].in_pos = 0;
                     subscribers[i].mode = 0;
+                    subscribers[i].type = SUB_TYPE_CLIENT; 
+                    subscribers[i].auth_state = AUTH_NONE;
+                    subscribers[i].last_repl_id = 0;
                     subscribers[i].pubkey_hash[0] = '\0';
                     subscribers[i].close_after_send = false;
 
