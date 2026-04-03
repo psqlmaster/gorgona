@@ -49,6 +49,13 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Scalable Architecture**: P2P replication allows building a fault-tolerant network without a single point of failure.
 - **No Third-Party Reliance**: Operates locally or via direct client-server communication.
 - **Flexible Storage Options**: Run in memory-only mode for high-speed, ephemeral operations or enable disk persistence for durability without losing alerts on server restarts.
+##### Database & Cluster Administration (PostgreSQL, Greenplum)
+
+Gorgona is uniquely suited for managing distributed database systems like **Greenplum** or large-scale **PostgreSQL** farms. It provides a secure, time-locked channel to orchestrate operations across multiple segment nodes simultaneously.
+
+- **Orchestration**: Restart nodes, trigger backups (`pg_dump`), or rotate logs on 100+ servers with a single encrypted command.
+- **Security**: Commands are E2E encrypted; even if your monitoring server is compromised, the attacker cannot forge commands without the private RSA keys.
+- **Survivability**: Thanks to P2P replication, management commands reach all nodes even if some network segments are unstable.
 
 ##### Quick Start
 
