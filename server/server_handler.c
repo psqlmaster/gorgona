@@ -28,9 +28,9 @@ extern Subscriber subscribers[];
 
 static time_t server_start_time = 0;
 
-/**
- * Настраивает TCP Keepalive для поддержания стабильности соединения
- * и обнаружения "мертвых" узлов.
+/*
+ * Configures TCP Keepalive to maintain connection stability
+ * and detect “dead” nodes. 
  */
 static void set_tcp_keepalive(int fd) {
     int opt = 1;
@@ -45,14 +45,14 @@ static void set_tcp_keepalive(int fd) {
 #endif
 }
 
-/**
- * Полная очистка состояния клиента/пира при отключении.
+/*
+ * Completely clear the client/peer state upon disconnection. 
  */
 static void cleanup_subscriber(int index) {
     int sd = client_sockets[index];
     if (sd <= 0) return;
 
-    /* Если это был исходящий пир, помечаем его в глобальном списке как неактивного */
+    /* If it was an outgoing party, mark it as inactive in the global list */
     for (int p = 0; p < remote_peer_count; p++) {
         if (remote_peers[p].sd == sd) {
             remote_peers[p].active = false;
@@ -213,8 +213,8 @@ void free_out_queue(int sub_index) {
     subscribers[sub_index].out_tail = NULL;
 }
 
-/**
- * Пытается подключиться к пирам, которые сейчас не активны.
+/*
+ * Attempting to connect to peers that are currently inactive. 
  */
 void try_connect_peers() {
     static time_t last_check = 0;
@@ -242,10 +242,8 @@ void try_connect_peers() {
             }
         }
 
-        /* 
-           Важный момент: так как мы используем общую структуру Subscriber для всех, 
-           мы должны найти свободный слот в массиве клиентов и поместить туда этот сокет.
-        */
+        /* Important note: Since we use a common Subscriber structure for everyone, 
+           we need to find an available slot in the client array and place this socket there. */
         for (int i = 0; i < max_clients; i++) {
             if (client_sockets[i] == 0) {
                 client_sockets[i] = sd;
@@ -269,7 +267,7 @@ void try_connect_peers() {
     }
 }
 
-/**
+/*
  * Main server loop using select().
  */
 void run_server(int server_fd) {
@@ -304,7 +302,7 @@ void run_server(int server_fd) {
         }
 
         struct timeval timeout;
-        timeout.tv_sec = 5;  // Просыпаться каждую секунду
+        timeout.tv_sec = 5;  /* Wake up every 5 seconds */
         timeout.tv_usec = 0;
 
         try_connect_peers();

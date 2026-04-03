@@ -1,3 +1,9 @@
+/* 
+* BSD 3-Clause License
+* Copyright (c) 2025, Alexander Shcheglov
+* All rights reserved. 
+*/
+
 #ifndef ALERT_DB_H
 #define ALERT_DB_H
 
@@ -6,32 +12,32 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 
-/* Путь к директории базы данных */
+/* Path to the database directory */
 #define ALERT_DB_DIR "/var/lib/gorgona/alerts/"
-/* Магическое число для заголовка файла */
+/* The magic number for the file header */
 #define ALERT_FILE_MAGIC 0xCAFEBABE
-/* Делимитер для разделения записей */
+/* Delimiter for separating records */
 #define ALERT_RECORD_DELIMITER 0xDEADBEEF
 
-/* Структура заголовка файла */
+/* File header structure */
 typedef struct {
     uint32_t magic; /* ALERT_FILE_MAGIC */
-    uint32_t count; /* Количество алертов */
+    uint32_t count; /* Number of alerts */
 } AlertFileHeader;
 
-/* Инициализация базы данных (создание директории) */
+/* Database initialization (creating a directory) */
 int alert_db_init(void);
 
-/* Загрузка всех алертов из файлов в recipients */
+/* Import all alerts from files into recipients */
 int alert_db_load_recipients(void);
 
-/* Сохранение одного алерта в файл реципиента через mmap */
+/* Saving a single alert to a recipient file via mmap */
 int alert_db_save_alert(Recipient *rec, Alert *alert);
 
-/* Мгновенная деактивация алерта по указателю в mmap */
+/* Instant deactivation of an alert based on a pointer in mmap */
 void alert_db_deactivate_alert(Alert *alert);
 
-/* Очистка истёкших алертов и сжатие файла (Vacuum) */
+/* Clearing expired alerts and compressing the file (Vacuum) */
 int alert_db_sync(Recipient *rec);
 
 void alert_db_close_all(void);

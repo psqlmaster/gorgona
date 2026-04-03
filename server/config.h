@@ -1,3 +1,7 @@
+/* BSD 3-Clause License
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved. */
+
 #ifndef CONFIG_H
 #define CONFIG_H
 #include <stddef.h>

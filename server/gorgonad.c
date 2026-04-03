@@ -1,6 +1,7 @@
 /* BSD 3-Clause License
 Copyright (c) 2025, Alexander Shcheglov
 All rights reserved. */
+
 #include "config.h"
 #include "gorgona_utils.h"
 #include "alert_db.h"
@@ -129,7 +130,7 @@ int main(int argc, char *argv[]) {
         subscribers[i].pubkey_hash[0] = '\0';
     }
 
-    /**
+    /*
      * Initialize logging system.
      * After opening the file, all subsequent logs must use log_event().
      */
@@ -198,7 +199,7 @@ int main(int argc, char *argv[]) {
     /* Enter the main server loop (defined in server_handler.c) */
     run_server(server_fd);
 
-    /**
+    /*
      * Cleanup (this part is normally reached only via shutdown_handler).
      * Included for completeness and to assist memory leak detectors.
      */

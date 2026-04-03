@@ -9,7 +9,7 @@ All rights reserved. */
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
-#include <errno.h>
+/* include <errno.h> */
 #include <sys/mman.h>
 #include <fcntl.h>
 #include "encrypt.h"
@@ -17,7 +17,7 @@ All rights reserved. */
 extern int verbose;
 extern int max_alerts;
 
-/* Вспомогательная функция для синхронизации mmap с учетом страниц памяти */
+/* A helper function for synchronizing mmap with memory pages */
 static int safe_msync(void *addr, size_t len, int flags) {
     long page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) page_size = 4096;
@@ -63,9 +63,9 @@ int alert_db_init(void) {
     return 0;
 }
 
-/**
- * ensure_mmap_capacity
- * ИСПРАВЛЕНО: Теперь функция не обрезает файл, если он на диске больше, чем в памяти.
+/*
+ * Ensure_mmap_capacity,
+ * The function does not truncate the file if it is larger on disk than in memory. 
  */
 static int ensure_mmap_capacity(Recipient *rec, size_t additional_size) {
     if (rec->fd < 0) {
@@ -82,7 +82,7 @@ static int ensure_mmap_capacity(Recipient *rec, size_t additional_size) {
     size_t current_disk_size = st.st_size;
     size_t required = rec->used_size + additional_size;
 
-    /* Расширяем файл только если реально не хватает места */
+    /* We only expand the file if there really isn't enough space */
     if (required > current_disk_size || !rec->mmap_ptr) {
         size_t target_size = (required > current_disk_size) ? required : current_disk_size;
         size_t new_size = ((target_size / (1024 * 1024)) + 1) * (1024 * 1024);
@@ -175,7 +175,7 @@ int alert_db_load_recipients(void) {
             memcpy(hash, raw, (dlen < PUBKEY_HASH_LEN) ? dlen : PUBKEY_HASH_LEN);
             free(raw);
             Recipient *rec = add_recipient(hash);
-            /* Важно: мапим существующий файл БЕЗ изменения его размера */
+            /* Important: Map the existing file WITHOUT changing its size */
             if (!rec || ensure_mmap_capacity(rec, 0) != 0 || !rec->mmap_ptr) continue;
 
             struct stat st; fstat(rec->fd, &st);

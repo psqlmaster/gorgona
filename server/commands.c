@@ -295,7 +295,7 @@ static void process_repl(int i, char *buffer) {
                             key_b64, iv_b64, tag_b64, sub->sock, original_id, create_at);
         
         if (res == 0) {
-            /* ТОЛЬКО ЕСЛИ СООБЩЕНИЕ НОВОЕ */
+            /* Only if the message is new */
             log_event("INFO", sub->sock, sub->ip_address, sub->port, 
                       "Alert %" PRIu64 " replicated (Recipient: %.12s...)", 
                       original_id, hash_b64);
@@ -304,13 +304,13 @@ static void process_repl(int i, char *buffer) {
             if (rec) {
                 Alert *new_a = &rec->alerts[rec->count - 1];
                 notify_subscribers(pubkey_hash, new_a);
-                /* Пересылаем дальше только новые данные */
+                /* We forward only new data */
                 broadcast_replication(pubkey_hash, new_a, sub->sock);
             }
         } 
         else if (res == 1) {
-            /* Это дубликат. Мы его уже видели. 
-               Ничего не пишем в лог и НЕ пересылаем дальше. Петля разорвана. */
+            /* This is a duplicate. We've already seen it. 
+               We won't log anything or forward it. The loop has been broken. */
             if (verbose) {
                 log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
                           "Ignored redundant replication for ID %" PRIu64, original_id);
@@ -398,7 +398,7 @@ void handle_command(int sub_index, char *buffer) {
         return;
     }
 
-    /* 2. COMMANDS (Парсинг входящих команд) */
+    /* 2. COMMANDS (Parsing incoming commands) */
     log_event("DEBUG", sub->sock, sub->ip_address, sub->port, "Processing command: %s", buffer);
 
     if (strncmp(buffer, "SEND|", 5) == 0) {
@@ -420,7 +420,7 @@ void handle_command(int sub_index, char *buffer) {
         process_subscribe(sub_index, buffer);
     } 
     else {
-        /* Неизвестный протокол - шлем ошибку только если это не ответ на наш запрос */
+        /* Unknown protocol - return an error only if it is not a response to our request */
         char *error_msg = "Error: Unknown command";
         enqueue_message(sub_index, error_msg, strlen(error_msg));
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command received: %s", buffer);

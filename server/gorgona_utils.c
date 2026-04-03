@@ -1,6 +1,7 @@
 /* BSD 3-Clause License
 Copyright (c) 2025, Alexander Shcheglov
 All rights reserved. */
+
 #include "config.h"
 #include "gorgona_utils.h"
 #include "alert_db.h"
@@ -163,7 +164,7 @@ Recipient *add_recipient(const unsigned char *hash) {
     Recipient *rec = &recipients[recipient_count];
     memset(rec, 0, sizeof(Recipient));
     memcpy(rec->hash, hash, PUBKEY_HASH_LEN);
-    rec->fd = -1; /* Важно: инициализируем -1, а не 0 */
+    rec->fd = -1; /* Important: Initialize to -1, not 0 */
     rec->capacity = max_alerts;
     rec->alerts = malloc(sizeof(Alert) * rec->capacity);
     if (!rec->alerts) return NULL;
@@ -191,7 +192,7 @@ void clean_expired_alerts(Recipient *rec) {
         }
     }
 
-    /* Запускаем вакуум только по порогу */
+    /* activate the vacuum only when the threshold is reached */
     if (use_disk_db && expired_found > 0) {
         if (rec->waste_count > max_alerts / 4 || rec->waste_count > 100) {
             alert_db_sync(rec);
@@ -222,11 +223,11 @@ void remove_oldest_alert(Recipient *rec) {
             sizeof(Alert) * (rec->count - oldest_idx - 1));
     rec->count--;
 
-    /* Рассчитываем порог на основе конфига */
+    /* Calculate the threshold based on the configuration */
     int waste_limit = (max_alerts * vacuum_threshold) / 100;
     
-    /* Защита: вакуум сработает в любом случае, если мусора слишком много (> 50000 записей) 
-       или если он превысил заданный процент */
+    /* Protection: The vacuum will run in any case if there is too much junk data (>50,000 entries) 
+       or if it exceeds the specified percentage */
     if (use_disk_db && (rec->waste_count >= waste_limit || rec->waste_count > 50000)) {
         if (verbose) {
             fprintf(stderr, "Vacuum trigger: waste=%d (limit=%d%% of %d)\n", 
@@ -260,12 +261,12 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
                int client_fd, uint64_t forced_id, time_t forced_create_at) {
     
-    /* 1. Ensure the recipient exists in memory; create if necessary */
+    /* Ensure the recipient exists in memory; create if necessary */
     Recipient *rec = find_recipient(pubkey_hash);
     if (!rec) rec = add_recipient(pubkey_hash);
     if (!rec) return -3;
 
-    /* 2. Identify sender metadata for security logging context */
+    /* Identify sender metadata for security logging context */
     const char *client_ip = NULL;
     int client_port = 0;
     for (int i = 0; i < max_clients; i++) {
@@ -287,7 +288,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         return -1;
     }
 
-    /* 3. Decode the primary payload for deduplication check */
+    /* Decode the primary payload for deduplication check */
     size_t new_text_len;
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
     if (!decoded_text) return -3;
@@ -528,8 +529,8 @@ int alert_cmp_desc(const void *a, const void *b) {
     return alert_cmp_asc(b, a);
 }
 
-/**
- * Добавляет запись о новом алерте в кольцевой лог.
+/*
+ * Adds an entry for a new alert to the circular log. 
  */
 void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
     repl_ring[repl_ring_head].id = id;
@@ -538,8 +539,8 @@ void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
     repl_ring_head = (repl_ring_head + 1) % REPL_RING_SIZE;
 }
 
-/**
- * Рассылает новый алерт всем подключенным и авторизованным пирам.
+/*
+ * Sends a new alert to all connected and authorized peers. 
  */
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
@@ -553,7 +554,7 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
         return;
     }
 
-    // Используем динамическую память для сообщения репликации
+    /* We use dynamic memory for replication messages  */
     size_t msg_capacity = max_message_size + 2048; 
     char *repl_msg = malloc(msg_capacity);
     if (!repl_msg) {
@@ -567,7 +568,7 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
 
     if (len > 0) {
         for (int i = 0; i < max_clients; i++) {
-            /* Рассылаем только авторизованным ПИРАМ и не отправляем назад тому, от кого получили */
+            /* We only send to authorized PIRAMs and do not send back to the sender */
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
                 subscribers[i].auth_state == AUTH_OK &&
@@ -582,9 +583,9 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }
 
-/**
- * Находит самый большой Snowflake ID во всей базе данных.
- * Возвращает 0, если база пуста.
+/*
+ * Finds the largest Snowflake ID in the entire database.
+ * Returns 0 if the database is empty.
  */
 uint64_t get_max_alert_id() {
     uint64_t max_id = 0;
@@ -598,9 +599,9 @@ uint64_t get_max_alert_id() {
     return max_id;
 }
 
-/**
- * Отправляет конкретный алерт конкретному пиру.
- * (Выносим логику из broadcast_replication в отдельную функцию)
+/*
+ * Sends a specific alert to a specific peer.
+ * (Move the logic from `broadcast_replication` to a separate function)
  */
 void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert) {
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);

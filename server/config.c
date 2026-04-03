@@ -37,7 +37,7 @@ typedef enum {
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
                  char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold) {
     
-    /* 1. Initialize default values in case the config file is missing or incomplete */
+    /* Initialize default values in case the config file is missing or incomplete */
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
     *max_clients = MAX_CLIENTS;
@@ -55,7 +55,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         snprintf(log_level, 32, "%s", DEFAULT_LOG_LEVEL);
     }
 
-    /* 2. Attempt to open the configuration file */
+    /* Attempt to open the configuration file */
     FILE *conf_fp = fopen("/etc/gorgona/gorgonad.conf", "r");
     if (!conf_fp) {
         /* If file is not found, we proceed with defaults initialized above */
@@ -65,7 +65,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
     char line[512];
     ConfigSection current_section = SECTION_NONE;
 
-    /* 3. Line-by-line parsing loop */
+    /* Line-by-line parsing loop */
     while (fgets(line, sizeof(line), conf_fp)) {
         /* Remove inline comments (anything after #) */
         char *comment = strchr(line, '#');
@@ -108,7 +108,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         trim_string(key);
         trim_string(value);
 
-        /* 4. Parse keys based on the active section context */
+        /* Parse keys based on the active section context */
         if (current_section == SECTION_SERVER) {
             if (strcmp(key, "port") == 0) { 
                 *port = atoi(value);
@@ -158,6 +158,6 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         }
     }
 
-    /* 5. Cleanup */
+    /* Cleanup */
     fclose(conf_fp);
 }
