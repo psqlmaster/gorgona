@@ -616,7 +616,7 @@ graph TD
 `gorgona` has evolved from a standalone server into a **fully decentralized, distributed system**. The current version features a custom, zero-dependency Active-Active P2P replication engine with mutual state reconciliation and automatic self-healing connections.
 
 **Current Milestones Achieved:**
-- **Decentralized Sync**: Multi-node synchronization without external databases (No Redis/PostgreSQL required).
+- **Decentralized Sync**: Multi-node synchronization without external databases (Zero external dependencies).
 - **Mutual History Reconciliation**: Automatic "catch-up" logic for nodes returning from offline state.
 - **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
 
