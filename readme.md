@@ -57,7 +57,7 @@ git clone --depth 1 https://github.com/psqlmaster/gorgona.git && \
 cd gorgona && \
 make clean && make && \
 sudo mkdir -p /etc/gorgona && \
-printf "[server]\nip = 46.138.247.148\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
+printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
 sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && \
 sudo cp ./gorgona /usr/bin && \
 gorgona listen last 4 RWTPQzuhzBw=
@@ -81,6 +81,9 @@ Install dependencies (OpenSSL required):
 - On macOS: `brew install openssl`
 
 > Note: Tested on Debian, Fedora, Centos and RED OS.
+> Binary Compatibility
+> Official `.deb` packages are built on **Debian 13 (Trixie)**. 
+> While they are compatible with most modern Linux distributions, for older systems or non-Debian distros, it is recommended to build from source.
 
 Build the project:
 
@@ -90,15 +93,10 @@ make clean && make
 
 Builds `gorgona` (client) and `gorgonad` (server). Clean: `make clean`. Rebuild: `make rebuild`.
 
-### [Install Client](https://github.com/psqlmaster/gorgona/releases)
+### [Install Client & Server](https://github.com/psqlmaster/gorgona/releases)
 
 ```bash
 sudo dpkg -i ./gorgona_2.5.8_amd64.deb
-```
-
-### [Install Server](https://github.com/psqlmaster/gorgona/releases)
-
-```bash
 sudo dpkg -i ./gorgonad_2.5.8_amd64.deb
 ```
 
@@ -214,7 +212,7 @@ gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # E
 
 - You can check server status from any device using standard telnet/nc
 ```bash 
-echo "info" | nc 46.138.247.148 7777
+echo "info" | nc 64.188.70.158 7777
 # Output:
 # Gorgona Server 2.7.2
 # Uptime: 12d 4h 20m
@@ -245,7 +243,7 @@ The file `/etc/gorgona/gorgona.conf` contains server settings and optional execu
 
 ```ini
 [server]
-ip = 46.138.247.148 
+ip = 64.188.70.158 
 port = 7777
 
 [exec_commands]
@@ -346,7 +344,7 @@ chmod +x /usr/local/bin/gorgona_sysadmin.sh
 - Edit /etc/gorgona/gorgona.conf:
 ```ini
 [server]
-ip = 46.138.247.148
+ip = 64.188.70.158
 port = 7777
 
 [exec_commands]
@@ -438,6 +436,41 @@ peer = 64.188.70.158:7777        # Remote peer address to sync with
 > **Pro Tip: Debugging**
 > Running `gorgonad -v` (verbose) will print **all** levels (including DEBUG) to your terminal in real-time, regardless of the `log_level` set in the config file. This is ideal for troubleshooting without bloating your `gorgonad.log`.
 
+#### Manual Service Installation (without .deb package)
+```bash
+cp ./gorgonad /usr/bin
+mkdir -p /etc/gorgona /var/lib/gorgona/alerts /var/log/gorgona
+```
+
+Edit /etc/systemd/system/gorgonad.service
+```ini
+[Unit]
+Description=Gorgona Distributed Alert Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gorgonad
+WorkingDirectory=/var/lib/gorgona
+StandardOutput=append:/var/log/gorgona/gorgonad.log
+StandardError=append:/var/log/gorgona/gorgonad.log
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+systemctl daemon-reload
+systemctl enable gorgonad
+systemctl start gorgonad
+```
+Verify:
+```bash
+systemctl status gorgonad
+tail -f /var/log/gorgona/gorgonad.log
+```
 ---
 
 ### Flowchart of Server Operation
@@ -642,7 +675,7 @@ gorgona -e listen new RWTPQzuhzBw=
  
  sudo tee /etc/gorgona/gorgona.conf  /dev/null << 'EOF'
  [server]
- ip = 46.138.247.148 
+ ip = 64.188.70.158 
  port = 7777
  [exec_commands]
  mkdir testdir = /tmp/mkdir.sh
@@ -699,17 +732,17 @@ gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+
 ```
 - Server Status via Telnet
 ```sh
-telnet 46.138.247.148 7777
+telnet 64.188.70.158 7777
 ```
-    Trying 46.138.247.148...
-    Connected to 46.138.247.148.
+    Trying 64.188.70.158...
+    Connected to 64.188.70.158.
     Escape character is '^]'.
     info
-    Gorgona Alert Server 2.4.1
-    Uptime: 1d 21h 45m
-    Max message size: 5242880 bytes
+    Gorgona Version 2.8.1
+    Uptime: 0d 7h 20m
+    Max message size: 5242880
     Max clients: 100
-    https://github.com/psqlmaster/gorgona
+    Connection closed by foreign host.
 
 - example starting service
 ```sh
