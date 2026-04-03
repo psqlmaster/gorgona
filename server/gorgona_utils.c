@@ -357,7 +357,9 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     if (forced_id > 0) {
         alert->id = forced_id;
         alert->create_at = forced_create_at;
-        /* Note: We DO NOT call add_to_repl_ring here to prevent infinite gossip loops */
+        /* Now we add the replicated alerts to the ring buffer.
+           This will allow the server to forward them to other nodes via SYNC.  */
+        add_to_repl_ring(alert->id, pubkey_hash); 
     } else {
         alert->id = generate_snowflake_id();
         alert->create_at = now;

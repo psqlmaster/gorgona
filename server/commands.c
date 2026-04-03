@@ -302,8 +302,12 @@ static void process_repl(int i, char *buffer) {
             /* notifying the local clients of this server */
             Recipient *rec = find_recipient(pubkey_hash);
             if (rec) {
+                Alert *new_a = &rec->alerts[rec->count - 1];
                 /* Let's take the most recently added alert */
                 notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
+                /* IMPORTANT: We're forwarding the alert down the chain to other peers!
+                   The sub->sock (exclude_fd) parameter prevents it from being sent back to the source. */
+                broadcast_replication(pubkey_hash, new_a, sub->sock);
             }
         }
     }
