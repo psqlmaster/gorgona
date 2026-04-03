@@ -254,7 +254,7 @@ void remove_oldest_alert(Recipient *rec) {
  * @param forced_id Original Snowflake ID (used for replication, 0 for new local alerts).
  * @param forced_create_at Original creation timestamp (used for replication, 0 for new local alerts).
  * 
- * @return 0 on success, -1 if stale, -2 if replay detected, -3 on memory/logic error.
+ * @return 0 on success (new), 1 if duplicate (ignore), -1 if stale, -2 if replay attack, -3 on error.
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
@@ -262,12 +262,8 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     
     /* 1. Ensure the recipient exists in memory; create if necessary */
     Recipient *rec = find_recipient(pubkey_hash);
-    if (!rec) {
-        rec = add_recipient(pubkey_hash);
-    }
-    if (!rec) {
-        return -3; /* Critical memory allocation failure */
-    }
+    if (!rec) rec = add_recipient(pubkey_hash);
+    if (!rec) return -3;
 
     /* 2. Identify sender metadata for security logging context */
     const char *client_ip = NULL;
@@ -283,44 +279,39 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     time_t now = time(NULL);
 
     /* --- ANTI-REPLAY LAYER 1: Staleness Check --- 
-       Reject alerts that are too far in the past to prevent processing of old captures. */
+       Reject alerts that are too far in the past to prevent processing of old captures. 
+       Bypassed for replication (forced_id > 0) to allow historical data sync. */
     if (forced_id == 0 && unlock_at < (now - STALE_THRESHOLD_SEC)) {
         log_event("WARN", client_fd, client_ip, client_port, 
                   "Rejected stale alert (unlock_at is %ld seconds behind)", (long)(now - unlock_at));
         return -1;
     }
 
-    /* 3. Decode the primary payload for deduplication check 
-       If the data is being replicated (forced_id > 0), we trust it, even if it is old. */
+    /* 3. Decode the primary payload for deduplication check */
     size_t new_text_len;
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
-    if (!decoded_text) {
-        return -3;
-    }
+    if (!decoded_text) return -3;
 
-    /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication --- 
+    /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication & Gossip Suppression --- 
        Check the most recent alerts for this recipient to catch duplicate binary payloads. */
     int start_check = (rec->count > REPLAY_WINDOW_SIZE) ? (rec->count - REPLAY_WINDOW_SIZE) : 0;
     for (int j = start_check; j < rec->count; j++) {
         if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
+                free(decoded_text);
                 
-                /* ИСПРАВЛЕНИЕ ЛОГИКИ ДЛЯ РЕПЛИКАЦИИ */
                 if (forced_id > 0) {
-                    /* Это дубликат, пришедший через другой узел сети или второе соединение.
-                       В P2P это нормальная ситуация (idempotency). Просто выходим без ошибки. */
+                    /* Peer duplicate: Signal the caller to stop propagation (Gossip Suppression) */
                     if (verbose) {
                         log_event("DEBUG", client_fd, client_ip, client_port, 
-                                  "Ignored duplicate replicated alert %" PRIu64, forced_id);
+                                  "Ignored redundant replication for ID %" PRIu64, forced_id);
                     }
-                    free(decoded_text);
-                    return 0; // Возвращаем успех, так как данные у нас уже есть
+                    return 1; 
                 }
 
-                /* Если же это НОВОЕ сообщение (SEND) от клиента — тогда это атака повтора */
+                /* Client duplicate: Flag as a potential replay attack */
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
-                free(decoded_text);
                 return -2;
             }
         }
@@ -334,7 +325,8 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
 
     /* --- INITIALIZATION --- 
-       Prepare the Alert structure in the recipient's alert array. */
+       Prepare the Alert structure. Pointer is assigned only after housekeeping to avoid 
+       invalid memory references if the array was shifted. */
     Alert *alert = &rec->alerts[rec->count];
     memset(alert, 0, sizeof(Alert));
     
@@ -343,7 +335,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     
-    /* Handle GCM Tag decoding */
+    /* Decode and store GCM Authentication Tag */
     size_t tag_len_actual;
     unsigned char *tag_raw = base64_decode(base64_tag, &tag_len_actual);
     if (tag_raw && tag_len_actual == GCM_TAG_LEN) {
@@ -352,31 +344,26 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     free(tag_raw);
 
     /* --- IDENTITY ASSIGNMENT --- 
-       If forced_id is provided, this alert comes from a peer (Replication). 
-       Otherwise, it is a new local alert that needs an ID and must be queued for replication. */
+       Replicated alerts preserve their original ID. Local alerts generate a new Snowflake ID. */
     if (forced_id > 0) {
         alert->id = forced_id;
         alert->create_at = forced_create_at;
-        /* Now we add the replicated alerts to the ring buffer.
-           This will allow the server to forward them to other nodes via SYNC.  */
-        add_to_repl_ring(alert->id, pubkey_hash); 
     } else {
         alert->id = generate_snowflake_id();
         alert->create_at = now;
-        /* Queue this new local alert for replication to other peers */
-        add_to_repl_ring(alert->id, pubkey_hash);
     }
+
+    /* Log in the replication ring to allow other peers to SYNC this new entry */
+    add_to_repl_ring(alert->id, pubkey_hash);
 
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
 
-    /* --- PERSISTENCE --- 
-       Write the alert to the disk-backed database if enabled. */
+    /* --- PERSISTENCE --- */
     if (use_disk_db) {
         if (alert_db_save_alert(rec, alert) != 0) {
             log_event("ERROR", client_fd, client_ip, client_port, "Failed to persist alert via mmap");
-            /* Continue even if persistence fails, as it is still in memory */
         }
     } else {
         alert->is_mmaped = false;
@@ -385,10 +372,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     rec->count++;
     
     log_event("DEBUG", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added to recipient [Hash: %.16s...]", 
+              "Alert %" PRIu64 " added successfully [Recipient: %.12s...]", 
               alert->id, base64_text);
 
-    return 0;
+    return 0; /* New alert successfully committed to memory/disk */
 }
 
 

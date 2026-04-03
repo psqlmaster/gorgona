@@ -291,23 +291,29 @@ static void process_repl(int i, char *buffer) {
     unsigned char *pubkey_hash = base64_decode(hash_b64, &h_len);
 
     if (pubkey_hash && h_len == PUBKEY_HASH_LEN) {
-        /* REPL specific: pass original_id and create_at to prevent ID mutation */
         int res = add_alert(pubkey_hash, unlock_at, expire_at, text_b64, 
                             key_b64, iv_b64, tag_b64, sub->sock, original_id, create_at);
         
         if (res == 0) {
+            /* ТОЛЬКО ЕСЛИ СООБЩЕНИЕ НОВОЕ */
             log_event("INFO", sub->sock, sub->ip_address, sub->port, 
                       "Alert %" PRIu64 " replicated (Recipient: %.12s...)", 
                       original_id, hash_b64);
-            /* notifying the local clients of this server */
+
             Recipient *rec = find_recipient(pubkey_hash);
             if (rec) {
                 Alert *new_a = &rec->alerts[rec->count - 1];
-                /* Let's take the most recently added alert */
-                notify_subscribers(pubkey_hash, &rec->alerts[rec->count - 1]);
-                /* IMPORTANT: We're forwarding the alert down the chain to other peers!
-                   The sub->sock (exclude_fd) parameter prevents it from being sent back to the source. */
+                notify_subscribers(pubkey_hash, new_a);
+                /* Пересылаем дальше только новые данные */
                 broadcast_replication(pubkey_hash, new_a, sub->sock);
+            }
+        } 
+        else if (res == 1) {
+            /* Это дубликат. Мы его уже видели. 
+               Ничего не пишем в лог и НЕ пересылаем дальше. Петля разорвана. */
+            if (verbose) {
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                          "Ignored redundant replication for ID %" PRIu64, original_id);
             }
         }
     }
