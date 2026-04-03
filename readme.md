@@ -96,8 +96,8 @@ Builds `gorgona` (client) and `gorgonad` (server). Clean: `make clean`. Rebuild:
 ### [Install Client & Server](https://github.com/psqlmaster/gorgona/releases)
 
 ```bash
-sudo dpkg -i ./gorgona_2.5.8_amd64.deb
-sudo dpkg -i ./gorgonad_2.5.8_amd64.deb
+sudo dpkg -i ./gorgona_<version>_amd64.deb
+sudo dpkg -i ./gorgonad_<version>_amd64.deb
 ```
 
 ##### Usage
