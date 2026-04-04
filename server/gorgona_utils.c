@@ -540,22 +540,44 @@ void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
     repl_ring_head = (repl_ring_head + 1) % REPL_RING_SIZE;
 }
 
-/*
- * Sends a new alert to all connected and authorized peers. 
+/**
+ * Broadcasts a new alert to all connected and authorized peers.
+ * 
+ * Includes redundant path suppression: the alert is not sent back to the 
+ * originating host. It checks both the specific file descriptor (exclude_fd) 
+ * and the originating IP address to prevent infinite gossip loops in 
+ * multi-homed or mesh network topologies.
+ * 
+ * @param pubkey_hash Binary hash of the recipient.
+ * @param alert Pointer to the alert structure to be replicated.
+ * @param exclude_fd The socket descriptor of the source (0 if local).
  */
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
+    /* 1. Encode alert components to Base64 for safe network transmission */
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
-    char *bt = base64_encode(alert->text, alert->text_len);
-    char *bk = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
-    char *bi = base64_encode(alert->iv, alert->iv_len);
-    char *bg = base64_encode(alert->tag, GCM_TAG_LEN);
+    char *bt     = base64_encode(alert->text, alert->text_len);
+    char *bk     = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
+    char *bi     = base64_encode(alert->iv, alert->iv_len);
+    char *bg     = base64_encode(alert->tag, GCM_TAG_LEN);
 
+    /* Basic safety check for encoding failures */
     if (!ph_b64 || !bt || !bk || !bi || !bg) {
         free(ph_b64); free(bt); free(bk); free(bi); free(bg);
         return;
     }
 
-    /* We use dynamic memory for replication messages  */
+    /* 2. Identify the Source IP to implement Host-Level Loop Suppression */
+    char source_ip[INET_ADDRSTRLEN] = "";
+    if (exclude_fd > 0) {
+        for (int k = 0; k < max_clients; k++) {
+            if (client_sockets[k] == exclude_fd) {
+                strncpy(source_ip, subscribers[k].ip_address, INET_ADDRSTRLEN);
+                break;
+            }
+        }
+    }
+
+    /* 3. Prepare the binary-safe replication payload */
     size_t msg_capacity = max_message_size + 2048; 
     char *repl_msg = malloc(msg_capacity);
     if (!repl_msg) {
@@ -563,23 +585,42 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
         return;
     }
 
+    /* Format: REPL|ID|CreateAt|UnlockAt|ExpireAt|Hash|Text|Key|IV|Tag */
     int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%s|%s|%s|%s|%s",
                        alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
                        ph_b64, bt, bk, bi, bg);
 
+    /* 4. Disseminate to the Peer Network */
     if (len > 0) {
         for (int i = 0; i < max_clients; i++) {
-            /* We only send to authorized PIRAMs and do not send back to the sender */
+            /* 
+             * Filtering Logic:
+             * - Must be a valid socket.
+             * - Must be a Peer (not a standard client).
+             * - Must be Authenticated (AUTH_OK).
+             * - Must NOT be the source socket (exclude_fd).
+             * - Must NOT be the source IP (prevents loops on dual-linked nodes).
+             */
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
                 subscribers[i].auth_state == AUTH_OK &&
                 client_sockets[i] != exclude_fd) {
                 
+                /* IP-based loop suppression */
+                if (source_ip[0] != '\0' && strcmp(subscribers[i].ip_address, source_ip) == 0) {
+                    if (verbose) {
+                        log_event("DEBUG", client_sockets[i], subscribers[i].ip_address, subscribers[i].port, 
+                                  "Suppressed redundant relay to source host.");
+                    }
+                    continue; 
+                }
+
                 enqueue_message(i, repl_msg, (size_t)len);
             }
         }
     }
 
+    /* 5. Final memory cleanup */
     free(repl_msg);
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }
