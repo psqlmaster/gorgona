@@ -182,4 +182,7 @@ void try_connect_peers();
 uint64_t get_max_alert_id();
 void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert);
 
+/* cleanup */
+void cleanup_subscriber(int index);
+
 #endif

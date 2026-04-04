@@ -227,29 +227,57 @@ static void process_subscribe(int i, char *buffer) {
  */
 static void process_auth(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    char *psk = buffer + 5; 
-    trim_string(psk);
+    char *copy = strdup(buffer + 5); /* Пропускаем "AUTH|" */
+    if (!copy) return;
 
-    if (strcmp(psk, sync_psk) == 0) {
+    char *psk = strtok(copy, "|");
+    char *max_alerts_str = strtok(NULL, "|");
+
+    if (!psk || !max_alerts_str) {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Malformed AUTH packet received");
+        cleanup_subscriber(i);
+        free(copy);
+        return;
+    }
+
+    int peer_max_alerts = atoi(max_alerts_str);
+
+    /* 1. Проверка пароля */
+    if (strcmp(psk, sync_psk) != 0) {
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Peer authentication failed: Wrong PSK");
+        enqueue_message(i, "Error: Wrong PSK", 15);
+        sub->close_after_send = true;
+    } 
+    /* 2. Проверка лимита базы (max_alerts) */
+    else if (peer_max_alerts != max_alerts) {
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
+                  "Cluster capacity mismatch! Local: %d, Peer: %d. Closing connection.", 
+                  max_alerts, peer_max_alerts);
+        
+        char err_msg[128];
+        int err_len = snprintf(err_msg, sizeof(err_msg), 
+                               "Error: max_alerts mismatch. Cluster expects %d", max_alerts);
+        enqueue_message(i, err_msg, err_len);
+        sub->close_after_send = true;
+    } 
+    else {
+        /* Все совпало */
         sub->type = SUB_TYPE_PEER;
         sub->auth_state = AUTH_OK;
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer authenticated successfully");
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer authenticated (Capacity: %d)", max_alerts);
         
-        /* We confirm to peer that peer is authorized */
-        enqueue_message(i, "AUTH_SUCCESS", 12);
+        /* Отвечаем успехом и своим лимитом для взаимной проверки */
+        char resp[64];
+        int r_len = snprintf(resp, sizeof(resp), "AUTH_SUCCESS|%d", max_alerts);
+        enqueue_message(i, resp, r_len);
 
-        /* The SERVER now also requests the history from a peer that has connected.
-           This resolves the issue that occurs when a peer has accumulated data while offline and then connects to us. */
+        /* Запрашиваем историю */
         uint64_t my_max = get_max_alert_id();
         char sync_req[64];
         int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);
         enqueue_message(i, sync_req, (size_t)len);
-
-    } else {
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Peer failed authentication");
-        enqueue_message(i, "AUTH_FAILED", 11);
-        sub->close_after_send = true;
     }
+    free(copy);
 }
 
 /*
@@ -369,11 +397,21 @@ void handle_command(int sub_index, char *buffer) {
     Subscriber *sub = &subscribers[sub_index];
 
     /* 1. RESPONSES (Ответы других серверов - просто логируем и выходим) */
-    if (strcmp(buffer, "AUTH_SUCCESS") == 0) {
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed our authentication");
+    if (strncmp(buffer, "AUTH_SUCCESS|", 13) == 0) {
+        int peer_max = atoi(buffer + 13);
+        
+        if (peer_max != max_alerts) {
+            log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
+                      "Cluster capacity mismatch during handshake! Local: %d, Remote: %d", 
+                      max_alerts, peer_max);
+            cleanup_subscriber(sub_index);
+            return;
+        }
+
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed authentication and capacity match");
         sub->auth_state = AUTH_OK;
         
-        /* Сразу запрашиваем историю у этого пира */
+        /* Запрашиваем историю */
         uint64_t my_max = get_max_alert_id();
         char sync_req[64];
         int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);

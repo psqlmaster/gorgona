@@ -48,7 +48,7 @@ static void set_tcp_keepalive(int fd) {
 /*
  * Completely clear the client/peer state upon disconnection. 
  */
-static void cleanup_subscriber(int index) {
+void cleanup_subscriber(int index) {
     int sd = client_sockets[index];
     if (sd <= 0) return;
 
@@ -213,28 +213,54 @@ void free_out_queue(int sub_index) {
     subscribers[sub_index].out_tail = NULL;
 }
 
-/*
- * Attempting to connect to peers that are currently inactive. 
+/**
+ * Periodically attempts to establish outgoing connections to remote peers 
+ * defined in the configuration. 
+ * 
+ * This function is non-blocking. It configures TCP Keepalive, sets sockets 
+ * to O_NONBLOCK, and initiates the authentication handshake by sending 
+ * the PSK and the local database capacity (max_alerts) for consistency checking.
  */
 void try_connect_peers() {
     static time_t last_check = 0;
     time_t now = time(NULL);
-    if (now - last_check < PEER_RECONNECT_INTERVAL) return;
+
+    /* Enforce reconnection interval to prevent socket exhaustion/spamming */
+    if (now - last_check < PEER_RECONNECT_INTERVAL) {
+        return;
+    }
     last_check = now;
 
     for (int p = 0; p < remote_peer_count; p++) {
-        if (remote_peers[p].active) continue;
+        /* Skip peers that are already connected or in the process of connecting */
+        if (remote_peers[p].active) {
+            continue;
+        }
 
         int sd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sd < 0) continue;
+        if (sd < 0) {
+            continue;
+        }
 
-        /* Делаем сокет неблокирующим сразу */
+        /* 1. Network Hardening: Setup Keepalive to detect silent connection drops */
         set_tcp_keepalive(sd);
-        fcntl(sd, F_SETFL, O_NONBLOCK);
 
-        struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(remote_peers[p].port) };
-        inet_pton(AF_INET, remote_peers[p].ip, &addr.sin_addr);
+        /* 2. Performance: Set non-blocking mode to prevent select() stalls */
+        int flags = fcntl(sd, F_GETFL, 0);
+        fcntl(sd, F_SETFL, flags | O_NONBLOCK);
 
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(remote_peers[p].port);
+        
+        if (inet_pton(AF_INET, remote_peers[p].ip, &addr.sin_addr) <= 0) {
+            log_event("ERROR", -1, remote_peers[p].ip, remote_peers[p].port, "Invalid peer IP address");
+            close(sd);
+            continue;
+        }
+
+        /* 3. Connection: Initiate non-blocking connect */
         if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno != EINPROGRESS) {
                 close(sd);
@@ -242,27 +268,47 @@ void try_connect_peers() {
             }
         }
 
-        /* Important note: Since we use a common Subscriber structure for everyone, 
-           we need to find an available slot in the client array and place this socket there. */
-        for (int i = 0; i < max_clients; i++) {
+        /* 4. Slot Assignment: Find a free spot in the global subscribers array */
+        int i;
+        for (i = 0; i < max_clients; i++) {
             if (client_sockets[i] == 0) {
                 client_sockets[i] = sd;
-                subscribers[i].sock = sd;
-                strncpy(subscribers[i].ip_address, remote_peers[p].ip, INET_ADDRSTRLEN);
-                subscribers[i].port = remote_peers[p].port;
-                subscribers[i].type = SUB_TYPE_PEER;
-                subscribers[i].auth_state = AUTH_NONE; // Сбрасываем до AUTH_SENT при отправке
                 
-                char auth_msg[128];
-                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s", sync_psk);
+                /* Initialize Subscriber metadata */
+                Subscriber *sub = &subscribers[i];
+                sub->sock = sd;
+                strncpy(sub->ip_address, remote_peers[p].ip, INET_ADDRSTRLEN);
+                sub->port = remote_peers[p].port;
+                sub->type = SUB_TYPE_PEER;
+                sub->connect_time = now;
+                sub->close_after_send = false;
+                sub->last_repl_id = 0;
+                
+                /* 5. Handshake: Send PSK and local capacity (max_alerts) 
+                 * Format: AUTH|password|max_alerts
+                 */
+                char auth_msg[256];
+                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d", 
+                                        sync_psk, max_alerts);
+                
                 enqueue_message(i, auth_msg, (size_t)auth_len);
-                subscribers[i].auth_state = AUTH_SENT;
+                sub->auth_state = AUTH_SENT;
 
+                /* Link peer config to this active socket */
                 remote_peers[p].active = true;
                 remote_peers[p].sd = sd;
-                log_event("INFO", sd, remote_peers[p].ip, remote_peers[p].port, "Replication: Connecting to peer...");
+
+                log_event("INFO", sd, sub->ip_address, sub->port, 
+                          "P2P: Initiating connection (Capacity: %d)", max_alerts);
                 break;
             }
+        }
+
+        /* If the server is at max_clients capacity, the socket will be cleaned up in the next loop */
+        if (i == max_clients) {
+            log_event("WARN", sd, remote_peers[p].ip, remote_peers[p].port, 
+                      "P2P: Connection failed - max_clients reached");
+            close(sd);
         }
     }
 }
