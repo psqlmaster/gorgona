@@ -17,7 +17,7 @@ All rights reserved. */
 #include <stdarg.h>
 #include <strings.h> 
 
-#define REPLAY_WINDOW_SIZE 50    /* Number of recent alerts to check for duplicates */
+#define REPLAY_WINDOW_SIZE 1000    /* Number of recent alerts to check for duplicates */
 #define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
 
 FILE *log_file = NULL;
