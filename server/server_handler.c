@@ -335,10 +335,6 @@ void run_server(int server_fd) {
                     subscribers[i].sock = new_socket;
                     inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
                     subscribers[i].port = ntohs(address.sin_port);
-                    subscribers[i].type = SUB_TYPE_CLIENT; 
-                    subscribers[i].auth_state = AUTH_NONE;
-                    subscribers[i].last_repl_id = 0;
-                    subscribers[i].close_after_send = false;
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;
@@ -451,7 +447,7 @@ void run_server(int server_fd) {
                                 continue;
                             }
                         } 
-                        /* 2. TEXT MODE DETECTION */
+                        /* TEXT MODE DETECTION */
                         else if (first_byte >= 32 || first_byte == '\n' || first_byte == '\r' || first_byte == '\t') {
                             if (byte == '\r') {
                                 sub->in_pos--; /* Ignore carriage returns */
@@ -464,28 +460,99 @@ void run_server(int server_fd) {
                                 if (strlen(sub->in_buffer) > 0) {
                                     log_event("DEBUG", sd, sub->ip_address, sub->port, "Text command received: %s", sub->in_buffer);
 
-                                    if (strcmp(sub->in_buffer, "?") == 0 || strcmp(sub->in_buffer, "version") == 0) {
-                                        char v_msg[128];
-                                        int v_len = snprintf(v_msg, sizeof(v_msg), "Gorgona Server %s\nGoodbye Sir.\n", VERSION ? VERSION : "1.0");
-                                        enqueue_text_only(i, v_msg, v_len);
+                                    /* COMMAND: help - Anonymous command list (no version disclosure) */
+                                    if (strcmp(sub->in_buffer, "help") == 0) {
+                                        char h_msg[] = "--- Gorgona Node Help ---\n"
+                                                       "Commands available:\n"
+                                                       "  help           - Show this list\n"
+                                                       "  info           - Show node uptime\n"
+                                                       "  status <psk>   - Show detailed node metrics (requires authentication)\n"
+                                                       "-------------------------\n";
+                                        enqueue_text_only(i, h_msg, strlen(h_msg));
                                         sub->close_after_send = true;
                                     } 
-                                    else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "help") == 0) {
-                                        char info_msg[512];
+                                    /* COMMAND: info / ? - Node identification and uptime (no version disclosure) */
+                                    else if (strcmp(sub->in_buffer, "info") == 0 || strcmp(sub->in_buffer, "?") == 0) {
                                         time_t now = time(NULL);
                                         double uptime_sec = difftime(now, server_start_time);
                                         int d = (int)(uptime_sec / 86400);
                                         int h = (int)((uptime_sec / 3600) - (d * 24));
                                         int m = (int)((uptime_sec / 60) - (d * 1440) - (h * 60));
+
+                                        char info_msg[256];
                                         int info_len = snprintf(info_msg, sizeof(info_msg),
-                                            "Gorgona Version %s\nUptime: %dd %dh %dm\nMax message size: %zu\nMax clients: %d\n",
-                                            VERSION ? VERSION : "1.0", d, h, m, max_message_size, max_clients);
+                                            "Gorgona Node | Uptime: %dd %dh %dm\nGoodbye Sir.\n", d, h, m);
                                         enqueue_text_only(i, info_msg, info_len);
                                         sub->close_after_send = true;
                                     } 
+                                    /* COMMAND: status <psk> - Authenticated diagnostic report */
+                                    else if (strncmp(sub->in_buffer, "status", 6) == 0) {
+                                        /* Basic authentication logic: skip "status" keyword and find the key */
+                                        char *provided_psk = sub->in_buffer + 6;
+                                        while (*provided_psk == ' ') provided_psk++; /* Skip whitespace */
+
+                                        if (provided_psk[0] == '\0' || strcmp(provided_psk, sync_psk) != 0) {
+                                            log_event("WARN", sd, sub->ip_address, sub->port, "Unauthorized status request (Invalid PSK)");
+                                            enqueue_text_only(i, "Error: Unauthorized. Usage: status <sync_psk>\n", 45);
+                                        } else {
+                                            /* Authentication successful - Gather detailed metrics */
+                                            char status_msg[2048];
+                                            time_t now = time(NULL);
+                                            double uptime_sec = difftime(now, server_start_time);
+                                            
+                                            /* Connection metrics */
+                                            int active_clients = 0;
+                                            int authenticated_peers = 0;
+                                            for (int j = 0; j < max_clients; j++) {
+                                                if (client_sockets[j] > 0) {
+                                                    if (subscribers[j].type == SUB_TYPE_PEER && subscribers[j].auth_state == AUTH_OK) {
+                                                        authenticated_peers++;
+                                                    } else if (subscribers[j].type == SUB_TYPE_CLIENT) {
+                                                        active_clients++;
+                                                    }
+                                                }
+                                            }
+
+                                            /* Storage metrics */
+                                            int total_alerts = 0;
+                                            for (int r = 0; r < recipient_count; r++) {
+                                                total_alerts += recipients[r].count;
+                                            }
+
+                                            int uptime_d = (int)(uptime_sec / 86400);
+                                            int uptime_h = (int)((uptime_sec / 3600) - (uptime_d * 24));
+                                            int uptime_m = (int)((uptime_sec / 60) - (uptime_d * 1440) - (uptime_h * 60));
+
+                                            snprintf(status_msg, sizeof(status_msg),
+                                                "--- Gorgona Node Detailed Status ---\n"
+                                                "Version: %s\n"
+                                                "Uptime: %dd %dh %dm\n"
+                                                "Connections:\n"
+                                                "  - Active Clients: %d / %d\n"
+                                                "  - Authenticated Peers: %d / %d (configured)\n"
+                                                "Storage Metrics:\n"
+                                                "  - Unique Recipients (Keys): %d\n"
+                                                "  - Aggregate Alert Volume: %d\n"
+                                                "  - DB Storage Mode: %s\n"
+                                                "  - Vacuum Threshold: %d%%\n"
+                                                "Operational Configuration:\n"
+                                                "  - Max Message Size: %zu MB\n"
+                                                "  - Logging Level: %s\n"
+                                                "------------------------------------\n",
+                                                VERSION ? VERSION : "1.0", uptime_d, uptime_h, uptime_m,
+                                                active_clients, max_clients, authenticated_peers, remote_peer_count,
+                                                recipient_count, total_alerts,
+                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
+                                                vacuum_threshold, max_message_size / (1024 * 1024), log_level
+                                            );
+                                            enqueue_text_only(i, status_msg, strlen(status_msg));
+                                        }
+                                        sub->close_after_send = true;
+                                    }
+                                    /* Handle unknown text commands */
                                     else {
                                         log_event("WARN", sd, sub->ip_address, sub->port, "Unknown text command: %s", sub->in_buffer);
-                                        enqueue_text_only(i, "Error: Unknown command\n", 23);
+                                        enqueue_text_only(i, "Error: Unknown command. Type 'help' for options.\n", 50);
                                         sub->close_after_send = true;
                                     }
                                 }
@@ -493,10 +560,10 @@ void run_server(int server_fd) {
                                 continue;
                             }
 
-                            /* Prevent text buffer overflow */
+                            /* Prevent text buffer overflow and DoS attempts via long strings */
                             if (sub->in_pos >= max_message_size) {
-                                log_event("WARN", sd, sub->ip_address, sub->port, "Text command limit exceeded");
-                                enqueue_text_only(i, "Error: Text limit exceeded\n", 27);
+                                log_event("WARN", sd, sub->ip_address, sub->port, "Text command buffer limit exceeded");
+                                enqueue_text_only(i, "Error: Command too long\n", 25);
                                 sub->close_after_send = true;
                                 sub->in_pos = 0;
                             }

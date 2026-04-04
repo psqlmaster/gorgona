@@ -221,12 +221,35 @@ gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # E
 
 - You can check server status from any device using standard telnet/nc
 ```bash 
-echo "info" | nc 64.188.70.158 7777
-# Output:
-# Gorgona Server 2.7.2
-# Uptime: 12d 4h 20m
-# Max message size: 5242880 bytes
-# Max clients: 100
+echo "help" | nc localhost 7777
+```
+```txt
+--- Gorgona Node Help ---
+Commands available:
+  help           - Show this list
+  info           - Show node uptime
+  status <psk>   - Show detailed node metrics (requires authentication)
+-------------------------
+```
+```bash
+echo "status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3" | nc localhost 7777
+```
+```txt
+--- Gorgona Node Detailed Status ---
+Version: 2.8.4
+Uptime: 0d 0h 1m
+Connections:
+  - Active Clients: 1 / 100
+  - Authenticated Peers: 2 / 2 (configured)
+Storage Metrics:
+  - Unique Recipients (Keys): 4
+  - Aggregate Alert Volume: 2275
+  - DB Storage Mode: Persistent (Disk)
+  - Vacuum Threshold: 25%
+Operational Configuration:
+  - Max Message Size: 5 MB
+  - Logging Level: info
+------------------------------------
 ```
 
 #### Run Server
