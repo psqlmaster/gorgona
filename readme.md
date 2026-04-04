@@ -2,8 +2,6 @@
 ---
 #### Gorgona. End-to-End Encrypted Time-Locked Messaging with Remote Command Execution 
 
->[📖 habr -> How I wrote a distributed Cron in C with P2P replication](https://habr.com/ru/sandbox/279228/)
-  
 - [Introduction](#introduction)
 - [Features](#features)
 - [Advantages](#advantages)
