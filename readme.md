@@ -234,6 +234,7 @@ Commands available:
 ```bash
 echo "status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3" | nc localhost 7777
 ```
+**Output:**
 ```txt
 --- Gorgona Node Detailed Status ---
 Version: 2.8.4
@@ -775,18 +776,16 @@ gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+
 # Check and compare the time after 10 seconds. 
 ```
 - Server Status via Telnet
-```sh
-telnet 64.188.70.158 7777
+```bash
+❯ telnet 64.188.70.158 7777
+Trying 64.188.70.158...
+Connected to 64.188.70.158.
+Escape character is '^]'.
+info
+Gorgona Node | Uptime: 0d 1h 29m
+Goodbye Sir.
+Connection closed by foreign host.
 ```
-    Trying 64.188.70.158...
-    Connected to 64.188.70.158.
-    Escape character is '^]'.
-    info
-    Gorgona Version 2.8.1
-    Uptime: 0d 7h 20m
-    Max message size: 5242880
-    Max clients: 100
-    Connection closed by foreign host.
 
 - example starting service
 ```sh
