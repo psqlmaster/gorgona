@@ -242,8 +242,15 @@ void remove_oldest_alert(Recipient *rec) {
 /**
  * Adds a new encrypted alert to the recipient's record.
  * 
- * Supports both locally generated alerts (from clients) and replicated alerts (from peers).
- * Includes Anti-Replay protection via staleness threshold and binary payload deduplication.
+ * Supports both locally generated alerts (from clients via SEND) and 
+ * replicated alerts (from peers via REPL/SYNC).
+ * 
+ * Logic flow:
+ * 1. Layer 1 Anti-Replay: Staleness check (skipped for replication).
+ * 2. Layer 2 Anti-Replay: Sliding window binary deduplication.
+ * 3. Gossip Suppression: Returns status 1 if a replicated duplicate is found.
+ * 4. Housekeeping: Cleanup expired and overflowed alerts.
+ * 5. Persistence: Save to disk via mmap if enabled.
  * 
  * @param pubkey_hash Binary hash of the recipient's public key.
  * @param unlock_at Timestamp when the alert becomes decryptable.
@@ -253,21 +260,21 @@ void remove_oldest_alert(Recipient *rec) {
  * @param base64_iv Base64 encoded Initialization Vector.
  * @param base64_tag Base64 encoded GCM authentication tag.
  * @param client_fd Socket descriptor of the sender.
- * @param forced_id Original Snowflake ID (used for replication, 0 for new local alerts).
- * @param forced_create_at Original creation timestamp (used for replication, 0 for new local alerts).
+ * @param forced_id Original ID (provided by peer), or 0 for new local alerts.
+ * @param forced_create_at Original creation time, or 0 for new local alerts.
  * 
- * @return 0 on success (new), 1 if duplicate (ignore), -1 if stale, -2 if replay attack, -3 on error.
+ * @return 0 on success (new), 1 if duplicate (suppressed), -1 if stale, -2 if replay attack, -3 on error.
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
                int client_fd, uint64_t forced_id, time_t forced_create_at) {
     
-    /* Ensure the recipient exists in memory; create if necessary */
+    /* 1. Recipient Management: Find or create the recipient record */
     Recipient *rec = find_recipient(pubkey_hash);
     if (!rec) rec = add_recipient(pubkey_hash);
     if (!rec) return -3;
 
-    /* Identify sender metadata for security logging context */
+    /* 2. Metadata: Identify sender context for logging purposes */
     const char *client_ip = NULL;
     int client_port = 0;
     for (int i = 0; i < max_clients; i++) {
@@ -281,21 +288,21 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     time_t now = time(NULL);
 
     /* --- ANTI-REPLAY LAYER 1: Staleness Check --- 
-       Reject alerts that are too far in the past to prevent processing of old captures. 
-       Bypassed for replication (forced_id > 0) to allow historical data sync. */
+       Prevents processing of old captured traffic.
+       Crucial: Skip this check for replication (forced_id > 0) to allow historical sync. */
     if (forced_id == 0 && unlock_at < (now - STALE_THRESHOLD_SEC)) {
         log_event("WARN", client_fd, client_ip, client_port, 
                   "Rejected stale alert (unlock_at is %ld seconds behind)", (long)(now - unlock_at));
         return -1;
     }
 
-    /* Decode the primary payload for deduplication check */
+    /* 3. Pre-check: Decode the primary payload for deduplication */
     size_t new_text_len;
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
     if (!decoded_text) return -3;
 
     /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication & Gossip Suppression --- 
-       Check the most recent alerts for this recipient to catch duplicate binary payloads. */
+       Check the most recent entries for this recipient to identify duplicate payloads. */
     int start_check = (rec->count > REPLAY_WINDOW_SIZE) ? (rec->count - REPLAY_WINDOW_SIZE) : 0;
     for (int j = start_check; j < rec->count; j++) {
         if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
@@ -303,7 +310,8 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
                 free(decoded_text);
                 
                 if (forced_id > 0) {
-                    /* Peer duplicate: Signal the caller to stop propagation (Gossip Suppression) */
+                    /* Peer duplicate: We already have this. 
+                       Return 1 to stop the Gossip Protocol from relaying this further. */
                     if (verbose) {
                         log_event("DEBUG", client_fd, client_ip, client_port, 
                                   "Ignored redundant replication for ID %" PRIu64, forced_id);
@@ -311,7 +319,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
                     return 1; 
                 }
 
-                /* Client duplicate: Flag as a potential replay attack */
+                /* Client duplicate: Treat as a malicious replay attack */
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
                 return -2;
@@ -320,15 +328,15 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
 
     /* --- HOUSEKEEPING --- 
-       Remove expired alerts and enforce capacity limits before adding new data. */
+       Perform maintenance tasks. Must be done BEFORE pointng to rec->alerts[rec->count] 
+       because these functions may shift array elements in memory. */
     clean_expired_alerts(rec);
     if (rec->count >= max_alerts) {
         remove_oldest_alert(rec);
     }
 
     /* --- INITIALIZATION --- 
-       Prepare the Alert structure. Pointer is assigned only after housekeeping to avoid 
-       invalid memory references if the array was shifted. */
+       Prepare the Alert structure at the tail of the recipient's array. */
     Alert *alert = &rec->alerts[rec->count];
     memset(alert, 0, sizeof(Alert));
     
@@ -337,7 +345,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     
-    /* Decode and store GCM Authentication Tag */
+    /* Decode GCM Authentication Tag */
     size_t tag_len_actual;
     unsigned char *tag_raw = base64_decode(base64_tag, &tag_len_actual);
     if (tag_raw && tag_len_actual == GCM_TAG_LEN) {
@@ -346,7 +354,8 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     free(tag_raw);
 
     /* --- IDENTITY ASSIGNMENT --- 
-       Replicated alerts preserve their original ID. Local alerts generate a new Snowflake ID. */
+       Replicated alerts maintain their original ID/timestamp to ensure cluster-wide 
+       consistency and sort order. Local alerts get new Snowflake IDs. */
     if (forced_id > 0) {
         alert->id = forced_id;
         alert->create_at = forced_create_at;
@@ -355,14 +364,15 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         alert->create_at = now;
     }
 
-    /* Log in the replication ring to allow other peers to SYNC this new entry */
+    /* Queue for the replication ring buffer so other nodes can pull this via SYNC */
     add_to_repl_ring(alert->id, pubkey_hash);
 
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
 
-    /* --- PERSISTENCE --- */
+    /* --- PERSISTENCE --- 
+       Sync the new alert to the mmap-backed database if enabled. */
     if (use_disk_db) {
         if (alert_db_save_alert(rec, alert) != 0) {
             log_event("ERROR", client_fd, client_ip, client_port, "Failed to persist alert via mmap");
@@ -374,10 +384,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     rec->count++;
     
     log_event("DEBUG", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added successfully [Recipient: %.12s...]", 
+              "Alert %" PRIu64 " added successfully [Recipient Hash: %.12s...]", 
               alert->id, base64_text);
 
-    return 0; /* New alert successfully committed to memory/disk */
+    return 0; /* New alert committed successfully */
 }
 
 
@@ -543,41 +553,29 @@ void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
 /**
  * Broadcasts a new alert to all connected and authorized peers.
  * 
- * Includes redundant path suppression: the alert is not sent back to the 
- * originating host. It checks both the specific file descriptor (exclude_fd) 
- * and the originating IP address to prevent infinite gossip loops in 
- * multi-homed or mesh network topologies.
+ * This function handles the dissemination of alerts across the P2P network.
+ * It uses a specific socket exclusion (exclude_fd) to prevent sending the 
+ * data back to the immediate source. 
+ * 
+ * Network loops are prevented by the idempotency logic in the receiving 
+ * node's add_alert() function.
  * 
  * @param pubkey_hash Binary hash of the recipient.
  * @param alert Pointer to the alert structure to be replicated.
- * @param exclude_fd The socket descriptor of the source (0 if local).
+ * @param exclude_fd The socket descriptor to skip (the source of the alert).
  */
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
-    /* 1. Encode alert components to Base64 for safe network transmission */
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     char *bt     = base64_encode(alert->text, alert->text_len);
     char *bk     = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
     char *bi     = base64_encode(alert->iv, alert->iv_len);
     char *bg     = base64_encode(alert->tag, GCM_TAG_LEN);
 
-    /* Basic safety check for encoding failures */
     if (!ph_b64 || !bt || !bk || !bi || !bg) {
         free(ph_b64); free(bt); free(bk); free(bi); free(bg);
         return;
     }
 
-    /* 2. Identify the Source IP to implement Host-Level Loop Suppression */
-    char source_ip[INET_ADDRSTRLEN] = "";
-    if (exclude_fd > 0) {
-        for (int k = 0; k < max_clients; k++) {
-            if (client_sockets[k] == exclude_fd) {
-                strncpy(source_ip, subscribers[k].ip_address, INET_ADDRSTRLEN);
-                break;
-            }
-        }
-    }
-
-    /* 3. Prepare the binary-safe replication payload */
     size_t msg_capacity = max_message_size + 2048; 
     char *repl_msg = malloc(msg_capacity);
     if (!repl_msg) {
@@ -585,42 +583,26 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
         return;
     }
 
-    /* Format: REPL|ID|CreateAt|UnlockAt|ExpireAt|Hash|Text|Key|IV|Tag */
     int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%s|%s|%s|%s|%s",
                        alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
                        ph_b64, bt, bk, bi, bg);
 
-    /* 4. Disseminate to the Peer Network */
     if (len > 0) {
         for (int i = 0; i < max_clients; i++) {
             /* 
-             * Filtering Logic:
-             * - Must be a valid socket.
-             * - Must be a Peer (not a standard client).
-             * - Must be Authenticated (AUTH_OK).
-             * - Must NOT be the source socket (exclude_fd).
-             * - Must NOT be the source IP (prevents loops on dual-linked nodes).
+             * Relay to all authenticated peers except the one that 
+             * just sent us this alert.
              */
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
                 subscribers[i].auth_state == AUTH_OK &&
                 client_sockets[i] != exclude_fd) {
                 
-                /* IP-based loop suppression */
-                if (source_ip[0] != '\0' && strcmp(subscribers[i].ip_address, source_ip) == 0) {
-                    if (verbose) {
-                        log_event("DEBUG", client_sockets[i], subscribers[i].ip_address, subscribers[i].port, 
-                                  "Suppressed redundant relay to source host.");
-                    }
-                    continue; 
-                }
-
                 enqueue_message(i, repl_msg, (size_t)len);
             }
         }
     }
 
-    /* 5. Final memory cleanup */
     free(repl_msg);
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }
