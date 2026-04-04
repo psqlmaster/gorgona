@@ -12,8 +12,9 @@ VERSION = $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' | tr
 DEFAULT_CHANGELOG_MSG = New release of gorgona client and server.
 
 # Source files
-gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c
-gorgonaD_SRC = server/gorgonad.c server/config.c server/gorgona_utils.c server/server_handler.c server/snowflake.c server/alert_db.c common/encrypt.c server/commands.c
+gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c common/common.c
+gorgonaD_SRC = server/gorgonad.c server/config.c server/gorgona_utils.c server/server_handler.c server/snowflake.c server/alert_db.c \
+common/encrypt.c common/common.c server/commands.c
 TEST_SRC = test/test_config.c test/test_alert_listen.c test/test_gorgona.c
 
 # Object files

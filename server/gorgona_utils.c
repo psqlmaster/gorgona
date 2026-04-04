@@ -6,6 +6,7 @@ All rights reserved. */
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include "snowflake.h"
+#include "common.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -106,11 +107,11 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
     }
 } 
 
-void get_utc_time_str(char *buffer, size_t buffer_size) {
+/* void get_utc_time_str(char *buffer, size_t buffer_size) {
     time_t now = time(NULL);
     struct tm *utc_time = gmtime(&now);
     strftime(buffer, buffer_size, "[%Y-%m-%d %H:%M:%S UTC]", utc_time);
-}
+} */
 
 void trim_string(char *str) {
     size_t len = strlen(str);

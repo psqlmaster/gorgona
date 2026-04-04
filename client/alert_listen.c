@@ -1,6 +1,7 @@
 #define _XOPEN_SOURCE 700
 #include "encrypt.h"
 #include "config.h"
+#include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -949,9 +950,10 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             if (backoff_ms > MAX_BACKOFF_CAP_MS) {
                 backoff_ms = MAX_BACKOFF_CAP_MS;
             }
-
-            fprintf(stderr, "Connection lost / failed, reconnecting in ~%d ms (attempt %d)...\n",
-                    backoff_ms, consecutive_failures + 1);
+            char time_str[32];
+            get_utc_time_str(time_str, sizeof(time_str));
+            fprintf(stderr, "%s Connection lost / failed, reconnecting in ~%d ms (attempt %d)...\n",
+                    time_str, backoff_ms, consecutive_failures + 1);
 
             struct timespec ts;
             ts.tv_sec = backoff_ms / 1000;
