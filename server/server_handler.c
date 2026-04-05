@@ -566,6 +566,7 @@ void run_server(int server_fd) {
                                             time_t oldest_ts = 0;
 
                                             for (int r = 0; r < recipient_count; r++) {
+                                                clean_expired_alerts(&recipients[r]);
                                                 total_waste += recipients[r].waste_count;
                                                 total_bytes += recipients[r].used_size;
                                                 for (int i = 0; i < recipients[r].count; i++) {
