@@ -558,11 +558,17 @@ void run_server(int server_fd) {
                                                     }
                                                 }
                                             }
-
                                             /* Storage metrics */
-                                            int total_alerts = 0;
+                                            int active_alerts = 0;
+                                            int inactive_alerts = 0;
                                             for (int r = 0; r < recipient_count; r++) {
-                                                total_alerts += recipients[r].count;
+                                                for (int i = 0; i < recipients[r].count; i++) {
+                                                    if (recipients[r].alerts[i].active) {
+                                                        active_alerts++;
+                                                    } else {
+                                                        inactive_alerts++;
+                                                    }
+                                                }
                                             }
 
                                             int uptime_d = (int)(uptime_sec / 86400);
@@ -578,7 +584,9 @@ void run_server(int server_fd) {
                                                 "  - Authenticated Peers: %d / %d (configured)\n"
                                                 "Storage Metrics:\n"
                                                 "  - Unique Recipients (Keys): %d\n"
-                                                "  - Aggregate Alert Volume: %d\n"
+                                                "  - Active Alerts (Live): %d\n"
+                                                "  - Inactive Alerts (Waste): %d\n"
+                                                "  - Total Slots in Memory: %d\n"
                                                 "  - DB Storage Mode: %s\n"
                                                 "  - Vacuum Threshold: %d%%\n"
                                                 "Operational Configuration:\n"
@@ -588,7 +596,7 @@ void run_server(int server_fd) {
                                                 "------------------------------------\n",
                                                 VERSION ? VERSION : "1.0", uptime_d, uptime_h, uptime_m,
                                                 active_clients, max_clients, authenticated_peers, remote_peer_count,
-                                                recipient_count, total_alerts,
+                                                recipient_count, active_alerts, inactive_alerts, (active_alerts + inactive_alerts),
                                                 use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
                                                 vacuum_threshold, max_alerts, max_message_size / (1024 * 1024), log_level
                                             );
