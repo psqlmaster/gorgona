@@ -189,3 +189,49 @@ Gorgona is a high-performance “digital nervous system” for distributed infra
 The project is completely open-source. If you are into system programming in C, check out GitHub. Stars, forks, and discussions of new use cases are more than welcome!
 
 [Link to GitHub: https://github.com/psqlmaster/gorgona]
+
+**get cluster status:**
+```bash
+cmd="status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3"; echo "$cmd" | nc 64.188.70.158 7777; echo "$cmd" | nc 46.138.247.148 7777
+```
+output:
+```txt
+--- Gorgona Node [64.188.70.158 7777] Detailed Status ---
+Version: 2.9.0
+Uptime: 0d 3h 34m
+Connections:
+  - Active Clients: 3 / 100
+  - Authenticated Peers: 2 / 1 (configured)
+Storage Metrics:
+  - DB Storage Mode: Persistent (Disk)
+  - Unique Recipients (Keys): 5
+  - Active Alerts (Live): 3043
+  - Database Size: 1.24 MB
+  - Disk Waste (Awaiting Vacuum): 0
+  - Vacuum Threshold: 50%
+  - History Starts From: 2026-04-05 12:45:55 UTC
+Operational Configuration:
+  - Max Alerts per Key: 1000
+  - Max Message Size: 2 MB
+  - Logging Level: info
+-----------------------------------------------------
+--- Gorgona Node [192.168.1.200 7777] Detailed Status ---
+Version: 2.9.0
+Uptime: 0d 3h 34m
+Connections:
+  - Active Clients: 2 / 100
+  - Authenticated Peers: 2 / 1 (configured)
+Storage Metrics:
+  - DB Storage Mode: Persistent (Disk)
+  - Unique Recipients (Keys): 5
+  - Active Alerts (Live): 3043
+  - Database Size: 1.24 MB
+  - Disk Waste (Awaiting Vacuum): 0
+  - Vacuum Threshold: 50%
+  - History Starts From: 2026-04-05 12:45:55 UTC
+Operational Configuration:
+  - Max Alerts per Key: 1000
+  - Max Message Size: 2 MB
+  - Logging Level: info
+-----------------------------------------------------
+```
