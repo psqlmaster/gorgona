@@ -17,7 +17,6 @@ All rights reserved. */
 #include <stdarg.h>
 #include <strings.h> 
 
-#define REPLAY_WINDOW_SIZE 1000    /* Number of recent alerts to check for duplicates */
 #define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
 
 FILE *log_file = NULL;
@@ -301,25 +300,31 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
     if (!decoded_text) return -3;
 
-    /* --- ANTI-REPLAY LAYER 2: Sliding Window Deduplication & Gossip Suppression --- 
-       Check the most recent entries for this recipient to identify duplicate payloads. */
-    int start_check = (rec->count > REPLAY_WINDOW_SIZE) ? (rec->count - REPLAY_WINDOW_SIZE) : 0;
-    for (int j = start_check; j < rec->count; j++) {
+    /* --- ANTI-REPLAY LAYER 2: Full-Record Idempotency & Gossip Suppression --- 
+       To ensure absolute stability in mesh topologies and large-scale historical syncs,
+       we perform a deduplication check against the entire history of the recipient.
+       Checking the full record depth (rec->count) provides 100% loop prevention 
+       with negligible performance cost for the current database limits. */
+    for (int j = 0; j < rec->count; j++) {
+        /* Optimization: Only compare active alerts with identical binary lengths */
         if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
+                /* Duplicate detected: Release the decoded buffer and determine status */
                 free(decoded_text);
                 
                 if (forced_id > 0) {
-                    /* Peer duplicate: We already have this. 
-                       Return 1 to stop the Gossip Protocol from relaying this further. */
+                    /* REPLICATION DUPLICATE (Idempotency):
+                       The node already possesses this alert. We return 1 to signal 
+                       the dispatcher to terminate the gossip relay chain here. */
                     if (verbose) {
                         log_event("DEBUG", client_fd, client_ip, client_port, 
-                                  "Ignored redundant replication for ID %" PRIu64, forced_id);
+                                  "Suppressed redundant replication for ID %" PRIu64, forced_id);
                     }
                     return 1; 
                 }
-
-                /* Client duplicate: Treat as a malicious replay attack */
+                /* CLIENT REPLAY ATTACK:
+                   A client (or an external attacker) is attempting to re-inject 
+                   an existing binary payload. Flag this as a security warning. */
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
                 return -2;

@@ -582,6 +582,7 @@ void run_server(int server_fd) {
                                                 "  - DB Storage Mode: %s\n"
                                                 "  - Vacuum Threshold: %d%%\n"
                                                 "Operational Configuration:\n"
+                                                "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
                                                 "  - Logging Level: %s\n"
                                                 "------------------------------------\n",
@@ -589,7 +590,7 @@ void run_server(int server_fd) {
                                                 active_clients, max_clients, authenticated_peers, remote_peer_count,
                                                 recipient_count, total_alerts,
                                                 use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
-                                                vacuum_threshold, max_message_size / (1024 * 1024), log_level
+                                                vacuum_threshold, max_alerts, max_message_size / (1024 * 1024), log_level
                                             );
                                             enqueue_text_only(i, status_msg, strlen(status_msg));
                                         }
