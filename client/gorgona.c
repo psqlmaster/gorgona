@@ -51,7 +51,7 @@ void print_help(const char *program_name) {
     printf(" ip = <IP_address> (example: 64.188.70.158)\n");
     printf(" port = <port> (example: 7777)\n");
     printf(" [exec_commands]\n");
-    printf(" <key> = <script_path> (example: app start = /home/su/repository/c/gorgona/test/lsblk.sh)\n");
+    printf(" <key> = <script_path> time_limit = <sec> (example: app start = /home/su/repository/c/gorgona/test/lsblk.sh time_limit = 10)\n");
     printf("\nExamples:\n");
     printf(" %s listen single RWTPQzuhzBw=\n", program_name);
     printf(" %s listen last RWTPQzuhzBw= # Gets the last 1 message\n", program_name);

@@ -96,7 +96,7 @@ void read_config(Config *config, int verbose) {
                 }
             } 
             else if (in_exec_section) {
-                /* Inline 'key = value' support for backward compatibility */
+                /* Handle 'key = value' */
                 if (strcmp(key, "key") == 0) {
                     strncpy(current_required_key, value, sizeof(current_required_key) - 1);
                     current_required_key[sizeof(current_required_key) - 1] = '\0';
@@ -105,21 +105,35 @@ void read_config(Config *config, int verbose) {
 
                 if (config->exec_count < MAX_EXEC_COMMANDS) {
                     ExecCommand *cmd = &config->exec_commands[config->exec_count];
-                    
+                    cmd->time_limit = 0; /* By default, there is no limit */
+                    /* Replace everything to the right of the #, including the # itself, with the end of the line */
+                    char *comment_ptr = strchr(value, '#');
+                    if (comment_ptr) {
+                        *comment_ptr = '\0';
+                    }
+                    /* find time_limit in the remaining (empty) string */
+                    char *limit_ptr = strstr(value, "time_limit =");
+                    if (limit_ptr) {
+                        /* Extract the number */
+                        cmd->time_limit = atoi(limit_ptr + 12);
+                        /* Trim the line before “time_limit =” so that only the path remains */
+                        *limit_ptr = '\0';
+                    }
+                    char *cleaned_path = trim_spaces(value);
+
+                    /* Копируем результат в структуру */
                     strncpy(cmd->key, key, sizeof(cmd->key) - 1);
                     cmd->key[sizeof(cmd->key) - 1] = '\0';
                     
-                    strncpy(cmd->value, value, sizeof(cmd->value) - 1);
+                    strncpy(cmd->value, cleaned_path, sizeof(cmd->value) - 1);
                     cmd->value[sizeof(cmd->value) - 1] = '\0';
                     
-                    /* Store the key required for this specific command */
                     strncpy(cmd->required_key, current_required_key, sizeof(cmd->required_key) - 1);
                     cmd->required_key[sizeof(cmd->required_key) - 1] = '\0';
 
                     if (verbose) {
-                        printf("Config: Loaded exec_command[%d]: key='%s' required_key='%s'\n",
-                               config->exec_count, cmd->key, 
-                               cmd->required_key[0] ? cmd->required_key : "(any)");
+                        printf("Config: Loaded exec_command[%d]: key='%s' path='%s' limit=%ds\n",
+                               config->exec_count, cmd->key, cmd->value, cmd->time_limit);
                     }
                     config->exec_count++;
                 }

@@ -135,7 +135,9 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
     snprintf(priv_file, sizeof(priv_file), "/etc/gorgona/%s.key", pubkey_hash_b64);
     FILE *priv_fp = fopen(priv_file, "rb");
     if (!priv_fp) {
-        if (verbose) fprintf(stderr, "Private key not found: %s\n", priv_file);
+        char time_str[32];
+        get_utc_time_str(time_str, sizeof(time_str));
+        if (verbose) fprintf(stderr, "%s Private key not found: %s\n", time_str, priv_file);
         return 0;
     }
     fclose(priv_fp);
@@ -466,7 +468,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
         return;
     }
 
-    /* -------------------------------------------------------------------------
+/* -------------------------------------------------------------------------
      * 8. DECRYPTION & EXECUTION
      * -------------------------------------------------------------------------
      * If we reach here, the alert is unlocked and valid.
@@ -495,8 +497,9 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
         } else {
             /* Command Execution Logic */
             char *final_cmd = NULL;
+
             if (config->exec_count == 0) {
-                /* No ACLs defined: run raw message as command */
+                /* No ACLs defined: run raw message as command (no time_limit available) */
                 final_cmd = strdup(plaintext);
             } else {
                 /* ACL Check: match message to allowed scripts */
@@ -510,16 +513,34 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
 
                     size_t k_match_len = strlen(ec->key);
                     if (strncmp(plaintext, ec->key, k_match_len) == 0) {
-                        if (plaintext[k_match_len] == '\0' || isspace(plaintext[k_match_len])) {
+                        /* Check for boundary match: exact string or followed by space */
+                        if (plaintext[k_match_len] == '\0' || isspace((unsigned char)plaintext[k_match_len])) {
                             const char *args = plaintext + k_match_len;
-                            while (isspace(*args)) args++;
-                            final_cmd = sanitize_and_concat(ec->value, args);
-                            break;
+                            while (isspace((unsigned char)*args)) args++;
+
+                            /* Generate sanitized command with arguments */
+                            char *raw_cmd = sanitize_and_concat(ec->value, args);
+                            if (raw_cmd) {
+                                /* Apply time_limit if set (> 0) using the 'timeout' utility.
+                                 * This prevents the client from hanging if the script freezes. */
+                                if (ec->time_limit > 0) {
+                                    size_t len = strlen(raw_cmd) + 64;
+                                    final_cmd = malloc(len);
+                                    if (final_cmd) {
+                                        snprintf(final_cmd, len, "timeout -s KILL %d %s", ec->time_limit, raw_cmd);
+                                    }
+                                    free(raw_cmd);
+                                } else {
+                                    final_cmd = raw_cmd;
+                                }
+                            }
+                            break; /* Found a match, exit the loop */
                         }
                     }
                 }
             }
 
+            /* Execute the final command (either raw or wrapped in timeout) */
             if (final_cmd) {
                 if (daemon_exec_flag) {
                     if (verbose) printf("Execution: Launching daemon: %s\n", final_cmd);

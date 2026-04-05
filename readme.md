@@ -131,13 +131,33 @@ If an attack is detected, the server logs the event as a `WARN` (including clien
 
 - `-v, --verbose`: Enables verbose output for debugging.
 - `-e, --exec`: For 'listen' command: execute messages as system commands (requires `pubkey_hash_b64`).
-- `-d, --daemon-exec`: Used with `-e/--exec` for 'listen' command: executes messages as **background daemons** (via `fork()` + `setsid()`).  
-      Output from executed commands is written to the file specified by the environment variable `gorgona_LOG_FILE` (e.g., `gorgona_LOG_FILE=/var/log/gorgona.log gorgona -ed listen new ...`).  
-      If `gorgona_LOG_FILE` is not set, command output is discarded (`/dev/null`).
   - If the `[exec_commands]` section in `/etc/gorgona/gorgona.conf` is empty, all decrypted messages are executed.
-  - If `[exec_commands]` contains entries (e.g., `greengage start = /path/to/script.sh`), only messages matching a key are executed by running the corresponding script.
+  - If `[exec_commands]` contains entries (e.g., `app start = /path/to/script.sh`), only messages matching a key are executed by running the corresponding script.
+  - **Execution Limits**: You can specify an optional `time_limit = N` (in seconds) in the config file. If the command exceeds this time, it will be forcefully terminated (requires the `timeout` utility). 
+    *Example: `app start = /usr/local/bin/script.sh time_limit = 10`*
+- `-d, --daemon-exec`: Used with `-e/--exec` for 'listen' command: executes messages as **background daemons** (via `fork()` + `setsid()`).  
+  - Output from executed commands is written to the file specified by the environment variable `gorgona_LOG_FILE` (e.g., `gorgona_LOG_FILE=/var/log/gorgona.log gorgona -ed listen new ...`).  
+  - If `gorgona_LOG_FILE` is not set, command output is discarded (`/dev/null`).
+  - The `time_limit` also applies to background processes, preventing "zombie" or frozen scripts from accumulating.
 - `-h, --help`: Displays help message.
 - `-V, --version`: Current version.
+
+---
+
+### Подсказка по формату конфига для README (опционально):
+Вы можете добавить этот пример в раздел конфигурации, чтобы пользователям было понятнее:
+
+```ini
+[exec_commands]
+# Basic command without limit
+sys_info = /usr/local/bin/sysinfo.sh
+
+# Command with 5-second execution limit
+weather = /usr/local/bin/get_weather.sh time_limit = 5
+
+# Command with limit and comment (comment must be at the end)
+backup = /usr/local/bin/backup.sh time_limit = 60 # Run heavy backup
+```
 
 > Note: Flags `-v` and `-e` can be combined (e.g., `-ve`) for verbose output during command execution.
 
@@ -280,14 +300,14 @@ ip = 64.188.70.158
 port = 7777
 
 [exec_commands]
-<key> = <script_path>
+<key> = <script_path> time_limit = <sec>
 ```
 
 **Example**:
 
 ```ini
 [exec_commands]
-app start = /home/su/repository/c/gorgona/test/script.sh
+app start = /home/su/repository/c/gorgona/test/script.sh time_limit = 5
 ```
 
 ##### Recommended (Variant B) - per-key sections

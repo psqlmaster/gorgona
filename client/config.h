@@ -8,6 +8,7 @@ typedef struct {
     char key[256];
     char value[1024];
     char required_key[256];
+    int time_limit;
 } ExecCommand;
 
 typedef struct {

@@ -23,9 +23,9 @@ gorgonaD_OBJ = $(gorgonaD_SRC:.c=.o)
 TEST_OBJ = $(TEST_SRC:.c=.o)
 
 # Test object files (без дублирующих модулей)
-TEST_CONFIG_OBJ = test/test_config.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
+TEST_CONFIG_OBJ = test/test_config.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o common/common.o
 #TEST_ALERT_SEND_OBJ = test/test_alert_send.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
-TEST_ALERT_LISTEN_OBJ = test/test_alert_listen.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
+TEST_ALERT_LISTEN_OBJ = test/test_alert_listen.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o common/common.o
 TEST_GORGONA_OBJ = test/test_gorgona.o
 
 # Test executables
