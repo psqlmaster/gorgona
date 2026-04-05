@@ -545,8 +545,8 @@ void run_server(int server_fd) {
                                             char status_msg[2048];
                                             time_t now = time(NULL);
                                             double uptime_sec = difftime(now, server_start_time);
-                                            
-                                            /* Connection metrics */
+
+                                            /* 1. Connection metrics */
                                             int active_clients = 0;
                                             int authenticated_peers = 0;
                                             for (int j = 0; j < max_clients; j++) {
@@ -558,23 +558,48 @@ void run_server(int server_fd) {
                                                     }
                                                 }
                                             }
-                                            /* Storage metrics */
+
+                                            /* 2. Storage metrics calculation */
                                             int active_alerts = 0;
-                                            int inactive_alerts = 0;
+                                            int total_waste = 0;
+                                            size_t total_bytes = 0;
+                                            time_t oldest_ts = 0;
+
                                             for (int r = 0; r < recipient_count; r++) {
+                                                total_waste += recipients[r].waste_count;
+                                                total_bytes += recipients[r].used_size;
                                                 for (int i = 0; i < recipients[r].count; i++) {
                                                     if (recipients[r].alerts[i].active) {
                                                         active_alerts++;
-                                                    } else {
-                                                        inactive_alerts++;
+                                                        /* Ищем время самого старого живого алерта */
+                                                        if (oldest_ts == 0 || recipients[r].alerts[i].create_at < oldest_ts) {
+                                                            oldest_ts = recipients[r].alerts[i].create_at;
+                                                        }
                                                     }
                                                 }
+                                            }
+
+                                            char oldest_time[32] = "N/A";
+                                            if (active_alerts > 0 && oldest_ts > 0) {
+                                                struct tm *tm_info = gmtime(&oldest_ts);
+                                                strftime(oldest_time, sizeof(oldest_time), "%Y-%m-%d %H:%M:%S", tm_info);
+                                            }
+
+                                            /* 3. Prepare storage-specific strings */
+                                            char disk_metrics[512] = "";
+                                            if (use_disk_db) {
+                                                snprintf(disk_metrics, sizeof(disk_metrics),
+                                                         "  - Database Size: %.2f MB\n"
+                                                         "  - Disk Waste (Awaiting Vacuum): %d\n"
+                                                         "  - Vacuum Threshold: %d%%\n",
+                                                         (double)total_bytes / (1024 * 1024), total_waste, vacuum_threshold);
                                             }
 
                                             int uptime_d = (int)(uptime_sec / 86400);
                                             int uptime_h = (int)((uptime_sec / 3600) - (uptime_d * 24));
                                             int uptime_m = (int)((uptime_sec / 60) - (uptime_d * 1440) - (uptime_h * 60));
 
+                                            /* 4. Final Assemble */
                                             snprintf(status_msg, sizeof(status_msg),
                                                 "--- Gorgona Node Detailed Status ---\n"
                                                 "Version: %s\n"
@@ -583,12 +608,11 @@ void run_server(int server_fd) {
                                                 "  - Active Clients: %d / %d\n"
                                                 "  - Authenticated Peers: %d / %d (configured)\n"
                                                 "Storage Metrics:\n"
+                                                "  - DB Storage Mode: %s\n"
                                                 "  - Unique Recipients (Keys): %d\n"
                                                 "  - Active Alerts (Live): %d\n"
-                                                "  - Inactive Alerts (Waste): %d\n"
-                                                "  - Total Slots in Memory: %d\n"
-                                                "  - DB Storage Mode: %s\n"
-                                                "  - Vacuum Threshold: %d%%\n"
+                                                "%s" /* <- disk metrics, if available */
+                                                "  - History Starts From: %s UTC\n"
                                                 "Operational Configuration:\n"
                                                 "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
@@ -596,10 +620,11 @@ void run_server(int server_fd) {
                                                 "------------------------------------\n",
                                                 VERSION ? VERSION : "1.0", uptime_d, uptime_h, uptime_m,
                                                 active_clients, max_clients, authenticated_peers, remote_peer_count,
-                                                recipient_count, active_alerts, inactive_alerts, (active_alerts + inactive_alerts),
                                                 use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
-                                                vacuum_threshold, max_alerts, max_message_size / (1024 * 1024), log_level
+                                                recipient_count, active_alerts, disk_metrics, oldest_time,
+                                                max_alerts, max_message_size / (1024 * 1024), log_level
                                             );
+
                                             enqueue_text_only(i, status_msg, strlen(status_msg));
                                         }
                                         sub->close_after_send = true;
