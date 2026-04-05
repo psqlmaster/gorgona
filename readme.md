@@ -258,24 +258,24 @@ echo "status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3" | nc localhost 7777
 ```txt
 ------------------------------------
 --- Gorgona Node Detailed Status ---
-Version: 2.8.9
-Uptime: 0d 1h 45m
+Version: 2.9.0
+Uptime: 0d 0h 3m
 Connections:
-  - Active Clients: 2 / 100
-  - Authenticated Peers: 2 / 1 (configured)
+  - Active Clients: 15 / 100
+  - Authenticated Peers: 3 / 1 (configured)
 Storage Metrics:
-  - Unique Recipients (Keys): 4
-  - Active Alerts (Live): 2008
-  - Inactive Alerts (Waste): 0
-  - Total Slots in Memory: 2008
   - DB Storage Mode: Persistent (Disk)
+  - Unique Recipients (Keys): 4
+  - Active Alerts (Live): 2006
+  - Database Size: 0.78 MB
+  - Disk Waste (Awaiting Vacuum): 3
   - Vacuum Threshold: 50%
+  - History Starts From: 2026-04-05 12:45:55 UTC
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
 ------------------------------------
-
 ```
 
 #### Run Server
