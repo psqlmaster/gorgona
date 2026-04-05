@@ -301,34 +301,65 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     if (!decoded_text) return -3;
 
     /* --- ANTI-REPLAY LAYER 2: Full-Record Idempotency & Gossip Suppression --- 
-       To ensure absolute stability in mesh topologies and large-scale historical syncs,
-       we perform a deduplication check against the entire history of the recipient.
-       Checking the full record depth (rec->count) provides 100% loop prevention 
-       with negligible performance cost for the current database limits. */
+     * To prevent circular replication loops and redundant gossip, we verify the 
+     * incoming alert against the entire local dataset, including inactive (evicted) 
+     * records that are still present in memory awaiting vacuuming.
+     */
     for (int j = 0; j < rec->count; j++) {
-        /* Optimization: Only compare active alerts with identical binary lengths */
-        if (rec->alerts[j].active && rec->alerts[j].text_len == new_text_len) {
+        /* 1. Identity Check: Compare Snowflake IDs for P2P consistency.
+         * If the ID is already known, this is a redundant replication event. */
+        if (forced_id > 0 && rec->alerts[j].id == forced_id) {
+            free(decoded_text);
+            return 1; /* Signal dispatcher to terminate gossip relay */
+        }
+
+        /* 2. Content-Based Deduplication: Compare raw binary payloads.
+         * Crucial: We check against both active and inactive alerts to prevent 
+         * "zombie" re-injection of data that has already been evicted from the 
+         * active window but remains in the mmap buffer. */
+        if (rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
-                /* Duplicate detected: Release the decoded buffer and determine status */
                 free(decoded_text);
                 
                 if (forced_id > 0) {
-                    /* REPLICATION DUPLICATE (Idempotency):
-                       The node already possesses this alert. We return 1 to signal 
-                       the dispatcher to terminate the gossip relay chain here. */
-                    if (verbose) {
-                        log_event("DEBUG", client_fd, client_ip, client_port, 
-                                  "Suppressed redundant replication for ID %" PRIu64, forced_id);
-                    }
+                    /* Redundant payload received via P2P sync/replication */
                     return 1; 
                 }
-                /* CLIENT REPLAY ATTACK:
-                   A client (or an external attacker) is attempting to re-inject 
-                   an existing binary payload. Flag this as a security warning. */
+                /* Duplicate payload from a client: likely a Replay Attack */
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
                 return -2;
             }
+        }
+    }
+
+    /* --- SLIDING WINDOW BOUNDARY PROTECTION --- 
+     * If the recipient's capacity is full, we must enforce a strict temporal 
+     * boundary. We reject any replicated alert older than our current oldest 
+     * active alert. This prevents infinite 'eviction-reinsertion' cycles 
+     * in highly saturated clusters.
+     */
+    if (forced_id > 0 && rec->count >= max_alerts) {
+        uint64_t current_min_active_id = 0xFFFFFFFFFFFFFFFFULL;
+        bool found_active = false;
+
+        for (int j = 0; j < rec->count; j++) {
+            if (rec->alerts[j].active && rec->alerts[j].id < current_min_active_id) {
+                current_min_active_id = rec->alerts[j].id;
+                found_active = true;
+            }
+        }
+
+        if (found_active && forced_id < current_min_active_id) {
+            /* This alert is chronologically behind our current window.
+             * Accepting it would cause it to immediately evict newer data,
+             * triggering a cascade of redundant replications. */
+            if (verbose) {
+                log_event("DEBUG", client_fd, client_ip, client_port, 
+                          "Suppressed out-of-window replication for ID %" PRIu64, forced_id);
+            }
+            free(decoded_text);
+            return 1; 
         }
     }
 
