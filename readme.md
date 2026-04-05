@@ -318,7 +318,7 @@ Prefer using named subsections to group commands by required public-key hash. Th
 ```ini
 [exec_commands:RWTPQzuhzBw=]
 weather = /usr/local/bin/gorgona_weather_sender.sh
-greengage start = /root/scripts/greengage_start.sh
+greengage start = /root/scripts/greengage_start.sh time_limit = 120
 
 [exec_commands:IcUimbs6LZY=]
 la = /root/scripts/la.sh
