@@ -545,6 +545,15 @@ void run_server(int server_fd) {
                                             char status_msg[2048];
                                             time_t now = time(NULL);
                                             double uptime_sec = difftime(now, server_start_time);
+                                            /* get ip port */
+                                            struct sockaddr_in node_addr;
+                                            socklen_t node_addr_len = sizeof(node_addr);
+                                            char node_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+                                            int node_port = 0;
+                                            if (getsockname(sd, (struct sockaddr *)&node_addr, &node_addr_len) == 0) {
+                                                inet_ntop(AF_INET, &node_addr.sin_addr, node_ip, sizeof(node_ip));
+                                                node_port = ntohs(node_addr.sin_port);
+                                            }
 
                                             /* 1. Connection metrics */
                                             int active_clients = 0;
@@ -602,7 +611,7 @@ void run_server(int server_fd) {
 
                                             /* 4. Final Assemble */
                                             snprintf(status_msg, sizeof(status_msg),
-                                                "--- Gorgona Node Detailed Status ---\n"
+                                                "--- Gorgona Node [%s %d] Detailed Status ---\n" 
                                                 "Version: %s\n"
                                                 "Uptime: %dd %dh %dm\n"
                                                 "Connections:\n"
@@ -618,7 +627,8 @@ void run_server(int server_fd) {
                                                 "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
                                                 "  - Logging Level: %s\n"
-                                                "------------------------------------\n",
+                                                "-----------------------------------------------------\n",
+                                                node_ip, node_port, 
                                                 VERSION ? VERSION : "1.0", uptime_d, uptime_h, uptime_m,
                                                 active_clients, max_clients, authenticated_peers, remote_peer_count,
                                                 use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
