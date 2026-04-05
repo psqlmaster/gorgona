@@ -183,6 +183,9 @@ Gorgona has transformed from a small experiment into a full-fledged P2P engine f
 *   **epoll:** If you suddenly want to build a cluster of 10,000 nodes.
 *   **Web Dashboard:** To see the "gossip map" in real-time.
 
+#### Project Summary:
+
+Gorgona is a high-performance “digital nervous system” for distributed infrastructure, combining the features of a secure messenger and a decentralized task scheduler. By integrating RSA-AES-GCM cryptography with a time-lock mechanism and the ability to securely execute system commands (-e), the project offers a solution for covert and fault-tolerant server fleet management. This is not just a messaging tool, but a full-fledged cryptographic orchestrator capable of operating in aggressive network environments where trust in a central authority is impossible, and the accuracy and confidentiality of command execution are a priority.
 The project is completely open-source. If you are into system programming in C, check out GitHub. Stars, forks, and discussions of new use cases are more than welcome!
 
 [Link to GitHub: https://github.com/psqlmaster/gorgona]
