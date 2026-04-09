@@ -59,7 +59,7 @@ graph TD
     %% Prometheus Node (Now with its own Gorgonad)
     subgraph PROM ["Node 4: Monitoring"]
         direction TB
-        D4["Gorgonad"] <-->|Localhost| C4["Client (listen -e)"]
+        D4["Gorgonad"] <-->|Localhost| C4["Client (listen new)"]
         C4 -->|push_to_prom.sh| GW["Prometheus Pushgateway"]
         GW --> Grafana["Grafana"]
     end
