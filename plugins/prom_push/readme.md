@@ -37,62 +37,47 @@ In distributed clusters (Greenplum, Ceph, ClickHouse), standard Prometheus "Pull
 
 ```mermaid
 graph TD
-    %% Node: Source
-    subgraph Node_Source [Node: Collector]
-        A_Coll["collect.sh (Metrics)"]
-        A_Cli["Gorgona Client (send)"]
-        A_Coll --> A_Cli
+    %% Node 1 (Source/Admin role)
+    subgraph Node_1 ["Node 1: Admin / Source"]
+        direction TB
+        A_Coll["collect.sh"] --> A_Cli["Client (send)"]
+        A_Cli <-->|Localhost| A_Srv["Gorgonad (Server)"]
     end
 
-    %% Mesh Triangle Nodes
-    subgraph Node_P2P_1 [Node: P2P Mesh 1]
-        D1["Gorgonad Daemon"]
+    %% Node 2 (Relay/Segment role)
+    subgraph Node_2 ["Node 2: Segment / OSD"]
+        direction TB
+        B_Cli["Client (listen -e)"] <-->|Localhost| B_Srv["Gorgonad (Server)"]
+        B_Cli --> B_Exec["local_task.sh"]
     end
 
-    subgraph Node_P2P_2 [Node: P2P Mesh 2]
-        D2["Gorgonad Daemon"]
+    %% Node 3 (Gateway/Segment role)
+    subgraph Node_3 ["Node 3: Edge / Segment"]
+        direction TB
+        C_Cli["Client (listen -e)"] <-->|Localhost| C_Srv["Gorgonad (Server)"]
+        C_Cli --> C_Push["push_to_prom.sh"]
     end
 
-    subgraph Node_P2P_3 [Node: P2P Mesh 3]
-        D3["Gorgonad Daemon"]
-    end
+    %% P2P Mesh (Gorgonad to Gorgonad only)
+    A_Srv <-->|P2P Gossip| B_Srv
+    B_Srv <-->|P2P Gossip| C_Srv
+    C_Srv <-->|P2P Gossip| A_Srv
 
-    %% Node: Gateway
-    subgraph Node_Gateway [Node: Edge Gateway]
-        C_Cli["Gorgona Client (listen -e)"]
-        C_Push["push_to_prom.sh"]
-        C_Cli --> C_Push
-    end
-
-    %% Vertical Data Flow
-    A_Cli -->|RSA-AES Encrypted| D1
-    A_Cli -.->|Alternative Path| D2
-
-    %% Triangle Mesh Connections
-    D1 <-->|P2P Gossip| D2
-    D1 <-->|P2P Gossip| D3
-    D2 <-->|P2P Gossip| D3
-
-    %% Downward Flow to Gateway
-    D3 -->|Unlock & Trigger| C_Cli
-    D2 -.->|Backup Delivery| C_Cli
-
-    %% External
-    C_Push --> Prom[Prometheus Pushgateway]
+    %% External Output
+    C_Push --> Prom["Prometheus"]
 
     %% Styling Nodes (Yellow Blocks)
-    style Node_Source fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style Node_P2P_1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style Node_P2P_2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style Node_P2P_3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style Node_Gateway fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
 
     %% Styling Components
     style A_Cli fill:#ffe0b2,stroke:#fb8c00
+    style B_Cli fill:#ffe0b2,stroke:#fb8c00
     style C_Cli fill:#ffe0b2,stroke:#fb8c00
-    style D1 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-    style D2 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-    style D3 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style A_Srv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style B_Srv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style C_Srv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
 ```
 
 ## Usage (Concept)
