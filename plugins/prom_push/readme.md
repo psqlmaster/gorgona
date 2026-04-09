@@ -35,15 +35,60 @@ In distributed clusters (Greenplum, Ceph, ClickHouse), standard Prometheus "Pull
 
 ## Architecture
 
-```text
-[ Node A ] --> ( Local Metrics ) 
-    |
-    | ( P2P Gossip via Gorgona )
-    v
-[ Node B ] --> ( Relay )
-    |
-    v
-[ Node C ] --> ( P2P Gateway Node ) --> [ Prometheus Pushgateway ] --> [ Grafana ]
+```mermaid
+graph TD
+    %% Source Node
+    subgraph Node_Source ["Node: Collector (Source)"]
+        A_Coll["Local Script (collect.sh)"] -->|Metrics| A_Cli["Gorgona Client (send)"]
+    end
+
+    %% P2P Mesh Nodes (The Triangle)
+    subgraph Node_P2P_1 ["Node: P2P Mesh 1"]
+        Srv_1["Gorgonad Daemon"]
+    end
+
+    subgraph Node_P2P_2 ["Node: P2P Mesh 2"]
+        Srv_2["Gorgonad Daemon"]
+    end
+
+    subgraph Node_P2P_3 ["Node: P2P Mesh 3"]
+        Srv_3["Gorgonad Daemon"]
+    end
+
+    %% Gateway Node
+    subgraph Node_Gateway ["Node: Edge Gateway"]
+        C_Cli["Gorgona Client (listen -e)"] -->|Push| C_GW["Prometheus Pushgateway"]
+    end
+
+    %% Connections: Client to Mesh (Redundancy shown)
+    A_Cli -->|RSA-AES| Srv_1
+    A_Cli -.->|Alternative Path| Srv_3
+
+    %% Connections: The Triangle Mesh
+    Srv_1 <-->|P2P Gossip| Srv_2
+    Srv_2 <-->|P2P Gossip| Srv_3
+    Srv_3 <-->|P2P Gossip| Srv_1
+
+    %% Connections: Mesh to Gateway Client (Redundancy shown)
+    Srv_3 -->|Unlock & Trigger| C_Cli
+    Srv_2 -.->|Backup Delivery| C_Cli
+
+    %% External
+    C_GW --> Grafana["Grafana Dashboard"]
+
+    %% Styling Node Blocks (Yellow Background)
+    style Node_Source fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_P2P_1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_P2P_2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_P2P_3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_Gateway fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+
+    %% Styling Components
+    style A_Cli fill:#ffe0b2,stroke:#fb8c00
+    style C_Cli fill:#ffe0b2,stroke:#fb8c00
+    style Srv_1 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style Srv_2 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style Srv_3 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
 ```
 
 ## Usage (Concept)
