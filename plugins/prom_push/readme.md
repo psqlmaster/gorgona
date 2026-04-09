@@ -56,22 +56,21 @@ graph TD
         C3 <-->|Localhost| D3["Gorgonad"]
     end
 
-    %% Prometheus Node
+    %% Prometheus Node (Now with its own Gorgonad)
     subgraph PROM ["Node 4: Monitoring"]
         direction TB
-        C4["Client (listen -e)"] -->|push_to_prom.sh| GW["Prometheus Pushgateway"]
+        D4["Gorgonad"] <-->|Localhost| C4["Client (listen -e)"]
+        C4 -->|push_to_prom.sh| GW["Prometheus Pushgateway"]
         GW --> Grafana["Grafana"]
     end
 
-    %% P2P Mesh (Full Triangle)
-    D1 <-->|P2P Gossip| D2
-    D2 <-->|P2P Gossip| D3
-    D3 <-->|P2P Gossip| D1
-
-    %% Telemetry Flow (Primary and Backup paths)
-    D1 ==>|Encrypted Data| C4
-    D2 -.->|Backup Path| C4
-    D3 -.->|Backup Path| C4
+    %% P2P Mesh (Full Mesh between all 4 Daemons)
+    D1 <--> D2
+    D2 <--> D3
+    D3 <--> D4
+    D4 <--> D1
+    D1 <--> D3
+    D2 <--> D4
 
     %% Styling Nodes (Yellow for Segments, Green for Monitoring)
     style S1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
@@ -87,6 +86,7 @@ graph TD
     style D1 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style D2 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style D3 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style D4 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style GW fill:#dfd,stroke:#333
 ```
 
