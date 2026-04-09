@@ -36,60 +36,63 @@ In distributed clusters (Greenplum, Ceph, ClickHouse), standard Prometheus "Pull
 ## Architecture
 
 ```mermaid
-graph LR
-    %% Source Node
-    subgraph S ["Node: Source"]
-        direction TB
-        A_Coll["collect.sh"] --> A_Cli["Client (send)"]
+graph TD
+    %% Node: Source
+    subgraph Node_Source [Node: Collector]
+        A_Coll["collect.sh (Metrics)"]
+        A_Cli["Gorgona Client (send)"]
+        A_Coll --> A_Cli
     end
 
-    %% Mesh Triangle (arranged to stay compact horizontally)
-    subgraph M1 ["Mesh 1"]
-        D1["Gorgonad"]
-    end
-    subgraph M2 ["Mesh 2"]
-        D2["Gorgonad"]
-    end
-    subgraph M3 ["Mesh 3"]
-        D3["Gorgonad"]
+    %% Mesh Triangle Nodes
+    subgraph Node_P2P_1 [Node: P2P Mesh 1]
+        D1["Gorgonad Daemon"]
     end
 
-    %% Gateway Node
-    subgraph G ["Node: Gateway"]
-        direction TB
-        C_Cli["Client (listen -e)"] --> C_Push["push_to_prom.sh"]
+    subgraph Node_P2P_2 [Node: P2P Mesh 2]
+        D2["Gorgonad Daemon"]
     end
 
-    %% Flow: Source to Mesh
-    A_Cli ==>|RSA-AES| D1
-    A_Cli -.->|Alt| D2
+    subgraph Node_P2P_3 [Node: P2P Mesh 3]
+        D3["Gorgonad Daemon"]
+    end
 
-    %% Mesh Triangle Connections
-    D1 <--> D2
-    D2 <--> D3
-    D3 <--> D1
+    %% Node: Gateway
+    subgraph Node_Gateway [Node: Edge Gateway]
+        C_Cli["Gorgona Client (listen -e)"]
+        C_Push["push_to_prom.sh"]
+        C_Cli --> C_Push
+    end
 
-    %% Flow: Mesh to Gateway
-    D3 ==>|Trigger| C_Cli
-    D2 -.->|Alt| C_Cli
+    %% Vertical Data Flow
+    A_Cli -->|RSA-AES Encrypted| D1
+    A_Cli -.->|Alternative Path| D2
+
+    %% Triangle Mesh Connections
+    D1 <-->|P2P Gossip| D2
+    D1 <-->|P2P Gossip| D3
+    D2 <-->|P2P Gossip| D3
+
+    %% Downward Flow to Gateway
+    D3 -->|Unlock & Trigger| C_Cli
+    D2 -.->|Backup Delivery| C_Cli
 
     %% External
-    C_Push --> Prom["Prometheus"]
+    C_Push --> Prom[Prometheus Pushgateway]
 
-    %% Styles: Nodes (Yellow)
-    style S fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style M1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style M2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style M3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style G fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    %% Styling Nodes (Yellow Blocks)
+    style Node_Source fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_P2P_1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_P2P_2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_P2P_3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style Node_Gateway fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
 
-    %% Styles: Components
+    %% Styling Components
     style A_Cli fill:#ffe0b2,stroke:#fb8c00
     style C_Cli fill:#ffe0b2,stroke:#fb8c00
     style D1 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style D2 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style D3 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-    style Prom fill:#dfd,stroke:#333
 ```
 
 ## Usage (Concept)
