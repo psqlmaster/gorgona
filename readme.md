@@ -679,6 +679,7 @@ graph TD
 - **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
 
 **Next Frontiers:**
+- **plugins/prom_push** [plugins/prom_push](plugins/prom_push.md)
 - **High-Concurrency Architecture**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support tens of thousands of simultaneous connections per node.
 - **Observability**: A built-in Prometheus exporter or a lightweight web-based dashboard for real-time cluster health and replication monitoring.
 - **Consensus Hardening**: Exploring lightweight versions of the **Raft** or **Paxos** algorithms for advanced cluster-wide configuration management.
