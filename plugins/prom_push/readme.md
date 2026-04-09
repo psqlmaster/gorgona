@@ -37,47 +37,54 @@ In distributed clusters (Greenplum, Ceph, ClickHouse), standard Prometheus "Pull
 
 ```mermaid
 graph TD
-    %% Node 1 (Source/Admin role)
-    subgraph Node_1 ["Node 1: Admin / Source"]
+    %% Segment Nodes
+    subgraph S1 ["Node 1: Segment"]
         direction TB
-        A_Coll["collect.sh"] --> A_Cli["Client (send)"]
-        A_Cli <-->|Localhost| A_Srv["Gorgonad (Server)"]
+        C1["Client (listen -e)"] <-->|Localhost| D1["Gorgonad"]
     end
 
-    %% Node 2 (Relay/Segment role)
-    subgraph Node_2 ["Node 2: Segment / OSD"]
+    subgraph S2 ["Node 2: Segment"]
         direction TB
-        B_Cli["Client (listen -e)"] <-->|Localhost| B_Srv["Gorgonad (Server)"]
-        B_Cli --> B_Exec["local_task.sh"]
+        C2["Client (listen -e)"] <-->|Localhost| D2["Gorgonad"]
     end
 
-    %% Node 3 (Gateway/Segment role)
-    subgraph Node_3 ["Node 3: Edge / Segment"]
+    subgraph S3 ["Node 3: Segment"]
         direction TB
-        C_Cli["Client (listen -e)"] <-->|Localhost| C_Srv["Gorgonad (Server)"]
-        C_Cli --> C_Push["push_to_prom.sh"]
+        C3["Client (listen -e)"] <-->|Localhost| D3["Gorgonad"]
     end
 
-    %% P2P Mesh (Gorgonad to Gorgonad only)
-    A_Srv <-->|P2P Gossip| B_Srv
-    B_Srv <-->|P2P Gossip| C_Srv
-    C_Srv <-->|P2P Gossip| A_Srv
+    %% Prometheus Node
+    subgraph PROM ["Node 4: Monitoring"]
+        direction TB
+        GW["Prometheus Pushgateway"]
+        Grafana["Grafana"]
+        GW --> Grafana
+    end
 
-    %% External Output
-    C_Push --> Prom["Prometheus"]
+    %% P2P Mesh (Full Triangle)
+    D1 <-->|P2P Gossip| D2
+    D2 <-->|P2P Gossip| D3
+    D3 <-->|P2P Gossip| D1
 
-    %% Styling Nodes (Yellow Blocks)
-    style Node_1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style Node_2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style Node_3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    %% Telemetry Push Flow (All segments to Node 4)
+    C1 ==>|push_to_prom.sh| GW
+    C2 ==>|push_to_prom.sh| GW
+    C3 ==>|push_to_prom.sh| GW
+
+    %% Styling Nodes (Yellow for Segments, Green for Monitoring)
+    style S1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style S2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style S3 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style PROM fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
 
     %% Styling Components
-    style A_Cli fill:#ffe0b2,stroke:#fb8c00
-    style B_Cli fill:#ffe0b2,stroke:#fb8c00
-    style C_Cli fill:#ffe0b2,stroke:#fb8c00
-    style A_Srv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-    style B_Srv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-    style C_Srv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style C1 fill:#ffe0b2,stroke:#fb8c00
+    style C2 fill:#ffe0b2,stroke:#fb8c00
+    style C3 fill:#ffe0b2,stroke:#fb8c00
+    style D1 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style D2 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style D3 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+    style GW fill:#dfd,stroke:#333
 ```
 
 ## Usage (Concept)
