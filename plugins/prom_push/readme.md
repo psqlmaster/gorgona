@@ -40,25 +40,27 @@ graph TD
     %% Segment Nodes
     subgraph S1 ["Node 1: Segment"]
         direction TB
-        C1["Client (listen -e)"] <-->|Localhost| D1["Gorgonad"]
+        sh1["collect.sh"] --> C1["Client (send)"]
+        C1 <-->|Localhost| D1["Gorgonad"]
     end
 
     subgraph S2 ["Node 2: Segment"]
         direction TB
-        C2["Client (listen -e)"] <-->|Localhost| D2["Gorgonad"]
+        sh2["collect.sh"] --> C2["Client (send)"]
+        C2 <-->|Localhost| D2["Gorgonad"]
     end
 
     subgraph S3 ["Node 3: Segment"]
         direction TB
-        C3["Client (listen -e)"] <-->|Localhost| D3["Gorgonad"]
+        sh3["collect.sh"] --> C3["Client (send)"]
+        C3 <-->|Localhost| D3["Gorgonad"]
     end
 
     %% Prometheus Node
     subgraph PROM ["Node 4: Monitoring"]
         direction TB
-        GW["Prometheus Pushgateway"]
-        Grafana["Grafana"]
-        GW --> Grafana
+        C4["Client (listen -e)"] -->|push_to_prom.sh| GW["Prometheus Pushgateway"]
+        GW --> Grafana["Grafana"]
     end
 
     %% P2P Mesh (Full Triangle)
@@ -66,10 +68,10 @@ graph TD
     D2 <-->|P2P Gossip| D3
     D3 <-->|P2P Gossip| D1
 
-    %% Telemetry Push Flow (All segments to Node 4)
-    C1 ==>|push_to_prom.sh| GW
-    C2 ==>|push_to_prom.sh| GW
-    C3 ==>|push_to_prom.sh| GW
+    %% Telemetry Flow (Primary and Backup paths)
+    D1 ==>|Encrypted Data| C4
+    D2 -.->|Backup Path| C4
+    D3 -.->|Backup Path| C4
 
     %% Styling Nodes (Yellow for Segments, Green for Monitoring)
     style S1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
@@ -81,6 +83,7 @@ graph TD
     style C1 fill:#ffe0b2,stroke:#fb8c00
     style C2 fill:#ffe0b2,stroke:#fb8c00
     style C3 fill:#ffe0b2,stroke:#fb8c00
+    style C4 fill:#ffe0b2,stroke:#fb8c00,stroke-width:2px
     style D1 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style D2 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
     style D3 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
