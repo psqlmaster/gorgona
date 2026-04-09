@@ -1,6 +1,9 @@
-/* BSD 3-Clause License
-Copyright (c) 2025, Alexander Shcheglov
-All rights reserved. */
+/* 
+* BSD 3-Clause License
+* Copyright (c) 2025, Alexander Shcheglov
+* All rights reserved. 
+*/
+
 #define _XOPEN_SOURCE 700
 #include "encrypt.h"
 #include "config.h"

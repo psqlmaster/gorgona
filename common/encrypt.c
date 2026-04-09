@@ -1,3 +1,9 @@
+/* 
+* BSD 3-Clause License
+* Copyright (c) 2025, Alexander Shcheglov
+* All rights reserved. 
+*/
+
 #include <openssl/bn.h>
 #include "encrypt.h"
 #include <openssl/sha.h>
@@ -16,7 +22,7 @@
 #define EVP_MD_CTX_free(ctx) do { EVP_MD_CTX_cleanup(ctx); free(ctx); } while (0)
 #endif
 
-/* Проверяет наличие файлов public.pem и private.pem (для обратной совместимости) */
+/* Checks for the presence of the public.pem and private.pem files (for backward compatibility) */
 int check_key_files(int verbose) {
     FILE *pub_fp = fopen("public.pem", "r");
     if (!pub_fp) {
@@ -36,7 +42,7 @@ int check_key_files(int verbose) {
     return 0;
 }
 
-/* Генерирует пару RSA ключей и переименовывает их по хешу */
+/* Generates an RSA key pair and renames them based on their hash */
 int generate_rsa_keys(int verbose) {
     EVP_PKEY *pkey = NULL;
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
@@ -59,7 +65,7 @@ int generate_rsa_keys(int verbose) {
     }
     EVP_PKEY_CTX_free(ctx);
 
-    /* Вычисляем хеш публичного ключа */
+    /* Calculating the hash of the public key */
     size_t hash_len;
     unsigned char *pubkey_hash = compute_pubkey_hash(pkey, &hash_len, verbose);
     if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
@@ -77,7 +83,7 @@ int generate_rsa_keys(int verbose) {
         return -1;
     }
 
-    /* Сохраняем ключи */
+    /* Saving the keys */
     char pub_file[256], priv_file[256];
     snprintf(pub_file, sizeof(pub_file), "/etc/gorgona/%s.pub", pubkey_hash_b64);
     snprintf(priv_file, sizeof(priv_file), "/etc/gorgona/%s.key", pubkey_hash_b64);
@@ -114,16 +120,14 @@ int generate_rsa_keys(int verbose) {
     }
     fclose(priv_fp);
 
-    //if (verbose) {
     printf("Keys generated:\n%s (public)\n%s (private)\n", pub_file, priv_file);
-    //}
 
     free(pubkey_hash_b64);
     EVP_PKEY_free(pkey);
     return 0;
 }
 
-/* Вычисляет хеш публичного ключа */
+/* Calculates the hash of the public key */
 unsigned char *compute_pubkey_hash(EVP_PKEY *pubkey, size_t *hash_len, int verbose) {
     EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
     if (!md_ctx) {
@@ -172,7 +176,7 @@ unsigned char *compute_pubkey_hash(EVP_PKEY *pubkey, size_t *hash_len, int verbo
     return truncated_hash;
 }
 
-/* Шифрует сообщение с использованием публичного ключа */
+/* Encrypts the message using a public key */
 int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *encrypted_len,
                    unsigned char **encrypted_key, size_t *encrypted_key_len,
                    unsigned char **iv, size_t *iv_len, unsigned char **tag, size_t *tag_len,
@@ -194,7 +198,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         return -1;
     }
 
-    /* Генерируем случайный ключ AES */
+    /* Generate a random AES key */
     unsigned char aes_key[32];
     if (RAND_bytes(aes_key, sizeof(aes_key)) != 1) {
         fprintf(stderr, "Не удалось сгенерировать ключ AES\n");
@@ -210,7 +214,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         printf("\n");
     }
 
-    /* Шифруем ключ AES с помощью EVP_PKEY */
+    /* Encrypting an AES key using EVP_PKEY */
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(pubkey, NULL);
     if (!pctx || EVP_PKEY_encrypt_init(pctx) <= 0) {
         fprintf(stderr, "Не удалось инициализировать шифрование RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
@@ -244,7 +248,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         return -1;
     }
 
-    /* Определяем размер зашифрованного ключа */
+    /* Determine the length of the encrypted key */
     size_t rsa_len;
     if (EVP_PKEY_encrypt(pctx, NULL, &rsa_len, aes_key, sizeof(aes_key)) <= 0) {
         fprintf(stderr, "Не удалось определить размер зашифрованного ключа: %s\n", ERR_error_string(ERR_get_error(), NULL));
@@ -263,7 +267,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         return -1;
     }
 
-    /* Проверяем входные данные */
+    /* Checking the input data */
     if (sizeof(aes_key) > rsa_len - 41) { // 41 = SHA-256 OAEP overhead
         fprintf(stderr, "Ключ AES слишком длинный для RSA-%zu с OAEP\n", rsa_len * 8);
         free(*encrypted_key);
@@ -273,7 +277,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         return -1;
     }
 
-    /* Шифруем ключ AES */
+    /* Encrypting the AES key */
     *encrypted_key_len = rsa_len;
     if (EVP_PKEY_encrypt(pctx, *encrypted_key, encrypted_key_len, aes_key, sizeof(aes_key)) <= 0) {
         fprintf(stderr, "Не удалось зашифровать ключ AES: %s\n", ERR_error_string(ERR_get_error(), NULL));
@@ -293,7 +297,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(pubkey);
 
-    /* Генерируем IV */
+    /* Generate IV */
     *iv_len = 12;
     *iv = malloc(*iv_len);
     if (!*iv || RAND_bytes(*iv, *iv_len) != 1) {
@@ -310,7 +314,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         printf("\n");
     }
 
-    /* Инициализируем AES-256-GCM */
+    /* Initialize AES-256-GCM */
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
         fprintf(stderr, "Не удалось инициализировать AES-256-GCM: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(*encrypted_key);
@@ -327,7 +331,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
         return -1;
     }
 
-    /* Шифруем сообщение */
+    /* Encrypt the message */
     int len;
     *encrypted_len = strlen(plaintext);
     *encrypted = malloc(*encrypted_len + AES_BLOCK_SIZE);
@@ -359,7 +363,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     }
     *encrypted_len += len;
 
-    /* Получаем тег GCM */
+    /* Get the GCM tag */
     *tag_len = GCM_TAG_LEN;
     *tag = malloc(*tag_len);
     if (!*tag || EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, *tag_len, *tag) != 1) {
@@ -382,7 +386,7 @@ int encrypt_message(const char *plaintext, unsigned char **encrypted, size_t *en
     return 0;
 }
 
-/* Расшифровывает сообщение с использованием указанного приватного ключа */
+/* Decrypts the message using the specified private key */
 int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned char *encrypted_key,
                    size_t encrypted_key_len, unsigned char *iv, size_t iv_len,
                    unsigned char *tag, char **plaintext, const char *privkey_file, int verbose) {
@@ -403,7 +407,7 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
         return -1;
     }
 
-    /* Расшифровываем ключ AES с помощью EVP_PKEY */
+    /* Decrypting an AES key using EVP_PKEY */
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(privkey, NULL);
     if (!pctx || EVP_PKEY_decrypt_init(pctx) <= 0) {
         fprintf(stderr, "Не удалось инициализировать расшифровку RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
@@ -474,7 +478,7 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
     EVP_PKEY_CTX_free(pctx);
     EVP_PKEY_free(privkey);
 
-    /* Инициализируем AES-256-GCM для расшифровки */
+    /* Initialize AES-256-GCM for decryption */
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
         fprintf(stderr, "Не удалось инициализировать AES-256-GCM для расшифровки: %s\n", ERR_error_string(ERR_get_error(), NULL));
         free(aes_key);
@@ -496,7 +500,7 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
         return -1;
     }
 
-    /* Расшифровываем сообщение */
+    /* Decoding the message */
     int len;
     *plaintext = malloc(encrypted_len + 1);
     if (!*plaintext) {
@@ -531,7 +535,7 @@ int decrypt_message(unsigned char *encrypted, size_t encrypted_len, unsigned cha
 }
 
 
-/* Кодирует данные в base64 */
+/* Encodes data in Base64 */
 char *base64_encode(const unsigned char *data, size_t len) {
     BIO *bio, *b64;
     BUF_MEM *bufferPtr;
@@ -567,7 +571,7 @@ char *base64_encode(const unsigned char *data, size_t len) {
     return out;
 }
 
-/* Декодирует данные из base64 */
+/* Decodes data from Base64 */
 unsigned char *base64_decode(const char *data, size_t *out_len) {
     BIO *bio, *b64;
     size_t len = strlen(data);

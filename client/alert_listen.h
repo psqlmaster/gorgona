@@ -1,3 +1,9 @@
+/* 
+* BSD 3-Clause License
+* Copyright (c) 2025, Alexander Shcheglov
+* All rights reserved. 
+*/
+
 #ifndef ALERT_LISTEN_H
 #define ALERT_LISTEN_H
 
