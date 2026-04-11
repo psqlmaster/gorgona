@@ -53,6 +53,6 @@
 *   **Memory:** `mmap`-backed storage, minimal footprint.
 
 ---
-**Gorgona: Resilient, decentralized, and flexible management for modern distributed "monsters".**
+##### **Gorgona: Resilient, decentralized, and flexible management for modern distributed "monsters".**
 ---
 
