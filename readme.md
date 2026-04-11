@@ -679,10 +679,11 @@ graph TD
 - **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
 
 **Next Frontiers:**
-- **plugins: achieve ultimate resilience with symmetric Sidecar Mesh topology** [plugins/prom_push](plugins/prom_push/readme.md)
-- **High-Concurrency Architecture**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support tens of thousands of simultaneous connections per node.
-- **Observability**: A built-in Prometheus exporter or a lightweight web-based dashboard for real-time cluster health and replication monitoring.
-- **Consensus Hardening**: Exploring lightweight versions of the **Raft** or **Paxos** algorithms for advanced cluster-wide configuration management.
+- **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point.
+- **Performance-Driven Routing**: Real-time monitoring of **Effective Throughput (Bytes/sec)**. Moving beyond simple Pings to intelligent traffic steering that prioritizes peers based on actual hardware performance (Disk/CPU) and network health.
+- **Symmetric Sidecar Mesh**: Achieving ultimate resilience by deploying Gorgonad on every node as a local proxy. [See prom_push roadmap](plugins/prom_push/readme.md).
+- **High-Concurrency Engine**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support thousands of simultaneous P2P connections per node with zero overhead.
+- **Consensus Hardening**: Exploring lightweight **Raft** or **Paxos** implementations for atomic cluster-wide configuration changes and state synchronization.
 
 #### Suggestions and contributions are welcome!
 ---
