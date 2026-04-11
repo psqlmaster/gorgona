@@ -1,62 +1,58 @@
-### Technical Specification: Gorgona Self-Optimizing P2P Mesh
-
+### Technical Specification: Gorgona Flexible P2P Mesh
+---
 #### 1. General Overview
-**Gorgona** is a decentralized management system for distributed infrastructure. This specification describes the transition from a classic client-server model to a **Symmetric Sidecar Mesh** architecture, where each cluster node runs a pair: a local daemon (`gorgonad`) and a local client (`gorgona`).
+**Gorgona** is a decentralized management system for distributed infrastructure. This specification describes a **Flexible Mesh Architecture**. The core consists of a P2P backbone of daemons (`gorgonad`) that store and replicate the alert database. Clients (`gorgona`) act as independent agents that can either run alongside a local daemon (Sidecar mode) for maximum autonomy or operate as standalone tools (Remote mode) to send commands or aggregate telemetry from the mesh.
 
 #### 2. Objectives
 1.  **Topology Automation (PEX):** Implementation of a Peer Exchange mechanism for dynamic node discovery.
-2.  **Intelligent Routing:** Peer selection based on real-world **Effective Throughput** (Bytes/sec) rather than simple latency.
+2.  **Intelligent Routing:** Peer selection based on real-world **Effective Throughput** (Bytes/sec).
 3.  **Management Plane Security:** Encryption of service traffic between nodes based on the existing synchronization key.
-4.  **Resilience Hardening:** Eliminating Single Points of Failure (SPOF) via "Happy Eyeballs" client connection logic.
+4.  **Resilience Hardening:** Eliminating Single Points of Failure (SPOF) via "Happy Eyeballs" client connection logic across multiple mesh nodes.
 
-#### 3. Architecture: Sidecar Mesh
-*   **Local Connectivity:** The client on a node communicates exclusively with the local `gorgonad` instance at `127.0.0.1`.
-*   **Backbone Connectivity:** Daemons form a full or partial P2P mesh network for alert replication.
-*   **Autonomy:** In the event of external network loss, the node retains the ability to execute scheduled tasks from the daemon's local cache.
+#### 3. Flexible Architecture
+*   **P2P Backbone:** Daemons form a resilient mesh network. They are responsible for data persistence, consistency, and gossip-based discovery.
+*   **Sidecar Deployment (Recommended for Segments):** Deploying both a client and a daemon on critical nodes (e.g., DB segments) to ensure task execution even during total network isolation.
+*   **Standalone Deployment (For Consumers/Admins):** Clients running without a local daemon. For example, a Prometheus exporter node can pull data from any available `gorgonad` in the mesh without hosting its own database.
+*   **Multi-Node Access:** Standalone clients can be configured with a list of multiple entry points to ensure connectivity if a specific mesh node goes down.
 
 #### 4. Peer Exchange (PEX) and Discovery
-*   **Seed Nodes:** Configuration in `gorgona.conf` / `gorgonad.conf` requires only one or several IP addresses of any active cluster nodes to "warm up" the network.
-*   **`NODES` Protocol Command:**
-    *   A service request to retrieve a list of known nodes.
-    *   Response format: `NODES|IP:Port:Speed_Score,IP:Port:Speed_Score...`
+*   **Seed Nodes:** Initial configuration requires only one or several "Seed" IP addresses.
+*   **`NODES` Protocol Command:** A service request allowing both servers and standalone clients to retrieve the current cluster map.
 *   **Pool Management:**
-    *   **Active Pool:** Nodes with established active connections (limited by slots).
-    *   **Passive List:** A database of all discovered addresses in the cluster.
-    *   **Garbage Collection:** Automatic removal of nodes that fail to respond after a series of attempts with exponential backoff.
+    *   **Active Pool:** Nodes with established active connections.
+    *   **Passive List:** A background database of all discovered addresses in the cluster.
+    *   **Garbage Collection:** Automatic removal of inactive nodes.
 
 #### 5. Performance Metrics (Performance Routing)
-*   **Metric:** Effective Throughput measured in Bytes per second.
-*   **Measurement Algorithm:**
-    *   Timestamping the start and end of data transfers using `clock_gettime`.
-    *   Calculation: `Speed = Transferred_Bytes / Elapsed_Time`.
-*   **Smoothing:** Application of a **Rolling Average**:
-    `Speed_Avg = (Old_Avg * 0.7) + (Current_Speed * 0.3)`
-*   **Peer Selection:** The server periodically rotates the slowest connection in the Active Pool, attempting to replace it with a random node from the Passive List (Darwinian selection).
+*   **Metric:** Effective Throughput (Bytes per second).
+*   **Measurement:** Calculating `Speed = Transferred_Bytes / Elapsed_Time` during real data synchronization.
+*   **Smoothing:** Application of a **Rolling Average**: `Speed_Avg = (Old_Avg * 0.7) + (Current_Speed * 0.3)`.
+*   **Peer Selection:** Clients and servers prioritize connections to nodes with the highest historical throughput.
 
 #### 6. Management Plane Security
-*   **Transport Key:** Utilization of `sync_psk` from the `[replication]` section of `gorgonad.conf`.
-*   **Metadata Encryption:** All service packets (PEX, SYNC, NODES) are encapsulated using **AES-256-GCM**. The key is derived via `SHA-256(sync_psk)`.
-*   **Handshake:** Implementation of a **Challenge-Response** mechanism using a Nonce (random number) to prevent Replay Attacks.
-*   **Layer Isolation:**
-    *   **Management Plane:** Encrypted with `sync_psk` (visible to daemons for routing/discovery).
-    *   **Command Plane (E2EE):** Alerts (commands) remain encrypted with client-generated keys. Daemons cannot read or tamper with command content even with knowledge of `sync_psk`.
+*   **Transport Key:** Utilization of `sync_psk` from the `[replication]` section.
+*   **Metadata Encryption:** All service packets (PEX, SYNC, NODES) are encapsulated using **AES-256-GCM**, keyed by `SHA-256(sync_psk)`.
+*   **Handshake:** A **Challenge-Response** mechanism using a Nonce to prevent Replay Attacks.
+*   **E2EE Command Plane:** Regardless of the management layer, commands (alerts) remain encrypted with client-specific keys, ensuring daemons never see the raw content.
 
 #### 7. Intelligent Client Logic
-*   **Multi-Server Configuration:** Support for an array of server addresses in the client configuration.
+*   **Multi-Server Configuration:** Support for an array of entry points.
 *   **Failover Strategy:**
-    1.  Attempt connection to `127.0.0.1`.
-    2.  On failure: Initiate parallel non-blocking `connect()` calls to the **Top-3** fastest nodes from the `NODES` list.
-    3.  Select the first node to complete the handshake for data transmission.
+    1.  Attempt connection to a preferred node (e.g., `127.0.0.1` if available).
+    2.  On failure: Initiate parallel non-blocking `connect()` calls to the **Top-3** fastest known nodes.
+    3.  Proceed with the first successful connection.
 
 #### 8. Diagnostics and Observability
-*   **`status` Command Expansion:** Displaying a peer table with "health" metrics: IP, RTT, effective throughput, and last synchronization time.
-*   **Logging:** Detailed logging of PEX synchronization attempts and new node discovery events.
+*   **`status` Command:** Real-time table of peers, their RTT, effective speed, and sync status.
+*   **Logging:** Tracking PEX events and mesh topology changes.
 
 #### 9. Technical Constraints
 *   **Language:** Pure C (C99/C11).
-*   **Dependencies:** OpenSSL only (libcrypto).
-*   **Networking:** Non-blocking sockets, `select()` (with architectural path to `epoll` for 1000+ nodes).
-*   **Memory:** Minimal footprint, no leaks, `mmap`-backed alert storage.
+*   **Dependencies:** OpenSSL only.
+*   **Networking:** Non-blocking sockets, `select()` (scalable to `epoll`).
+*   **Memory:** `mmap`-backed storage, minimal footprint.
 
 ---
-**Gorgona: Transforming distributed infrastructure into a self-healing digital nervous system.**
+**Gorgona: Resilient, decentralized, and flexible management for modern distributed "monsters".**
+---
+
