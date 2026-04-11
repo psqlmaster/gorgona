@@ -1,5 +1,3 @@
----
-
 ### Technical Specification: Gorgona Self-Optimizing P2P Mesh
 
 #### 1. General Overview
