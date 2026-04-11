@@ -198,7 +198,7 @@ void clean_expired_alerts(Recipient *rec) {
     if (use_disk_db && expired_found > 0) {
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
         
-        // Если записей 0, вызываем sync не дожидаясь порога, чтобы удалить файл
+        /* If there are 0 records, call `sync` without waiting for the threshold to be reached in order to delete the file */
         if (rec->waste_count >= waste_limit || rec->count == 0) {
             if (verbose) {
                 fprintf(stderr, "Vacuum trigger (cleanup): waste=%d, count=%d\n", 
