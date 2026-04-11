@@ -231,17 +231,71 @@ int alert_db_load_recipients(void) {
     return 0;
 }
 
+/**
+ * Synchronizes the recipient's alert database.
+ * This function performs a "Vacuum" operation: it removes inactive/expired alerts,
+ * rebuilds the file to reclaim space, and updates memory-mapped pointers.
+ * If no active alerts remain, the database file is deleted from the disk.
+ */
 int alert_db_sync(Recipient *rec) {
     char filename[512], tmp[512];
     char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
+    
     snprintf(filename, sizeof(filename), "%s%s.alerts", ALERT_DB_DIR, hash_b64);
     snprintf(tmp, sizeof(tmp), "%s%s.alerts.tmp", ALERT_DB_DIR, hash_b64);
     free(hash_b64);
+
+    /* Count active alerts to determine if the file should be kept or deleted */
+    int active_count = 0;
+    for (int i = 0; i < rec->count; i++) {
+        if (rec->alerts[i].active) active_count++;
+    }
+
+    /* CASE 1: No active alerts left. Clean up resources and delete the file. */
+    if (active_count == 0) {
+        if (verbose) {
+            fprintf(stderr, "No active alerts left for recipient. Deleting file: %s\n", filename);
+        }
+        
+        /* Unmap memory and close file descriptor */
+        if (rec->mmap_ptr) {
+            munmap(rec->mmap_ptr, rec->mmap_size);
+            rec->mmap_ptr = NULL;
+        }
+        if (rec->fd >= 0) {
+            close(rec->fd);
+            rec->fd = -1;
+        }
+        
+        /* Remove files from the filesystem */
+        unlink(filename); 
+        unlink(tmp);      
+
+        /* Free the alerts array in memory */
+        for (int i = 0; i < rec->count; i++) {
+            if (!rec->alerts[i].is_mmaped) {
+                free_alert(&rec->alerts[i]);
+            }
+        }
+        free(rec->alerts);
+        rec->alerts = NULL;
+        rec->count = 0;
+        rec->capacity = 0;
+        rec->used_size = 0;
+        rec->waste_count = 0;
+
+        return 0; 
+    }
+
+    /* CASE 2: Active alerts exist. Rebuild the file (Vacuuming). */
     int t_fd = open(tmp, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (t_fd < 0) return -1;
+
+    /* Write only active alerts to the temporary file */
     for (int i = 0; i < rec->count; i++) {
         Alert *a = &rec->alerts[i];
         if (!a->active) continue;
+        
         uint64_t v64;
         v64 = a->id; write(t_fd, &v64, 8);
         v64 = (uint64_t)a->create_at; write(t_fd, &v64, 8);
@@ -257,30 +311,56 @@ int alert_db_sync(Recipient *rec) {
         write(t_fd, a->tag, GCM_TAG_LEN);
         uint32_t del = ALERT_RECORD_DELIMITER; write(t_fd, &del, 4);
     }
-    fsync(t_fd); close(t_fd);
+
+    /* Force data to disk and close temporary file */
+    fsync(t_fd); 
+    close(t_fd);
+
+    /* Close existing mmap and file handle before replacing the file */
     if (rec->mmap_ptr) munmap(rec->mmap_ptr, rec->mmap_size);
     if (rec->fd >= 0) close(rec->fd);
+
+    /* Atomic swap of the old file with the new vacuumed one */
     rename(tmp, filename);
+
+    /* Re-open the new file and determine its size */
     rec->fd = open(filename, O_RDWR, 0600);
-    struct stat st; fstat(rec->fd, &st);
+    struct stat st; 
+    fstat(rec->fd, &st);
     rec->used_size = st.st_size;
+    
+    /* Align mmap size to 1MB chunks and pre-allocate space */
     rec->mmap_size = ((rec->used_size / (1024*1024)) + 1) * (1024*1024);
     ftruncate(rec->fd, rec->mmap_size);
     fsync(rec->fd);
+
+    /* Create new memory mapping */
     rec->mmap_ptr = mmap(NULL, rec->mmap_size, PROT_READ|PROT_WRITE, MAP_SHARED, rec->fd, 0);
-    size_t off = 0; int j = 0;
+    if (rec->mmap_ptr == MAP_FAILED) return -1;
+    
+    size_t off = 0; 
+    int j = 0;
     unsigned char *base = (unsigned char *)rec->mmap_ptr;
+    
+    /* Re-initialize internal Alert structures to point to the new mmap region */
     for (int i = 0; i < rec->count; i++) {
         if (!rec->alerts[i].active) continue;
-        Alert *a = &rec->alerts[j]; if (i != j) *a = rec->alerts[i];
+        
+        Alert *a = &rec->alerts[j]; 
+        if (i != j) *a = rec->alerts[i];
+        
         unsigned char *p = base + off;
-        a->active_ptr = (int *)(p + 32); 
+        a->active_ptr = (int *)(p + 32); /* Pointer to 'active' flag in mmap */
         a->text = p + 64;
         a->encrypted_key = a->text + a->text_len;
         a->iv = a->encrypted_key + a->encrypted_key_len;
+        
         off += (64 + a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + 4);
         j++;
     }
+    
     rec->count = j;
+    rec->waste_count = 0; /* Reset waste tracker after successful vacuum */
+    
     return 0;
 }
