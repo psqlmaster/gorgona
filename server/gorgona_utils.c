@@ -194,11 +194,18 @@ void clean_expired_alerts(Recipient *rec) {
         }
     }
 
-    /* activate the vacuum only when the threshold is reached */
+    /* Trigger vacuum if threshold is reached OR if no active alerts are left at all */
     if (use_disk_db && expired_found > 0) {
-        if (rec->waste_count > max_alerts / 4 || rec->waste_count > 100) {
+        int waste_limit = (max_alerts * vacuum_threshold) / 100;
+        
+        // Если записей 0, вызываем sync не дожидаясь порога, чтобы удалить файл
+        if (rec->waste_count >= waste_limit || rec->count == 0) {
+            if (verbose) {
+                fprintf(stderr, "Vacuum trigger (cleanup): waste=%d, count=%d\n", 
+                        rec->waste_count, rec->count);
+            }
             alert_db_sync(rec);
-            rec->waste_count = 0;
+            /* rec->waste_count обнуляется внутри alert_db_sync */
         }
     }
 }
@@ -228,15 +235,13 @@ void remove_oldest_alert(Recipient *rec) {
     /* Calculate the threshold based on the configuration */
     int waste_limit = (max_alerts * vacuum_threshold) / 100;
     
-    /* Protection: The vacuum will run in any case if there is too much junk data (>50,000 entries) 
-       or if it exceeds the specified percentage */
-    if (use_disk_db && (rec->waste_count >= waste_limit || rec->waste_count > 50000)) {
+    /* Trigger sync if threshold reached, too much junk, or recipient became empty */
+    if (use_disk_db && (rec->waste_count >= waste_limit || rec->waste_count > 50000 || rec->count == 0)) {
         if (verbose) {
-            fprintf(stderr, "Vacuum trigger: waste=%d (limit=%d%% of %d)\n", 
-                    rec->waste_count, vacuum_threshold, max_alerts);
+            fprintf(stderr, "Vacuum trigger (overflow): waste=%d (limit=%d%% of %d), count=%d\n", 
+                    rec->waste_count, vacuum_threshold, max_alerts, rec->count);
         }
         alert_db_sync(rec);
-        rec->waste_count = 0;
     }
 }
 
