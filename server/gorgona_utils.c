@@ -273,21 +273,10 @@ void remove_oldest_alert(Recipient *rec) {
  * 
  * Logic flow:
  * 1. Layer 1 Anti-Replay: Staleness check (skipped for replication).
- * 2. Layer 2 Anti-Replay: Sliding window binary deduplication.
- * 3. Gossip Suppression: Returns status 1 if a replicated duplicate is found.
- * 4. Housekeeping: Cleanup expired and overflowed alerts.
- * 5. Persistence: Save to disk via mmap if enabled.
- * 
- * @param pubkey_hash Binary hash of the recipient's public key.
- * @param unlock_at Timestamp when the alert becomes decryptable.
- * @param expire_at Timestamp when the alert should be deleted.
- * @param base64_text Base64 encoded encrypted message body.
- * @param base64_encrypted_key Base64 encoded encrypted AES key.
- * @param base64_iv Base64 encoded Initialization Vector.
- * @param base64_tag Base64 encoded GCM authentication tag.
- * @param client_fd Socket descriptor of the sender.
- * @param forced_id Original ID (provided by peer), or 0 for new local alerts.
- * @param forced_create_at Original creation time, or 0 for new local alerts.
+ * 2. Layer 2 Anti-Replay: Content-based and ID-based deduplication (including inactive records).
+ * 3. Gossip Suppression: Prevents circular replication loops.
+ * 4. Sliding Window: Protects against historical data displacing current alerts.
+ * 5. Housekeeping & Persistence: Memory cleanup and disk mmap sync.
  * 
  * @return 0 on success (new), 1 if duplicate (suppressed), -1 if stale, -2 if replay attack, -3 on error.
  */
@@ -328,43 +317,36 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     if (!decoded_text) return -3;
 
     /* --- ANTI-REPLAY LAYER 2: Full-Record Idempotency & Gossip Suppression --- 
-     * To prevent circular replication loops and redundant gossip, we verify the 
-     * incoming alert against the entire local dataset, including inactive (evicted) 
-     * records that are still present in memory awaiting vacuuming.
+     * We verify the incoming alert against the entire dataset managed by this recipient.
+     * Crucial: We scan ALL records (rec->count), including those marked as inactive (active=0)
+     * but not yet physically removed by a vacuum (alert_db_sync). This prevents 
+     * "zombie" alerts from being re-accepted and triggering a gossip loop.
      */
     for (int j = 0; j < rec->count; j++) {
-        /* 1. Identity Check: Compare Snowflake IDs for P2P consistency.
-         * If the ID is already known, this is a redundant replication event. */
+        /* A. Identity Check: Compare Snowflake IDs for P2P consistency. */
         if (forced_id > 0 && rec->alerts[j].id == forced_id) {
             free(decoded_text);
-            return 1; /* Signal dispatcher to terminate gossip relay */
+            return 1; /* Duplicate found: stop gossip relay */
         }
 
-        /* 2. Content-Based Deduplication: Compare raw binary payloads.
-         * Crucial: We check against both active and inactive alerts to prevent 
-         * "zombie" re-injection of data that has already been evicted from the 
-         * active window but remains in the mmap buffer. */
+        /* B. Content-Based Deduplication: Compare raw binary payloads.
+         * If the content matches exactly, it's a duplicate even if the ID is different. */
         if (rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
                 free(decoded_text);
+                if (forced_id > 0) return 1; /* Redundant P2P replication */
                 
-                if (forced_id > 0) {
-                    /* Redundant payload received via P2P sync/replication */
-                    return 1; 
-                }
-                /* Duplicate payload from a client: likely a Replay Attack */
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
-                return -2;
+                return -2; /* Replay attack from client */
             }
         }
     }
 
     /* --- SLIDING WINDOW BOUNDARY PROTECTION --- 
-     * If the recipient's capacity is full, we must enforce a strict temporal 
-     * boundary. We reject any replicated alert older than our current oldest 
-     * active alert. This prevents infinite 'eviction-reinsertion' cycles 
-     * in highly saturated clusters.
+     * If at capacity, we reject replicated alerts that are chronologically 
+     * older than our current oldest ACTIVE alert. This prevents loops where 
+     * old data pushes out new data in an infinite cycle.
      */
     if (forced_id > 0 && rec->count >= max_alerts) {
         uint64_t current_min_active_id = 0xFFFFFFFFFFFFFFFFULL;
@@ -378,9 +360,6 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
 
         if (found_active && forced_id < current_min_active_id) {
-            /* This alert is chronologically behind our current window.
-             * Accepting it would cause it to immediately evict newer data,
-             * triggering a cascade of redundant replications. */
             if (verbose) {
                 log_event("DEBUG", client_fd, client_ip, client_port, 
                           "Suppressed out-of-window replication for ID %" PRIu64, forced_id);
@@ -391,15 +370,14 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
 
     /* --- HOUSEKEEPING --- 
-       Perform maintenance tasks. Must be done BEFORE pointng to rec->alerts[rec->count] 
-       because these functions may shift array elements in memory. */
+       Clean up expired and overflow alerts before pointing to the new array slot. */
     clean_expired_alerts(rec);
     if (rec->count >= max_alerts) {
         remove_oldest_alert(rec);
     }
 
     /* --- INITIALIZATION --- 
-       Prepare the Alert structure at the tail of the recipient's array. */
+       Prepare the Alert structure at the end of the current array. */
     Alert *alert = &rec->alerts[rec->count];
     memset(alert, 0, sizeof(Alert));
     
@@ -408,17 +386,15 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     
-    /* Decode GCM Authentication Tag */
+    /* Decode and copy GCM Authentication Tag */
     size_t tag_len_actual;
     unsigned char *tag_raw = base64_decode(base64_tag, &tag_len_actual);
     if (tag_raw && tag_len_actual == GCM_TAG_LEN) {
         memcpy(alert->tag, tag_raw, GCM_TAG_LEN);
     }
-    free(tag_raw);
+    if (tag_raw) free(tag_raw);
 
-    /* --- IDENTITY ASSIGNMENT --- 
-       Replicated alerts maintain their original ID/timestamp to ensure cluster-wide 
-       consistency and sort order. Local alerts get new Snowflake IDs. */
+    /* --- IDENTITY ASSIGNMENT --- */
     if (forced_id > 0) {
         alert->id = forced_id;
         alert->create_at = forced_create_at;
@@ -427,15 +403,15 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         alert->create_at = now;
     }
 
-    /* Queue for the replication ring buffer so other nodes can pull this via SYNC */
-    add_to_repl_ring(alert->id, pubkey_hash);
-
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
 
+    /* Record in replication ring so peers can discover this alert */
+    add_to_repl_ring(alert->id, pubkey_hash);
+
     /* --- PERSISTENCE --- 
-       Sync the new alert to the mmap-backed database if enabled. */
+       Save to disk. alert_db_save_alert will handle mmap pointers and free heap data. */
     if (use_disk_db) {
         if (alert_db_save_alert(rec, alert) != 0) {
             log_event("ERROR", client_fd, client_ip, client_port, "Failed to persist alert via mmap");
@@ -447,10 +423,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     rec->count++;
     
     log_event("DEBUG", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added successfully [Recipient Hash: %.12s...]", 
+              "Alert %" PRIu64 " added [Recipient Hash: %.12s...]", 
               alert->id, base64_text);
 
-    return 0; /* New alert committed successfully */
+    return 0; /* Success */
 }
 
 
