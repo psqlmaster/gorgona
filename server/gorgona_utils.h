@@ -186,5 +186,7 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
 
 /* cleanup */
 void cleanup_subscriber(int index);
+void remove_recipient_at_index(int index);
+void run_global_maintenance(void); 
 
 #endif

@@ -357,6 +357,12 @@ void run_server(int server_fd) {
 
         activity = select(max_sd + 1, &readfds, &writefds, NULL, &timeout);  
 
+        if (activity == 0) {
+            /* EVENT: Idle - The server is not busy, perfect time for background cleanup */
+            run_global_maintenance();
+            continue;
+        }
+
         if ((activity < 0) && (errno != EINTR)) {
             log_event("ERROR", -1, NULL, 0, "Select error: %s", strerror(errno));
             continue;
@@ -543,6 +549,7 @@ void run_server(int server_fd) {
                                             log_event("WARN", sd, sub->ip_address, sub->port, "Unauthorized status request (Invalid PSK)");
                                             enqueue_text_only(i, "Error: Unauthorized. Usage: status <sync_psk>\n", 45);
                                         } else {
+                                            run_global_maintenance();
                                             /* Authentication successful - Gather detailed metrics */
                                             char status_msg[2048];
                                             time_t now = time(NULL);

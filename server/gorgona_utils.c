@@ -175,6 +175,29 @@ Recipient *add_recipient(const unsigned char *hash) {
     return rec;
 }
 
+/**
+ * Removes a recipient from the global array using "Swap with Last" logic.
+ * This is O(1) and safe for single-threaded event loops.
+ */
+void remove_recipient_at_index(int index) {
+    if (index < 0 || index >= recipient_count) return;
+
+    /* Move the last element into the current slot to maintain a packed array */
+    if (index < recipient_count - 1) {
+        memcpy(&recipients[index], &recipients[recipient_count - 1], sizeof(Recipient));
+    }
+
+    recipient_count--;
+    
+    if (verbose) {
+        fprintf(stderr, "Recipient removed from memory. Total keys: %d\n", recipient_count);
+    }
+}
+
+/**
+ * Updated cleanup function. 
+ * Note: Must handle index externally if called in a loop.
+ */
 void clean_expired_alerts(Recipient *rec) {
     time_t now = time(NULL);
     int expired_found = 0;
@@ -194,18 +217,15 @@ void clean_expired_alerts(Recipient *rec) {
         }
     }
 
-    /* Trigger vacuum if threshold is reached OR if no active alerts are left at all */
+    /* 
+     * Trigger disk sync only for reclaimed waste. 
+     * We no longer trigger sync for rec->count == 0 here; 
+     * that is now handled exclusively by the global maintenance loop.
+     */
     if (use_disk_db && expired_found > 0) {
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
-        
-        /* If there are 0 records, call `sync` without waiting for the threshold to be reached in order to delete the file */
-        if (rec->waste_count >= waste_limit || rec->count == 0) {
-            if (verbose) {
-                fprintf(stderr, "Vacuum trigger (cleanup): waste=%d, count=%d\n", 
-                        rec->waste_count, rec->count);
-            }
+        if (rec->waste_count >= waste_limit) {
             alert_db_sync(rec);
-            /* rec->waste_count обнуляется внутри alert_db_sync */
         }
     }
 }
@@ -484,22 +504,56 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     free(pubkey_hash_b64); free(bt); free(bk); free(bi); free(bg);
 } 
 
+/**
+ * Iterates through all recipients and sends relevant encrypted alerts to a subscriber.
+ * 
+ * This function handles various listening modes (LIVE, ALL, LOCK, LAST, SINGLE)
+ * and applies filters based on recipient public key hashes. It also performs
+ * proactive maintenance by cleaning expired alerts before transmission.
+ * 
+ * @param sub_index Index of the client in the global subscribers array.
+ * @param mode The subscription mode (determines which alerts are sent).
+ * @param pubkey_hash_b64_filter Optional filter for a specific recipient.
+ * @param count Maximum number of alerts to send (used in MODE_LAST).
+ */
 void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
-    for (int r = 0; r < recipient_count; r++) {
+
+    /* 
+     * Use a manual index increment to safely handle cases where a 
+     * recipient is removed from the global array during the maintenance phase.
+     */
+    for (int r = 0; r < recipient_count; ) {
         Recipient *rec = &recipients[r];
+        
+        /* 1. Maintenance: Purge expired alerts before processing the transmission */
+        clean_expired_alerts(rec);
+
+        /* 2. Cleanup: If the recipient is now empty, sync/delete the file and remove from memory */
+        if (rec->count == 0 && use_disk_db) {
+            if (alert_db_sync(rec) == 1) {
+                remove_recipient_at_index(r);
+                /* Do not increment index: the next recipient has shifted into the current slot */
+                continue; 
+            }
+        }
+
+        /* 3. Filtering: Encode hash to Base64 and compare with requested filter */
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
-        if (!pubkey_hash_b64) continue;
+        if (!pubkey_hash_b64) {
+            r++;
+            continue;
+        }
 
         if (pubkey_hash_b64_filter && strlen(pubkey_hash_b64_filter) > 0) {
             if (strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
                 free(pubkey_hash_b64);
+                r++;
                 continue;
             }
         }
 
-        clean_expired_alerts(rec);
- 
+        /* 4. Ordering: Sort alerts by ID (descending) if historical data is requested */
         if (mode == MODE_LAST || mode == MODE_SINGLE) {
             qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
         }
@@ -507,18 +561,27 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         int limit = (mode == MODE_LAST) ? count : rec->count;
         int sent_count = 0;
 
+        /* 5. Transmission: Process alerts in the recipient's buffer */
         for (int i = 0; i < rec->count && sent_count < limit; i++) {
             Alert *a = &rec->alerts[i];
+            
+            /* Skip inactive or expired alerts that haven't been vacuumed yet */
             if (!a->active || a->expire_at <= now) continue;
 
             bool is_locked = (a->unlock_at > now);
             bool send_it = false;
 
-            if (mode == MODE_ALL || mode == MODE_LAST) send_it = true;
-            else if (mode == MODE_LIVE || mode == MODE_SINGLE) send_it = !is_locked;
-            else if (mode == MODE_LOCK) send_it = is_locked;
+            /* Apply mode-specific visibility rules */
+            if (mode == MODE_ALL || mode == MODE_LAST) {
+                send_it = true;
+            } else if (mode == MODE_LIVE || mode == MODE_SINGLE) {
+                send_it = !is_locked;
+            } else if (mode == MODE_LOCK) {
+                send_it = is_locked;
+            }
 
             if (send_it) {
+                /* Encode binary fields for network transmission */
                 char *bt = base64_encode(a->text, a->text_len);
                 char *bk = base64_encode(a->encrypted_key, a->encrypted_key_len);
                 char *bi = base64_encode(a->iv, a->iv_len);
@@ -527,24 +590,29 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                 if (bt && bk && bi && bg) {
                     size_t resp_len = 2048 + strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
                     char *resp = malloc(resp_len);
-                    if (!resp) {
-                         free(bt); free(bk); free(bi); free(bg);
-                        continue;
+                    if (resp) {
+                        /* Format the ALERT message according to protocol spec */
+                        int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                         pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
+                                         bt, bk, bi, bg);
+                        if (l > 0) {
+                            enqueue_message(sub_index, resp, (size_t)l);
+                        }
+                        free(resp);
                     }
-                    
-                    int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s ",
-                                     pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
-                                     bt, bk, bi, bg);
-                    if (l > 0) enqueue_message(sub_index, resp, l);
-                    free(resp);
                 }
+                
                 free(bt); free(bk); free(bi); free(bg);
                 sent_count++;
             }
         }
+
         free(pubkey_hash_b64); 
+        r++; /* Move to the next recipient in the list */
     }
-    if (mode == MODE_LAST) {
+
+    /* 6. Post-processing: Handle one-time requests by flagging connection for closure */
+    if (mode == MODE_LAST || mode == MODE_SINGLE) {
         subscribers[sub_index].close_after_send = true;
     }
 }
@@ -694,4 +762,32 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
         free(repl_msg);
     }
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
+}
+
+/* gorgona_utils.c */
+
+/**
+ * Maintenance task to sync disk and free memory for all recipients.
+ * This function is called during idle periods or status requests.
+ */
+void run_global_maintenance(void) {
+    for (int i = 0; i < recipient_count; ) {
+        Recipient *rec = &recipients[i];
+        
+        /* 1. Remove expired alerts from memory array */
+        clean_expired_alerts(rec);
+
+        /* 2. Check if recipient is empty or threshold reached */
+        int waste_limit = (max_alerts * vacuum_threshold) / 100;
+        
+        if (rec->count == 0 || rec->waste_count >= waste_limit) {
+            /* If alert_db_sync returns 1, the file was unlinked from disk */
+            if (alert_db_sync(rec) == 1) {
+                /* Remove structure from memory and don't increment i */
+                remove_recipient_at_index(i);
+                continue;
+            }
+        }
+        i++;
+    }
 }
