@@ -144,21 +144,6 @@ If an attack is detected, the server logs the event as a `WARN` (including clien
 
 ---
 
-### Подсказка по формату конфига для README (опционально):
-Вы можете добавить этот пример в раздел конфигурации, чтобы пользователям было понятнее:
-
-```ini
-[exec_commands]
-# Basic command without limit
-sys_info = /usr/local/bin/sysinfo.sh
-
-# Command with 5-second execution limit
-weather = /usr/local/bin/get_weather.sh time_limit = 5
-
-# Command with limit and comment (comment must be at the end)
-backup = /usr/local/bin/backup.sh time_limit = 60 # Run heavy backup
-```
-
 > Note: Flags `-v` and `-e` can be combined (e.g., `-ve`) for verbose output during command execution.
 
 #### Generate Keys
@@ -304,6 +289,9 @@ The file `/etc/gorgona/gorgona.conf` contains server settings and optional execu
 ip = 64.188.70.158 
 port = 7777
 
+[exec_commands:RWTPQzuhzBw=]
+<key> = <script_path> time_limit = <sec>
+
 [exec_commands]
 <key> = <script_path> time_limit = <sec>
 ```
@@ -327,10 +315,10 @@ greengage start = /root/scripts/greengage_start.sh time_limit = 120
 
 [exec_commands:IcUimbs6LZY=]
 la = /root/scripts/la.sh
-vm list running = /root/scripts/qm_list_running.sh
+vm list running = /root/scripts/qm_list_running.sh    # without time_limit
 
 [exec_commands]   ; global commands, available for all keys
-sysadmin = /usr/local/bin/gorgona_sysadmin.sh
+sysadmin = /usr/local/bin/gorgona_sysadmin.sh time_limit = 5
 ```
 
 Notes:
