@@ -10,6 +10,10 @@
 - [Installation](#installation)
   - [Install Client](#install-client)
   - [Install Server](#install-server)
+- [Configuration](#configuration)
+  - [Server Configuration (gorgonad.conf)](#server-configuration-gorgonadconf)
+  - [Client Configuration (gorgona.conf)](#client-configuration-gorgonaconf)
+  - [Service Installation (systemd)](#service-installation-systemd)
 - [Usage](#usage)
   - [Flags](#flags)
   - [Generate Keys](#generate-keys)
@@ -109,7 +113,118 @@ Builds `gorgona` (client) and `gorgonad` (server). Clean: `make clean`. Rebuild:
 sudo dpkg -i ./gorgona_<version>_amd64.deb
 sudo dpkg -i ./gorgonad_<version>_amd64.deb
 ```
+---
 
+#### Configuration
+
+All configuration files are located in `/etc/gorgona/`.
+
+##### Server Configuration (gorgonad.conf)
+Controls the `gorgonad` daemon behavior.
+```ini
+[server]
+port = 7777                                           # Listen port
+max_alerts = 1000                                     # Max alerts stored per key
+max_clients = 100                                     # Concurrent client connections
+max_log_size = 10                                     # Log rotation size in MB
+log_level = info                                      # info, error, or debug
+max_message_size = 5                                  # Max message size in MB
+use_disk_db = true                                    # Enable mmap-backed persistent storage
+vacuum_threshold_percent = 50                         # Auto-cleanup threshold for deleted records
+
+[replication]
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key
+peer = 64.188.70.158:7777                             # Remote peer address to sync with
+```
+
+##### Client Configuration (gorgona.conf)
+Controls the `gorgona` client and Remote Command Execution (RCE) mappings.
+```ini
+[server]
+ip = 64.188.70.158 
+port = 7777
+
+# Per-key command sections (Recommended)
+[exec_commands:RWTPQzuhzBw=]
+<key> = <script_path> time_limit = <sec>
+start_app = /usr/local/bin/app_start.sh time_limit = 60
+
+# Global commands (Available to all keys)
+[exec_commands]
+sysadmin = /usr/local/bin/gorgona_sysadmin.sh time_limit = 10
+status = /usr/bin/uptime
+```
+
+#### Service Installation (systemd)
+If not using the `.deb` package, install manually:
+
+##### Manual Service Installation (without .deb package)
+```bash
+sudo cp ./gorgonad /usr/bin
+sudo mkdir -p /etc/gorgona /var/lib/gorgona/alerts /var/log/gorgona
+```
+
+- server service configuration
+```bash    
+vim /etc/systemd/system/gorgonad.service
+```
+```ini
+[Unit]
+Description=Gorgona Distributed Alert Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gorgonad
+WorkingDirectory=/var/lib/gorgona
+StandardOutput=append:/var/log/gorgona/gorgonad.log
+StandardError=append:/var/log/gorgona/gorgonad.log
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+systemctl daemon-reload
+systemctl enable gorgonad
+systemctl start gorgonad
+```
+Verify:
+```bash
+systemctl status gorgonad
+tail -f /var/log/gorgona/gorgonad.log
+```
+
+- client service configuration
+```bash
+vim /etc/systemd/system/gorgona.service
+```
+```ini
+[Unit]
+Description=gorgona Message Listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gorgona -e listen new BTW9V5jVztY= 
+#ExecStart=/usr/bin/gorgona -ev listen new              # debug mode
+Restart=always
+RestartSec=5
+StartLimitBurst=10
+User=root
+StandardOutput=journal
+StandardError=append:/var/log/gorgona_service.log
+KillMode=mixed
+TimeoutStopSec=30
+Environment=gorgona_LOG_FILE=/var/log/gorgona_service.log
+
+[Install]
+WantedBy=multi-user.target
+```
+---
 #### Usage
 
 ```bash
@@ -237,31 +352,50 @@ Commands available:
   status <psk>   - Show detailed node metrics (requires authentication)
 -------------------------
 ```
+- Get cluster status
 ```bash
-echo "status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3" | nc localhost 7777
+cmd="status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3"; echo "$cmd" | nc 64.188.70.158 7777; echo "$cmd" | nc 46.138.247.148 7777
 ```
 **Output:**
-```txt
-------------------------------------
---- Gorgona Node Detailed Status ---
-Version: 2.9.0
-Uptime: 0d 0h 3m
+```ini
+--- Gorgona Node [64.188.70.158 7777] Detailed Status ---
+Version: 2.9.2
+Uptime: 1d 4h 43m
 Connections:
-  - Active Clients: 15 / 100
-  - Authenticated Peers: 3 / 1 (configured)
+  - Active Clients: 1 / 100
+  - Authenticated Peers: 2 / 1 (configured)
 Storage Metrics:
   - DB Storage Mode: Persistent (Disk)
   - Unique Recipients (Keys): 4
-  - Active Alerts (Live): 2006
-  - Database Size: 0.78 MB
-  - Disk Waste (Awaiting Vacuum): 3
+  - Active Alerts (Live): 2171
+  - Database Size: 1.55 MB
+  - Disk Waste (Awaiting Vacuum): 18
   - Vacuum Threshold: 50%
-  - History Starts From: 2026-04-05 12:45:55 UTC
+  - History Starts From: 2026-04-05 12:51:59 UTC
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
-------------------------------------
+-----------------------------------------------------
+--- Gorgona Node [192.168.1.200 7777] Detailed Status ---
+Version: 2.9.2
+Uptime: 1d 4h 44m
+Connections:
+  - Active Clients: 3 / 100
+  - Authenticated Peers: 2 / 1 (configured)
+Storage Metrics:
+  - DB Storage Mode: Persistent (Disk)
+  - Unique Recipients (Keys): 4
+  - Active Alerts (Live): 2171
+  - Database Size: 1.62 MB
+  - Disk Waste (Awaiting Vacuum): 18
+  - Vacuum Threshold: 50%
+  - History Starts From: 2026-04-05 12:51:59 UTC
+Operational Configuration:
+  - Max Alerts per Key: 1000
+  - Max Message Size: 2 MB
+  - Logging Level: info
+-----------------------------------------------------
 ```
 
 #### Run Server
@@ -275,51 +409,6 @@ gorgonad [-v|--verbose] [-h|--help] [-V|--version]
 
 ```bash
 strace -e network gorgona -v listen new RWTPQzuhzBw=
-```
-
-The server reads settings from `/etc/gorgona/gorgonad.conf` or uses defaults (port: 5555, max alerts: 1024, max clients: 100).
-
-#### Configuration
-
-##### Client Configuration (Variant A)
-
-The file `/etc/gorgona/gorgona.conf` contains server settings and optional execution mappings:
-
-```ini
-[server]
-ip = 64.188.70.158 
-port = 7777
-
-[exec_commands:RWTPQzuhzBw=]
-<key> = <script_path> time_limit = <sec>
-
-[exec_commands]
-<key> = <script_path> time_limit = <sec>
-```
-
-**Example**:
-
-```ini
-[exec_commands]
-app start = /home/su/repository/c/gorgona/test/script.sh time_limit = 5
-```
-
-##### Recommended (Variant B) - per-key sections
----
-
-Prefer using named subsections to group commands by required public-key hash. This is explicit, easy to read, and less error-prone.
-
-```ini
-[exec_commands:RWTPQzuhzBw=]
-weather = /usr/local/bin/gorgona_weather_sender.sh
-greengage start = /root/scripts/greengage_start.sh time_limit = 120
-
-[exec_commands:IcUimbs6LZY=]
-la = /root/scripts/la.sh
-vm list running = /root/scripts/qm_list_running.sh    # without time_limit
-
-[exec_commands]   ; global commands, available for all keys
-sysadmin = /usr/local/bin/gorgona_sysadmin.sh time_limit = 5
 ```
 
 Notes:
@@ -460,64 +549,9 @@ gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 hour' '+%Y-%m-%
 gorgona -ed listen new RWTPQzuhzBw=
 ```
 
-#### Server Configuration
-
-Edit `/etc/gorgona/gorgonad.conf`:
-
-```ini
-[server]
-port = 7777                      # Server port
-max_alerts = 10000               # Max alerts for one key
-max_clients = 100                # Max counts parallel clients
-max_log_size = 10                # MB (default: 10)
-log_level = info                 # info or error (default: info)
-max_message_size = 5             # MB (default: 5)
-use_disk_db = true               # Enable (true) or disable (false) persistent disk storage for alerts (default: false)
-vacuum_threshold_percent = 100   # Cleanup threshold %: higher reduces disk I/O, lower saves disk space (default: 25)
-
-[replication]
-sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # sync_node_password
-peer = 64.188.70.158:7777        # Remote peer address to sync with
-```
-
 > **Pro Tip: Debugging**
 > Running `gorgonad -v` (verbose) will print **all** levels (including DEBUG) to your terminal in real-time, regardless of the `log_level` set in the config file. This is ideal for troubleshooting without bloating your `gorgonad.log`.
 
-#### Manual Service Installation (without .deb package)
-```bash
-cp ./gorgonad /usr/bin
-mkdir -p /etc/gorgona /var/lib/gorgona/alerts /var/log/gorgona
-```
-
-Edit /etc/systemd/system/gorgonad.service
-```ini
-[Unit]
-Description=Gorgona Distributed Alert Server
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/gorgonad
-WorkingDirectory=/var/lib/gorgona
-StandardOutput=append:/var/log/gorgona/gorgonad.log
-StandardError=append:/var/log/gorgona/gorgonad.log
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=4096
-
-[Install]
-WantedBy=multi-user.target
-```
-```bash
-systemctl daemon-reload
-systemctl enable gorgonad
-systemctl start gorgonad
-```
-Verify:
-```bash
-systemctl status gorgonad
-tail -f /var/log/gorgona/gorgonad.log
-```
 ---
 
 ### Flowchart of Server Operation
