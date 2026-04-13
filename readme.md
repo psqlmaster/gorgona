@@ -62,6 +62,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 #### Quick Start
 
 ```bash
+sudo apt update && sudo apt install -y libssl-dev git gcc make && \
 git clone --depth 1 https://github.com/psqlmaster/gorgona.git && \
 cd gorgona && \
 make clean && make && \
