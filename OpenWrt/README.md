@@ -24,6 +24,7 @@ Example directory structure used in this guide:
 ```bash
 git clone https://github.com/psqlmaster/gorgona.git
 cd gorgona
+```
 
 ### 3. Replace the Makefile
 
