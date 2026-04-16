@@ -27,7 +27,7 @@ int sync_interval = DEFAULT_SYNC_INTERVAL;
 /* Shutdown handler for graceful exit */
 void shutdown_handler(int sig) {
     log_event("INFO", -1, NULL, 0, "Received signal %d, shutting down gracefully", sig);
-
+    mesh_save_peers_cache();
     alert_db_close_all();
     for (int i = 0; i < max_clients; i++) {
         if (client_sockets[i] > 0) close(client_sockets[i]);
@@ -41,36 +41,46 @@ void shutdown_handler(int sig) {
 }
 
 void print_server_help(const char *program_name) {
-    printf("Gorgona Server (Version %s)\n", VERSION);
+    printf("Gorgona Mesh Server (Version %s)\n", VERSION);
     printf("Usage: %s [-h|--help] [-v|--verbose] [-V|--version]\n", program_name);
+    
     printf("\nDescription:\n");
-    printf(" The gorgona server handles encrypted alerts, allowing clients to send and subscribe to messages.\n");
-    printf(" It listens for TCP connections and processes commands: SEND, LISTEN, SUBSCRIBE.\n");
+    printf(" The gorgona server is a decentralized P2P node for encrypted alert delivery.\n");
+    printf(" It implements a Dual-Layer architecture:\n");
+    printf("  - Layer 1 (Command Plane): Blind E2E encrypted data replication.\n");
+    printf("  - Layer 2 (Management Plane): AES-256-GCM encrypted mesh for PEX and metrics.\n");
+
     printf("\nFlags:\n");
     printf(" -h, --help     Displays this help message\n");
-    printf(" -v, --verbose  Enables verbose output (e.g., received messages in console)\n");
+    printf(" -v, --verbose  Enables detailed trace (L2 metrics, gossip, decryption events)\n");
     printf(" -V, --version  Displays version information\n");
-    printf("\nConfiguration:\n");
-    printf(" The file /etc/gorgona/gorgonad.conf contains server settings.\n");
-    printf(" Format:\n");
+
+    printf("\nConfiguration (/etc/gorgona/gorgonad.conf):\n");
     printf(" [server]\n");
-    printf(" port = <port> (default: 5555, example: 7777)\n");
-    printf(" max_alerts = <number> (default: 1000, example: 2000)\n");
-    printf(" max_clients = <number> (default: 100, example: 100)\n");
-    printf(" max_log_size = <MB> (default: 10, example: 50 for 50 MB before rotation)\n");
-    printf(" log_level = \"info\"|\"error\"|\"error\" (default: \"info\")\n");
-    printf(" max_message_size = <MB> (default: 5, example: 10 for 10 MB)\n");
-    printf(" use_disk_db = <boolean> (default: false, example: true to enable disk-based storage)\n");
-    printf(" vacuum_threshold_percent = <int> (default: 25, Cleanup threshold %%: higher reduces disk I/O, lower saves disk space)\n");
-    printf("\nLogging:\n");
-    printf(" Logs are written to ./gorgonad.log (rotates at %zu MB). \"info\" logs events and errors; \"error\" logs only errors.\n", max_log_size);
-    printf("\nLimits:\n");
-    printf(" - Maximum simultaneous clients: MAX_CLIENTS (default: 100 or from config).\n");
-    printf(" - Maximum alerts per recipient: MAX_ALERTS (default: 1000 or from config).\n");
-    printf(" - Recipient capacity expands dynamically starting from %d.\n", INITIAL_RECIPIENT_CAPACITY);
+    printf("  port = <port>           Listen port (default: 5555)\n");
+    printf("  max_alerts = <number>   Storage limit per recipient key\n");
+    printf("  max_clients = <number>  Total TCP connection limit (Clients + Peers)\n");
+    printf("  use_disk_db = <bool>    Persistence in " ALERT_DB_DIR "\n");
+    printf("  log_level = <level>     \"info\" (standard) or \"debug\" (full P2P trace)\n");
+    printf("  vacuum_threshold_percent = <%%>  Trigger database compression (1-100)\n");
+
+    printf("\n [replication]\n");
+    printf("  sync_psk = <key>        Cluster-wide secret for Layer 2 encryption (AES-256-GCM)\n");
+    printf("  sync_interval = <sec>   Gossip & Heartbeat frequency (default: 10s)\n");
+    printf("  peer = <IP:PORT>        Seed node for initial discovery (can be multiple entries)\n");
+
+    printf("\nMesh Resilience:\n");
+    printf(" - Anti-Entropy: Continuous MaxID synchronization ensures data consistency.\n");
+    printf(" - Intelligent Routing: Best peers are prioritized via 'Gorgona Score' (RTT/Throughput).\n");
+    printf(" - Self-Healing: Dynamic node discovery (PEX) and boot-strapping from /var/lib/gorgona/peers.cache.\n");
+
+    printf("\nDiagnostic Commands (via nc/telnet):\n");
+    printf(" status <sync_psk>        Detailed L1/L2 metrics and cluster topology map.\n");
+    printf(" info                     Brief uptime and identification.\n");
+    printf(" help                     Lists available plaintext commands.\n");
+
     printf("\nExample:\n");
-    printf(" %s\n", program_name);
-    printf(" Starts the server using settings from /etc/gorgona/gorgonad.conf or defaults.\n");
+    printf(" %s --verbose\n", program_name);
 }
 int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
 
@@ -117,6 +127,7 @@ int main(int argc, char *argv[]) {
                 log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp); 
     sync_interval = sync_interval_tmp;
     mesh_init(sync_psk);
+    mesh_load_peers_cache();
     log_event("INFO", -1, NULL, 0, "Layer 2: Management Plane Initialized with PSK fingerprint");
 
     max_alerts = max_alerts_config;

@@ -543,7 +543,7 @@ void run_server(int server_fd) {
                                 /* VALIDATION: Check if length is within allowed bounds */
                                 if (temp_len > max_message_size || temp_len == 0) {
                                     char err_size[256];
-                                    /* Формируем детальное сообщение об ошибке */
+                                    /* Creating a detailed error message */
                                     int l = snprintf(err_size, sizeof(err_size), 
                                                      "Error: Message size (%u) exceeds limit (%zu).\n", 
                                                      temp_len, max_message_size);
@@ -625,7 +625,7 @@ void run_server(int server_fd) {
                                             run_global_maintenance();
                                             /* Authentication successful - Gather detailed metrics */
                                             
-                                            /* Увеличили буфер до 4096, так как таблица L2 может быть большой */
+                                            /* We increased the buffer to 4096, since the L2 table can be large */
                                             char status_msg[4096];
                                             int pos = 0; 
 
@@ -666,11 +666,10 @@ void run_server(int server_fd) {
                                                 total_waste += recipients[r].waste_count;
                                                 total_bytes += recipients[r].used_size;
                                                 
-                                                /* ИСПРАВЛЕНИЕ: заменил 'i' на 'a' для предотвращения конфликта с внешним циклом */
                                                 for (int a = 0; a < recipients[r].count; a++) {
                                                     if (recipients[r].alerts[a].active) {
                                                         active_alerts++;
-                                                        /* Ищем время самого старого живого алерта */
+                                                        /* We are looking for the time of the oldest active alert */
                                                         if (oldest_ts == 0 || recipients[r].alerts[a].create_at < oldest_ts) {
                                                             oldest_ts = recipients[r].alerts[a].create_at;
                                                         }
@@ -733,7 +732,7 @@ void run_server(int server_fd) {
                                             );
 
                                             /* 5. Final Assemble - Part 2: L2 Management Mesh */
-                                            mesh_recalculate_scores(); /* Актуализируем метрики перед выводом */
+                                            mesh_recalculate_scores(); /* Update the metrics before outputting */
                                             
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "--- L2 Cluster Topology (Known nodes: %d) ---\n", cluster_node_count);
@@ -745,28 +744,30 @@ void run_server(int server_fd) {
                                                 for (int n = 0; n < cluster_node_count; n++) {
                                                     MeshNode *node = &cluster_nodes[n];
                                                     
-                                                    /* Защита от переполнения буфера (оставляем место для концовки) */
+                                                    /* Buffer overflow protection (leaving room for the ending) */
                                                     if (pos >= sizeof(status_msg) - 256) {
                                                         pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, "  ... [Table Truncated]\n");
                                                         break;
                                                     }
                                                     
-                                                    /* Выводим метрики узла с красивым форматированием */
+                                                    char *origin = "PEX ";
+                                                    if (node->is_seed) origin = "SEED";
+                                                    else if (node->is_cached) origin = "CACHE";
                                                     pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
                                                         "  [%-15s:%-5d] Score: %4.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
                                                         node->ip, node->port, 
                                                         node->metrics.gorgona_score,
                                                         node->metrics.last_rtt, 
                                                         node->metrics.rolling_avg_speed / 1024.0,
-                                                        node->is_seed ? "SEED" : "PEX ",
-                                                        (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD");  
+                                                        origin, 
+                                                        (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD"); 
                                                 }
                                             }
                                             
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "-----------------------------------------------------\n");
 
-                                            /* Отправляем полностью собранное сообщение */
+                                            /* We are sending the fully assembled message */
                                             enqueue_text_only(i, status_msg, pos);
                                         }
                                         sub->close_after_send = true;

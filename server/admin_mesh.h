@@ -1,5 +1,7 @@
 /* 
  * admin_mesh.h - Synchronized Layer 2 Header
+ * BSD 3-Clause License
+ * Copyright (c) 2025, Alexander Shcheglov
  */
 #ifndef ADMIN_MESH_H
 #define ADMIN_MESH_H
@@ -39,6 +41,7 @@ typedef struct {
     char ip[INET_ADDRSTRLEN];
     int port;
     bool is_seed;               
+    bool is_cached; 
     MeshStatus status;
     MeshMetrics metrics;
     time_t discovered_at;        /* Added to fix error */
@@ -58,5 +61,6 @@ int mesh_encrypt(const uint8_t *plain, int len, uint8_t *out_cipher, uint8_t *ou
 uint8_t* mesh_decrypt(const uint8_t *cipher, int len, const uint8_t *iv, const uint8_t *tag, int *out_len);
 void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac);
 void mesh_update_rtt(const char *ip, double rtt_ms);
-
+void mesh_load_peers_cache();
+void mesh_save_peers_cache();
 #endif

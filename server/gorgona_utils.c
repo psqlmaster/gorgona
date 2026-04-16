@@ -790,6 +790,7 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
  * Handles Layer 1 (Storage cleanup) and Layer 2 (Aggressive Mesh Sync).
  */
 void run_global_maintenance(void) {
+    time_t now = time(NULL);
     /* --- LAYER 1: Storage & Memory Cleanup --- */
     for (int i = 0; i < recipient_count; ) {
         Recipient *rec = &recipients[i];
@@ -807,16 +808,15 @@ void run_global_maintenance(void) {
 
     /* --- LAYER 2: Administrative Mesh Maintenance --- */
     static time_t last_mesh_task = 0;
-    time_t now = time(NULL);
 
-    /* Используем интервал из конфигурации */
+    /* We use the interval specified in the configuration */
     if (now - last_mesh_task >= sync_interval) { 
         last_mesh_task = now;
         
         /* 1. Recalculate scores and evict dead nodes */
         mesh_run_garbage_collector();
 
-        extern int port; // Our local listener port from gorgonad.c
+        extern int port; /* Our local listener port from gorgonad.c */
         
         /* 2. Build Peer Exchange (PEX) list */
         char pex_payload[2048];
@@ -864,5 +864,11 @@ void run_global_maintenance(void) {
                       "L2 Mesh: Sync cycle complete (Interval: %ds, Neighbors: %d, MaxID: %" PRIu64 ")", 
                       sync_interval, neighbors_count, my_max_id);
         }
+    }
+    static time_t last_cache_dump = 0;
+    /* We save the best peers to peers.cache every 60 minutes */
+    if (now - last_cache_dump >= 3600) { 
+        mesh_save_peers_cache();
+        last_cache_dump = now;
     }
 }

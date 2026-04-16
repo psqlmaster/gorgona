@@ -4,6 +4,8 @@
  * Copyright (c) 2025, Alexander Shcheglov
  */
 #define _GNU_SOURCE
+#define PEERS_CACHE_FILE "/var/lib/gorgona/peers.cache"
+#define MAX_CACHE_PEERS 10
 #include "admin_mesh.h"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -40,7 +42,7 @@ void mesh_recalculate_scores() {
         MeshNode *n = &cluster_nodes[i];
         
         /* [DEAD NODE PROTECTION] 
-         * Если нода оффлайн или не отвечала дольше 2-х циклов sync_interval - Score = 0 */
+         * If the node is offline or has not responded for more than 2 sync_interval cycles - Score = 0 */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
             n->metrics.gorgona_score = 0.0;
             continue;
@@ -51,7 +53,7 @@ void mesh_recalculate_scores() {
         if (s_score > 1.0) s_score = 1.0;
 
         /* [FIXED] Latency Score: 
-         * Если RTT не определен (0), балл за задержку равен 0, а не 1.0 */
+         * If RTT is undefined (0), the latency score is 0, not 1.0 */
         double l_score = 0.0;
         if (n->metrics.last_rtt > 0.1) {
             l_score = exp(-n->metrics.last_rtt / 100.0);
@@ -94,26 +96,38 @@ void mesh_run_garbage_collector() {
     time_t now = time(NULL);
     extern int sync_interval;
 
-    /* Сначала обновляем баллы на основе актуального времени */
     mesh_recalculate_scores();
 
     for (int i = 0; i < cluster_node_count; ) {
         MeshNode *n = &cluster_nodes[i];
         bool evict = false;
-
-        /* Если нода ОЧЕНЬ долго не выходила на связь - переводим в оффлайн */
-        if (n->status != PEER_STATUS_OFFLINE && (now - n->last_seen > sync_interval * 3)) {
-            n->status = PEER_STATUS_OFFLINE;
-            n->metrics.gorgona_score = 0.0;
+        /* SEED nodes have complete immunity */
+        if (n->is_seed) {
+            /* If the user is offline, simply reset the score to zero, but do not delete the entry */
+            if (now - n->last_seen > sync_interval * 3) {
+                n->status = PEER_STATUS_OFFLINE;
+                n->metrics.gorgona_score = 0.0;
+            }
+            i++;
+            continue;
         }
-
-        /* Удаление динамических (PEX) записей */
-        if (!n->is_seed) {
-            if (n->metrics.fail_count >= PEER_MAX_FAILURES) evict = true;
-            else if (now - n->last_seen > PEER_TTL) evict = true;
+        /* [DELETION POLICY FOR CACHE AND PEX] */
+        /* 1. If a node has been marked as offline for too long */
+        if (now - n->last_seen > PEER_TTL) {
+            evict = true;
+        } 
+        /* 2. If a node has accumulated too many connection errors */
+        else if (n->metrics.fail_count > (n->is_cached ? 20 : 5)) {
+            /* We give cached nodes 20 chances, but new (PEX) nodes only 5 */
+            evict = true;
         }
-
+        /* 3. If the connection feels “toxic” (low chemistry) after 10 minutes of getting to know each other */
+        else if (now - n->discovered_at > 600 && n->metrics.gorgona_score < 0.01) {
+            evict = true;
+        }
         if (evict) {
+            log_event("INFO", -1, n->ip, n->port, "Layer 2 GC: Removing %s node from memory", 
+                      n->is_cached ? "stale CACHED" : "unresponsive PEX");
             if (i < cluster_node_count - 1) 
                 memcpy(&cluster_nodes[i], &cluster_nodes[cluster_node_count - 1], sizeof(MeshNode));
             cluster_node_count--;
@@ -279,4 +293,95 @@ const char* mesh_get_best_peer_ip() {
     return NULL;
 }
 
+/**
+ * Defensive Peer Caching.
+ * Saves the mesh map ONLY if we have authenticated high-quality peers.
+ * Prevents overwriting a good cache with an empty one during startup failures.
+ */
+void mesh_save_peers_cache() {
+    int good_nodes_count = 0;
+    
+    /* 1. Сначала считаем, а есть ли вообще кого сохранять? */
+    for (int i = 0; i < cluster_node_count; i++) {
+        if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED && 
+            cluster_nodes[i].metrics.gorgona_score > 0.05) {
+            good_nodes_count++;
+        }
+    }
 
+    /* 
+     * If we don't have a single active node right now, we DO NOT open the file. 
+     * It's better to keep the old cache than to write an empty file. 
+     */
+    if (good_nodes_count == 0) {
+        if (verbose) {
+            log_event("DEBUG", -1, NULL, 0, "Mesh: Peer cache save skipped (No active peers to persist)");
+        }
+        return;
+    }
+
+    /* Only now do we open the file for writing */
+    FILE *fp = fopen(PEERS_CACHE_FILE, "w");
+    if (!fp) {
+        log_event("WARN", -1, NULL, 0, "Mesh: Failed to open %s for writing", PEERS_CACHE_FILE);
+        return;
+    }
+
+    int saved = 0;
+    for (int i = 0; i < cluster_node_count && saved < MAX_CACHE_PEERS; i++) {
+        MeshNode *n = &cluster_nodes[i];
+        if (n->status == PEER_STATUS_AUTHENTICATED) {
+            fprintf(fp, "%s:%d\n", n->ip, n->port);
+            saved++;
+        }
+    }
+
+    fclose(fp);
+    log_event("INFO", -1, NULL, 0, "Mesh: Peer cache persisted (%d nodes)", saved);
+}
+
+/**
+ * Loads previously cached peers into the mesh table.
+ * These nodes are treated as temporary seeds to ensure stability.
+ */
+void mesh_load_peers_cache() {
+    FILE *fp = fopen(PEERS_CACHE_FILE, "r");
+    if (!fp) return;
+
+    char line[128];
+    int loaded = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        trim_string(line);
+        if (strlen(line) == 0) continue;
+
+        char *colon = strchr(line, ':');
+        if (!colon) continue;
+        *colon = '\0';
+        char *ip = line;
+        int port = atoi(colon + 1);
+
+        bool exists = false;
+        for (int i = 0; i < cluster_node_count; i++) {
+            if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+                exists = true; break;
+            }
+        }
+
+        if (!exists && cluster_node_count < (MAX_PEERS * 4)) {
+            MeshNode *n = &cluster_nodes[cluster_node_count++];
+            memset(n, 0, sizeof(MeshNode));
+            strncpy(n->ip, ip, INET_ADDRSTRLEN - 1);
+            n->port = port;
+            n->is_seed = false;
+            n->is_cached = true; /* Помечаем как КЭШ */
+            n->status = PEER_STATUS_OFFLINE;
+            n->last_seen = time(NULL);
+            n->discovered_at = time(NULL);
+            loaded++;
+        }
+    }
+    fclose(fp);
+    if (loaded > 0) {
+        log_event("INFO", -1, NULL, 0, "Mesh: Bootstrapped from cache (%d nodes as temporary seeds)", loaded);
+    }
+}
