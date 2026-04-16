@@ -4,14 +4,16 @@
 * All rights reserved. 
 */
 
-#include "gorgona_utils.h"
-#include "commands.h"
-#include "snowflake.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <inttypes.h>
+#include <sys/time.h> 
+#include "gorgona_utils.h"
+#include "commands.h"
+#include "snowflake.h"
+#include "admin_mesh.h"
 
 /* Helpers for command processing */
 
@@ -280,21 +282,22 @@ static void process_auth(int i, char *buffer) {
     free(copy);
 }
 
-/*
- * Handles the "REPL|" command.
- * Used for receiving replicated alerts from peers.
- * Preserves the original ID and creation timestamp.
+/**
+ * Handles the "REPL|" command for alert replication between peers.
+ * Also measures throughput to calculate peer performance scores.
  */
 static void process_repl(int i, char *buffer) {
-    Subscriber *sub = &subscribers[i];
-    if (sub->auth_state != AUTH_OK) {
-        enqueue_message(i, "Error: Peer not authorized", 26);
-        return;
-    }
+    struct timeval start_tv, end_tv;
+    gettimeofday(&start_tv, NULL);
 
+    Subscriber *sub = &subscribers[i];
+    if (sub->auth_state != AUTH_OK) return;
+
+    size_t raw_len = strlen(buffer);
     char *rest = strdup(buffer + 5);
     if (!rest) return;
 
+    /* Parse REPL parameters */
     char *id_str = strtok(rest, "|");
     char *create_str = strtok(NULL, "|");
     char *unlock_str = strtok(NULL, "|");
@@ -305,48 +308,33 @@ static void process_repl(int i, char *buffer) {
     char *iv_b64 = strtok(NULL, "|");
     char *tag_b64 = strtok(NULL, "|");
 
-    if (!tag_b64) {
-        free(rest);
-        return;
-    }
+    if (tag_b64) {
+        uint64_t original_id = strtoull(id_str, NULL, 10);
+        time_t c_at = (time_t)atol(create_str);
+        time_t u_at = (time_t)atol(unlock_str);
+        time_t e_at = (time_t)atol(expire_str);
 
-    uint64_t original_id = strtoull(id_str, NULL, 10);
-    time_t create_at = (time_t)atol(create_str);
-    time_t unlock_at = (time_t)atol(unlock_str);
-    time_t expire_at = (time_t)atol(expire_str);
+        size_t h_len;
+        unsigned char *ph = base64_decode(hash_b64, &h_len);
 
-    size_t h_len;
-    unsigned char *pubkey_hash = base64_decode(hash_b64, &h_len);
+        if (ph && h_len == PUBKEY_HASH_LEN) {
+            int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, sub->sock, original_id, c_at);
+            if (res == 0) {
+                gettimeofday(&end_tv, NULL);
+                double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
+                               (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
+                mesh_update_speed(sub->ip_address, raw_len, delta);
 
-    if (pubkey_hash && h_len == PUBKEY_HASH_LEN) {
-        int res = add_alert(pubkey_hash, unlock_at, expire_at, text_b64, 
-                            key_b64, iv_b64, tag_b64, sub->sock, original_id, create_at);
-        
-        if (res == 0) {
-            /* Only if the message is new */
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                      "Alert %" PRIu64 " replicated (Recipient: %.12s...)", 
-                      original_id, hash_b64);
-
-            Recipient *rec = find_recipient(pubkey_hash);
-            if (rec) {
-                Alert *new_a = &rec->alerts[rec->count - 1];
-                notify_subscribers(pubkey_hash, new_a);
-                /* We forward only new data */
-                broadcast_replication(pubkey_hash, new_a, sub->sock);
+                Recipient *rec = find_recipient(ph);
+                if (rec) {
+                    Alert *new_a = &rec->alerts[rec->count - 1];
+                    notify_subscribers(ph, new_a);
+                    broadcast_replication(ph, new_a, sub->sock);
+                }
             }
-        } 
-        else if (res == 1) {
-            /* This is a duplicate. We've already seen it. 
-               We won't log anything or forward it. The loop has been broken. */
-            if (verbose) {
-                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                          "Ignored redundant replication for ID %" PRIu64, original_id);
-            }
+            free(ph);
         }
     }
-
-    if (pubkey_hash) free(pubkey_hash);
     free(rest);
 }
 
@@ -389,14 +377,161 @@ static void process_sync(int i, char *buffer) {
               "Sync completed: %d historical alerts transferred to peer", count);
 }
 
-/*
+void send_mgmt_command(int sub_index, const char *cmd_plain) {
+    uint8_t cipher[2048], iv[12], tag[16];
+    int len = mesh_encrypt((uint8_t*)cmd_plain, strlen(cmd_plain), cipher, iv, tag);
+    
+    char *c_b64 = base64_encode(cipher, len);
+    char *i_b64 = base64_encode(iv, 12);
+    char *t_b64 = base64_encode(tag, 16);
+    
+    char frame[4096];
+    int f_len = snprintf(frame, sizeof(frame), "MGMT|%s|%s|%s", i_b64, t_b64, c_b64);
+    
+    enqueue_message(sub_index, frame, f_len);
+    
+    free(c_b64); free(i_b64); free(t_b64);
+}
+
+/**
+ * Handles decrypted Management Plane (Layer 2) frames.
+ * Features: Silent Auto-discovery, Port Correction, and Continuous Anti-Entropy.
+ */
+static void process_mgmt_frame(int sub_index, char *frame) {
+    Subscriber *sub = &subscribers[sub_index];
+    
+    char *iv_b64 = strtok(frame, "|");
+    char *tag_b64 = strtok(NULL, "|");
+    char *payload_b64 = strtok(NULL, "|");
+    
+    if (!iv_b64 || !tag_b64 || !payload_b64) return;
+    
+    size_t iv_len, tag_len, p_len;
+    uint8_t *iv = base64_decode(iv_b64, &iv_len);
+    uint8_t *tag = base64_decode(tag_b64, &tag_len);
+    uint8_t *payload = base64_decode(payload_b64, &p_len);
+    
+    int decrypted_len;
+    uint8_t *plain = mesh_decrypt(payload, (int)p_len, iv, tag, &decrypted_len);
+    
+    if (plain) {
+        /* [SAFE TOKENIZATION] */
+        char *plain_copy = strdup((char*)plain);
+        char *cmd = strtok(plain_copy, "|");
+        char *val1 = strtok(NULL, "|"); // PING/PONG: TS | PEX: reported_port
+        char *val2 = strtok(NULL, "|"); // PING/PONG: reported_port | PEX: first IP:PORT
+        char *val3 = strtok(NULL, "|"); // PING/PONG: remote_max_id 
+
+        int reported_port = 0;
+        uint64_t remote_max_id = 0;
+
+        if (cmd) {
+            if (strcmp(cmd, "PING") == 0 || strcmp(cmd, "PONG") == 0) {
+                if (val2) reported_port = atoi(val2);
+                if (val3) remote_max_id = strtoull(val3, NULL, 10);
+            } else if (strcmp(cmd, "PEX_LIST") == 0) {
+                if (val1) reported_port = atoi(val1);
+            }
+        }
+
+        /* [ANTI-ENTROPY CORE] 
+         * Trigger SYNC if the peer has more alerts than we do.
+         */
+        uint64_t my_max_id = get_max_alert_id();
+        if (remote_max_id > my_max_id && sub->auth_state == AUTH_OK) {
+            char sync_req[64];
+            int s_len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max_id);
+            enqueue_message(sub_index, sync_req, (size_t)s_len);
+            
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                      "Anti-Entropy: Detected newer data on peer (Remote: %" PRIu64 "). Sync triggered.", remote_max_id);
+        }
+
+        /* [MESH TOPOLOGY UPDATE] */
+        bool exists = false;
+        for (int n = 0; n < cluster_node_count; n++) {
+            if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
+                exists = true;
+                if (reported_port > 0 && reported_port < 65535) {
+                    cluster_nodes[n].port = reported_port;
+                }
+                cluster_nodes[n].last_seen = time(NULL);
+                /* If we received an encrypted frame, the peer is authenticated */
+                cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
+                break;
+            }
+        }
+
+        /* Silent Auto-discovery if node is unknown */
+        if (!exists && cluster_node_count < (MAX_PEERS * 4)) {
+            MeshNode *n = &cluster_nodes[cluster_node_count++];
+            memset(n, 0, sizeof(MeshNode));
+            strncpy(n->ip, sub->ip_address, INET_ADDRSTRLEN - 1);
+            n->port = (reported_port > 0) ? reported_port : sub->port;
+            n->discovered_at = time(NULL);
+            n->last_seen = time(NULL);
+            n->status = PEER_STATUS_AUTHENTICATED;
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, "L2 Mesh: Dynamic join via encrypted MGMT traffic");
+        }
+
+        /* [COMMAND HANDLING] */
+        if (cmd && strcmp(cmd, "PING") == 0) {
+            char pong[128];
+            extern int port;
+            /* Reply with PONG | TS | PORT | MY_MAX_ID */
+            snprintf(pong, sizeof(pong), "PONG|%s|%d|%" PRIu64, val1 ? val1 : "0", port, my_max_id);
+            send_mgmt_command(sub_index, pong);
+        }
+        else if (cmd && strcmp(cmd, "PONG") == 0) {
+            uint64_t ts = val1 ? strtoull(val1, NULL, 10) : 0;
+            struct timeval now_tv; gettimeofday(&now_tv, NULL);
+            uint64_t now_ms = (uint64_t)now_tv.tv_sec * 1000 + (now_tv.tv_usec / 1000);
+            mesh_update_rtt(sub->ip_address, (double)(now_ms - ts));
+        }
+        else if (cmd && strcmp(cmd, "PEX_LIST") == 0) {
+            /* Shift payload to skip "PEX_LIST|PORT|" and get to the peer list */
+            char *list_start = strchr((char*)plain + 9, '|');
+            if (list_start) mesh_discover_nodes(list_start + 1, sub->ip_address);
+        }
+
+        free(plain_copy);
+        free(plain);
+    } else {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "L2: Management Frame decryption failed");
+    }
+    
+    if (iv) {
+        free(iv);
+    }
+    if (tag) {
+        free(tag);
+    }
+    if (payload) {
+        free(payload);
+    } 
+}
+
+/**
  * THE DISPATCHER
  * Routes received messages to appropriate command handlers.
+ * Updated to synchronize Layer 1 (Protocol) and Layer 2 (Mesh) states.
  */
 void handle_command(int sub_index, char *buffer) {
     Subscriber *sub = &subscribers[sub_index];
 
-    /* 1. RESPONSES (Ответы других серверов - просто логируем и выходим) */
+    /* 0. MGMT DISPATCHER (Layer 2 High Priority) 
+     * Encapsulated GCM frames are decrypted here. 
+     */
+    if (strncmp(buffer, "MGMT|", 5) == 0) {
+        process_mgmt_frame(sub_index, buffer + 5);
+        return;
+    }
+
+    /* 1. PEER RESPONSES 
+     * Handling messages from other servers in the cluster.
+     */
+
+    /* Event: A remote peer accepted our AUTH request */
     if (strncmp(buffer, "AUTH_SUCCESS|", 13) == 0) {
         int peer_max = atoi(buffer + 13);
         
@@ -408,10 +543,23 @@ void handle_command(int sub_index, char *buffer) {
             return;
         }
 
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed authentication and capacity match");
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed authentication");
+        
+        /* Layer 1 State */
         sub->auth_state = AUTH_OK;
         
-        /* Запрашиваем историю */
+        /* [MESH SYNCHRONIZATION] 
+         * Notify Layer 2 that this peer is now a trusted mesh member.
+         */
+        for (int n = 0; n < cluster_node_count; n++) {
+            if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
+                cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
+                cluster_nodes[n].last_seen = time(NULL);
+                break;
+            }
+        }
+        
+        /* Initial Catch-up: Request missing history from this reliable node */
         uint64_t my_max = get_max_alert_id();
         char sync_req[64];
         int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);
@@ -419,25 +567,32 @@ void handle_command(int sub_index, char *buffer) {
         return; 
     }
     
+    /* Event: Authentication rejected */
     if (strcmp(buffer, "AUTH_FAILED") == 0) {
-        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Remote peer rejected our authentication!");
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Remote peer rejected our PSK!");
+        cleanup_subscriber(sub_index);
         return;
     }
 
+    /* Event: Log specific error messages from peers */
     if (strncmp(buffer, "Error:", 6) == 0) {
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Remote peer returned error: %s", buffer);
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Peer returned: %s", buffer);
         return; 
     }
 
+    /* Event: Noise filtering (Ignore success confirmations from standard commands) */
     if (strncmp(buffer, "Alert added successfully", 24) == 0 || 
         strncmp(buffer, "Subscribed to", 13) == 0 ||
-        strncmp(buffer, "Subscription updated", 20) == 0 ||
-        strncmp(buffer, "AUTH_SUCCESS", 12) == 0) {
+        strncmp(buffer, "Subscription updated", 20) == 0) {
         return;
     }
 
-    /* 2. COMMANDS (Parsing incoming commands) */
-    log_event("DEBUG", sub->sock, sub->ip_address, sub->port, "Processing command: %s", buffer);
+    /* 2. INBOUND COMMANDS 
+     * Parsing commands from clients or peers.
+     */
+    if (verbose) {
+        log_event("DEBUG", sub->sock, sub->ip_address, sub->port, "Processing command: %.32s...", buffer);
+    }
 
     if (strncmp(buffer, "SEND|", 5) == 0) {
         process_send(sub_index, buffer);
@@ -446,7 +601,20 @@ void handle_command(int sub_index, char *buffer) {
         process_repl(sub_index, buffer);
     }
     else if (strncmp(buffer, "AUTH|", 5) == 0) {
+        /* [MESH INTEGRATION]
+         * After process_auth succeeds, it should ideally set sub->auth_state = AUTH_OK.
+         * We ensure that the mesh table is aware of this IP as well.
+         */
         process_auth(sub_index, buffer);
+        
+        if (sub->auth_state == AUTH_OK) {
+            for (int n = 0; n < cluster_node_count; n++) {
+                if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
+                    cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
+                    break;
+                }
+            }
+        }
     }
     else if (strncmp(buffer, "SYNC|", 5) == 0) {
         process_sync(sub_index, buffer);
@@ -458,9 +626,9 @@ void handle_command(int sub_index, char *buffer) {
         process_subscribe(sub_index, buffer);
     } 
     else {
-        /* Unknown protocol - return an error only if it is not a response to our request */
+        /* Protocol Violation: Unknown payload type */
         char *error_msg = "Error: Unknown command";
         enqueue_message(sub_index, error_msg, strlen(error_msg));
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command received: %s", buffer);
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command: %.64s", buffer);
     }
 }

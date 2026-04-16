@@ -6,6 +6,7 @@
 
 #include "commands.h"
 #include "gorgona_utils.h"
+#include "admin_mesh.h" 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,11 +55,31 @@ void cleanup_subscriber(int index) {
     int sd = client_sockets[index];
     if (sd <= 0) return;
 
+    /* [LAYER 2 INTEGRATION] 
+     * Identify the peer IP before clearing metadata.
+     */
+    char disconnected_ip[INET_ADDRSTRLEN];
+    strncpy(disconnected_ip, subscribers[index].ip_address, INET_ADDRSTRLEN - 1);
+
     /* If it was an outgoing party, mark it as inactive in the global list */
     for (int p = 0; p < remote_peer_count; p++) {
         if (remote_peers[p].sd == sd) {
             remote_peers[p].active = false;
             remote_peers[p].sd = -1;
+            break;
+        }
+    }
+
+    /* [MESH TABLE UPDATE]
+     * Find the node in the cluster table and mark it as OFFLINE.
+     * This ensures the Score/Status updates immediately.
+     */
+    for (int n = 0; n < cluster_node_count; n++) {
+        if (strcmp(cluster_nodes[n].ip, disconnected_ip) == 0) {
+            cluster_nodes[n].status = PEER_STATUS_OFFLINE;
+            /* Reset volatile metrics so it doesn't stay in priority routing */
+            cluster_nodes[n].metrics.gorgona_score = 0.0;
+            cluster_nodes[n].metrics.last_rtt = 0.0;
             break;
         }
     }
@@ -216,100 +237,152 @@ void free_out_queue(int sub_index) {
 }
 
 /**
- * Periodically attempts to establish outgoing connections to remote peers 
- * defined in the configuration. 
+ * Dynamic Peer Connector (Progressive Layer 2 Mesh Engine)
  * 
- * This function is non-blocking. It configures TCP Keepalive, sets sockets 
- * to O_NONBLOCK, and initiates the authentication handshake by sending 
- * the PSK and the local database capacity (max_alerts) for consistency checking.
+ * This function iterates through the global cluster_nodes table,
+ * identifies offline neighbors, and establishes non-blocking connections.
  */
 void try_connect_peers() {
     static time_t last_check = 0;
     time_t now = time(NULL);
 
-    /* Enforce reconnection interval to prevent socket exhaustion/spamming */
+    /* Enforce reconnection interval to prevent CPU spikes and socket exhaustion */
     if (now - last_check < PEER_RECONNECT_INTERVAL) {
         return;
     }
     last_check = now;
 
-    for (int p = 0; p < remote_peer_count; p++) {
-        /* Skip peers that are already connected or in the process of connecting */
-        if (remote_peers[p].active) {
+    /* Loop through ALL known nodes in the Mesh Table (Seeds + PEX discovered) */
+    for (int p = 0; p < cluster_node_count; p++) {
+        MeshNode *node = &cluster_nodes[p];
+
+        /* 1. Filtering: Skip banned, already connecting, or self-nodes */
+        if (node->status == PEER_STATUS_BANNED || node->status == PEER_STATUS_HANDSHAKE) {
             continue;
         }
 
+        /* 2. Port Validation: Don't connect if the listener port is unknown yet */
+        if (node->port <= 0) {
+            if (verbose) {
+                log_event("DEBUG", -1, node->ip, 0, "Mesh: Skipping node %s - listener port not yet discovered", node->ip);
+            }
+            continue;
+        }
+
+        /* 3. Anti-Loopback: Avoid connecting to loopback interface */
+        if (strcmp(node->ip, "127.0.0.1") == 0 || strcmp(node->ip, "localhost") == 0) {
+            node->status = PEER_STATUS_BANNED; // Mark as unusable in mesh table
+            continue;
+        }
+
+        /* 4. Duplicate Check: Check if we already have an active socket with this IP */
+        bool already_active = false;
+        for (int i = 0; i < max_clients; i++) {
+            if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, node->ip) == 0) {
+                already_active = true;
+                /* Sync mesh table status with actual socket state */
+                if (subscribers[i].auth_state == AUTH_OK) {
+                    node->status = PEER_STATUS_AUTHENTICATED;
+                }
+                break;
+            }
+        }
+        if (already_active) continue;
+
+        /* 5. Health Check: Skip unstable nodes until they are cleared by GC */
+        if (node->metrics.fail_count >= PEER_MAX_FAILURES) {
+            continue;
+        }
+
+        /* 6. Socket Initialization */
         int sd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sd < 0) {
-            continue;
-        }
+        if (sd < 0) continue;
 
-        /* 1. Network Hardening: Setup Keepalive to detect silent connection drops */
+        /* Setup Keepalive and Non-blocking mode */
         set_tcp_keepalive(sd);
-
-        /* 2. Performance: Set non-blocking mode to prevent select() stalls */
         int flags = fcntl(sd, F_GETFL, 0);
-        fcntl(sd, F_SETFL, flags | O_NONBLOCK);
-
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(remote_peers[p].port);
-        
-        if (inet_pton(AF_INET, remote_peers[p].ip, &addr.sin_addr) <= 0) {
-            log_event("ERROR", -1, remote_peers[p].ip, remote_peers[p].port, "Invalid peer IP address");
+        if (flags == -1 || fcntl(sd, F_SETFL, flags | O_NONBLOCK) == -1) {
             close(sd);
             continue;
         }
 
-        /* 3. Connection: Initiate non-blocking connect */
+        /* Prepare network address */
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(node->port);
+        
+        if (inet_pton(AF_INET, node->ip, &addr.sin_addr) <= 0) {
+            log_event("ERROR", -1, node->ip, node->port, "Mesh: Invalid IP format in table");
+            close(sd);
+            continue;
+        }
+
+        /* 7. Initiate Connection (Non-blocking) */
         if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno != EINPROGRESS) {
+                /* [IMMEDIATE PENALTY] 
+                 * Нода отклонила соединение (Connection refused) - гасим Score сразу */
+                node->metrics.fail_count++;
+                node->status = PEER_STATUS_OFFLINE;
+                node->metrics.gorgona_score = 0.0;
+                node->metrics.last_rtt = 0.0;
                 close(sd);
                 continue;
             }
         }
 
-        /* 4. Slot Assignment: Find a free spot in the global subscribers array */
+        /* 8. Slot Allocation: Link the socket to a Subscriber slot */
         int i;
         for (i = 0; i < max_clients; i++) {
             if (client_sockets[i] == 0) {
                 client_sockets[i] = sd;
                 
-                /* Initialize Subscriber metadata */
                 Subscriber *sub = &subscribers[i];
                 sub->sock = sd;
-                strncpy(sub->ip_address, remote_peers[p].ip, INET_ADDRSTRLEN);
-                sub->port = remote_peers[p].port;
+                strncpy(sub->ip_address, node->ip, INET_ADDRSTRLEN - 1);
+                sub->ip_address[INET_ADDRSTRLEN - 1] = '\0';
+                sub->port = node->port;
                 sub->type = SUB_TYPE_PEER;
                 sub->connect_time = now;
+                sub->auth_state = AUTH_SENT;
                 sub->close_after_send = false;
-                sub->last_repl_id = 0;
                 
-                /* 5. Handshake: Send PSK and local capacity (max_alerts) 
-                 * Format: AUTH|password|max_alerts
-                 */
+                /* Reset protocol state machine for this slot */
+                sub->read_state = READ_LEN;
+                sub->expected_msg_len = 0;
+                sub->in_pos = 0;
+                if (sub->in_buffer) free(sub->in_buffer);
+                sub->in_buffer = NULL;
+
+                /* Mark node as pending in Mesh Table */
+                node->status = PEER_STATUS_HANDSHAKE;
+
+                /* Backward Compatibility: Sync with legacy remote_peers array if applicable */
+                for (int r = 0; r < remote_peer_count; r++) {
+                    if (strcmp(remote_peers[r].ip, node->ip) == 0) {
+                        remote_peers[r].sd = sd;
+                        remote_peers[r].active = true;
+                        break;
+                    }
+                }
+
+                /* 9. Send Handshake: L1 PSK Authentication */
                 char auth_msg[256];
                 int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d", 
                                         sync_psk, max_alerts);
                 
                 enqueue_message(i, auth_msg, (size_t)auth_len);
-                sub->auth_state = AUTH_SENT;
-
-                /* Link peer config to this active socket */
-                remote_peers[p].active = true;
-                remote_peers[p].sd = sd;
 
                 log_event("INFO", sd, sub->ip_address, sub->port, 
-                          "P2P: Initiating connection (Capacity: %d)", max_alerts);
+                          "Mesh: Connecting to %s node (Score: %.2f)", 
+                          node->is_seed ? "Seed" : "PEX", node->metrics.gorgona_score);
                 break;
             }
         }
 
-        /* If the server is at max_clients capacity, the socket will be cleaned up in the next loop */
         if (i == max_clients) {
-            log_event("WARN", sd, remote_peers[p].ip, remote_peers[p].port, 
-                      "P2P: Connection failed - max_clients reached");
+            log_event("WARN", sd, node->ip, node->port, "Mesh: Out of client slots (max_clients reached)");
             close(sd);
         }
     }
@@ -350,7 +423,7 @@ void run_server(int server_fd) {
         }
 
         struct timeval timeout;
-        timeout.tv_sec = 5;  /* Wake up every 5 seconds */
+        timeout.tv_sec = 30;  /* Wake up every 5 seconds */
         timeout.tv_usec = 0;
 
         try_connect_peers();
@@ -551,9 +624,14 @@ void run_server(int server_fd) {
                                         } else {
                                             run_global_maintenance();
                                             /* Authentication successful - Gather detailed metrics */
-                                            char status_msg[2048];
+                                            
+                                            /* Увеличили буфер до 4096, так как таблица L2 может быть большой */
+                                            char status_msg[4096];
+                                            int pos = 0; 
+
                                             time_t now = time(NULL);
                                             double uptime_sec = difftime(now, server_start_time);
+                                            
                                             /* get ip port */
                                             struct sockaddr_in node_addr;
                                             socklen_t node_addr_len = sizeof(node_addr);
@@ -587,12 +665,14 @@ void run_server(int server_fd) {
                                                 clean_expired_alerts(&recipients[r]);
                                                 total_waste += recipients[r].waste_count;
                                                 total_bytes += recipients[r].used_size;
-                                                for (int i = 0; i < recipients[r].count; i++) {
-                                                    if (recipients[r].alerts[i].active) {
+                                                
+                                                /* ИСПРАВЛЕНИЕ: заменил 'i' на 'a' для предотвращения конфликта с внешним циклом */
+                                                for (int a = 0; a < recipients[r].count; a++) {
+                                                    if (recipients[r].alerts[a].active) {
                                                         active_alerts++;
                                                         /* Ищем время самого старого живого алерта */
-                                                        if (oldest_ts == 0 || recipients[r].alerts[i].create_at < oldest_ts) {
-                                                            oldest_ts = recipients[r].alerts[i].create_at;
+                                                        if (oldest_ts == 0 || recipients[r].alerts[a].create_at < oldest_ts) {
+                                                            oldest_ts = recipients[r].alerts[a].create_at;
                                                         }
                                                     }
                                                 }
@@ -618,34 +698,76 @@ void run_server(int server_fd) {
                                             int uptime_h = (int)((uptime_sec / 3600) - (uptime_d * 24));
                                             int uptime_m = (int)((uptime_sec / 60) - (uptime_d * 1440) - (uptime_h * 60));
 
-                                            /* 4. Final Assemble */
-                                            snprintf(status_msg, sizeof(status_msg),
+                                            /* 4. Final Assemble - Part 1: L1 Stats */
+                                            pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
                                                 "--- Gorgona Node [%s %d] Detailed Status ---\n" 
                                                 "Version: %s\n"
                                                 "Uptime: %dd %dh %dm\n"
                                                 "Connections:\n"
                                                 "  - Active Clients: %d / %d\n"
-                                                "  - Authenticated Peers: %d / %d (configured)\n"
+                                                "  - Authenticated Peers: %d / %d (connected)\n"
                                                 "Storage Metrics:\n"
                                                 "  - DB Storage Mode: %s\n"
                                                 "  - Unique Recipients (Keys): %d\n"
                                                 "  - Active Alerts (Live): %d\n"
-                                                "%s" /* <- disk metrics, if available */
+                                                "%s" /* Это строка disk_metrics, она уже содержит \n */
                                                 "  - History Starts From: %s UTC\n"
                                                 "Operational Configuration:\n"
                                                 "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
-                                                "  - Logging Level: %s\n"
-                                                "-----------------------------------------------------\n",
-                                                node_ip, node_port, 
-                                                VERSION ? VERSION : "1.0", uptime_d, uptime_h, uptime_m,
-                                                active_clients, max_clients, authenticated_peers, remote_peer_count,
-                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
-                                                recipient_count, active_alerts, disk_metrics, oldest_time,
-                                                max_alerts, max_message_size / (1024 * 1024), log_level
+                                                "  - Logging Level: %s\n",
+                                                node_ip,                                    /* %s */
+                                                node_port,                                  /* %d */
+                                                VERSION ? VERSION : "1.0",                  /* %s */
+                                                uptime_d, uptime_h, uptime_m,               /* %d %d %d */
+                                                active_clients, max_clients,                /* %d %d */
+                                                authenticated_peers, remote_peer_count,     /* %d %d */
+                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)", /* %s */
+                                                recipient_count,                            /* %d */
+                                                active_alerts,                              /* %d */
+                                                disk_metrics,                               /* %s */
+                                                oldest_time,                                /* %s */
+                                                max_alerts,                                 /* %d */
+                                                (size_t)(max_message_size / (1024 * 1024)), /* %zu */
+                                                log_level                                   /* %s */
                                             );
 
-                                            enqueue_text_only(i, status_msg, strlen(status_msg));
+                                            /* 5. Final Assemble - Part 2: L2 Management Mesh */
+                                            mesh_recalculate_scores(); /* Актуализируем метрики перед выводом */
+                                            
+                                            pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
+                                                            "--- L2 Cluster Topology (Known nodes: %d) ---\n", cluster_node_count);
+                                            
+                                            if (cluster_node_count == 0) {
+                                                pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
+                                                                "  (No mesh peers discovered or configured)\n");
+                                            } else {
+                                                for (int n = 0; n < cluster_node_count; n++) {
+                                                    MeshNode *node = &cluster_nodes[n];
+                                                    
+                                                    /* Защита от переполнения буфера (оставляем место для концовки) */
+                                                    if (pos >= sizeof(status_msg) - 256) {
+                                                        pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, "  ... [Table Truncated]\n");
+                                                        break;
+                                                    }
+                                                    
+                                                    /* Выводим метрики узла с красивым форматированием */
+                                                    pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
+                                                        "  [%-15s:%-5d] Score: %4.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
+                                                        node->ip, node->port, 
+                                                        node->metrics.gorgona_score,
+                                                        node->metrics.last_rtt, 
+                                                        node->metrics.rolling_avg_speed / 1024.0,
+                                                        node->is_seed ? "SEED" : "PEX ",
+                                                        (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD");  
+                                                }
+                                            }
+                                            
+                                            pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
+                                                            "-----------------------------------------------------\n");
+
+                                            /* Отправляем полностью собранное сообщение */
+                                            enqueue_text_only(i, status_msg, pos);
                                         }
                                         sub->close_after_send = true;
                                     }

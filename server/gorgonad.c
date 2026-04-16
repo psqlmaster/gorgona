@@ -4,9 +4,6 @@
 * All rights reserved. 
 */
 
-#include "config.h"
-#include "gorgona_utils.h"
-#include "alert_db.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +15,14 @@
 #include <time.h>
 #include <stdint.h>
 #include <getopt.h>
+#include "config.h"
+#include "gorgona_utils.h"
+#include "alert_db.h"
+#include "admin_mesh.h"
 
 int verbose = 0;
+int port;  
+int sync_interval = DEFAULT_SYNC_INTERVAL; 
 
 /* Shutdown handler for graceful exit */
 void shutdown_handler(int sig) {
@@ -106,12 +109,15 @@ int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN); 
 
     /* Load configuration from file or use defaults */
-    int port, max_alerts_config, max_clients_config, vacuum_threshold_config; 
+    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp; 
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
 
     read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
-                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config); 
+                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp); 
+    sync_interval = sync_interval_tmp;
+    mesh_init(sync_psk);
+    log_event("INFO", -1, NULL, 0, "Layer 2: Management Plane Initialized with PSK fingerprint");
 
     max_alerts = max_alerts_config;
     vacuum_threshold = vacuum_threshold_config;

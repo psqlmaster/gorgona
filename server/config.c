@@ -4,12 +4,13 @@
 * All rights reserved. 
 */
 
-#include "config.h"
-#include "gorgona_utils.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include "config.h"
+#include "gorgona_utils.h"
+#include "admin_mesh.h"
 
 /**
  * Section identifiers for the configuration file parser.
@@ -37,7 +38,7 @@ typedef enum {
  * @param vacuum_threshold Output for the database auto-cleanup percentage
  */
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
-                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold) {
+                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, int *sync_interval) {
     
     /* Initialize default values in case the config file is missing or incomplete */
     *port = DEFAULT_SERVER_PORT;
@@ -47,6 +48,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
     *max_message_size = DEFAULT_MAX_MESSAGE_SIZE;
     *use_disk_db = 0; 
     *vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
+    *sync_interval = DEFAULT_SYNC_INTERVAL;
     
     /* Reset replication globals before parsing */
     remote_peer_count = 0;
@@ -138,19 +140,44 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
             }
         } 
         else if (current_section == SECTION_REPLICATION) {
-            if (strcmp(key, "sync_psk") == 0) {
+            if (strcmp(key, "sync_interval") == 0) {
+                *sync_interval = atoi(value);
+                if (*sync_interval < 1) *sync_interval = 1; // Защита от дурака
+            }
+            else if (strcmp(key, "sync_psk") == 0) { 
                 /* Pre-shared key for inter-server authentication */
                 strncpy(sync_psk, value, sizeof(sync_psk) - 1);
                 sync_psk[sizeof(sync_psk) - 1] = '\0';
             } 
             else if (strcmp(key, "peer") == 0) {
                 /* Peer format: IP:PORT (e.g., 127.0.0.1:7777) */
-                if (remote_peer_count < MAX_PEERS) {
-                    char *colon = strchr(value, ':');
-                    if (colon) {
-                        *colon = '\0'; /* Split the string into IP and Port parts */
+                char *colon = strchr(value, ':');
+                if (colon) {
+                    *colon = '\0'; // Теперь 'value' указывает на IP, а 'colon + 1' на порт
+                    int p_port = atoi(colon + 1);
+
+                    /* 1. Инициализируем узел в новой Mesh-таблице (Layer 2) */
+                    if (cluster_node_count < (MAX_PEERS * 4)) {
+                        MeshNode *n = &cluster_nodes[cluster_node_count++];
+                        memset(n, 0, sizeof(MeshNode));
+                        
+                        strncpy(n->ip, value, INET_ADDRSTRLEN - 1);
+                        n->port = p_port;
+                        n->is_seed = true;            // Эти узлы из конфига — скелет сети
+                        n->status = PEER_STATUS_OFFLINE;
+                        n->discovered_at = time(NULL); // Для GC и отладки
+                        n->last_seen = time(NULL);
+                        
+                        // Лог для отладки (будет виден в режиме verbose)
+                        if (verbose) {
+                            printf("Config: Added seed node %s:%d to Layer 2 table\n", n->ip, n->port);
+                        }
+                    }
+                    /* 2. Сохраняем в старый массив для совместимости (legacy connection loop) */
+                    /* Важно: здесь проверяем старую границу MAX_PEERS */
+                    if (remote_peer_count < MAX_PEERS) {
                         strncpy(remote_peers[remote_peer_count].ip, value, INET_ADDRSTRLEN - 1);
-                        remote_peers[remote_peer_count].port = atoi(colon + 1);
+                        remote_peers[remote_peer_count].port = p_port;
                         remote_peers[remote_peer_count].sd = -1;
                         remote_peers[remote_peer_count].active = false;
                         remote_peer_count++;

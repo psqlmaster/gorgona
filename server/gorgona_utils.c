@@ -8,7 +8,9 @@
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include "snowflake.h"
+#include "admin_mesh.h"
 #include "common.h"
+#include "commands.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -18,6 +20,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <strings.h> 
+#include <sys/time.h>
 
 #define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
 
@@ -638,18 +641,12 @@ void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
 }
 
 /**
- * Broadcasts a new alert to all connected and authorized peers.
+ * Broadcasts a new alert to all authorized peers using Intelligent Routing.
  * 
- * This function handles the dissemination of alerts across the P2P network.
- * It uses a specific socket exclusion (exclude_fd) to prevent sending the 
- * data back to the immediate source. 
- * 
- * Network loops are prevented by the idempotency logic in the receiving 
- * node's add_alert() function.
- * 
- * @param pubkey_hash Binary hash of the recipient.
- * @param alert Pointer to the alert structure to be replicated.
- * @param exclude_fd The socket descriptor to skip (the source of the alert).
+ * IMPROVED:
+ * 1. IP-level exclusion (Prevents sending back to the source IP).
+ * 2. De-duplication (Ensures only one copy is sent per unique IP).
+ * 3. Performance filtering (Skips nodes with critically low Gorgona Score).
  */
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
@@ -675,18 +672,66 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
                        ph_b64, bt, bk, bi, bg);
 
     if (len > 0) {
+        int sent_to_ips_count = 0;
+        char sent_to_ips[MAX_PEERS * 2][INET_ADDRSTRLEN]; 
+        memset(sent_to_ips, 0, sizeof(sent_to_ips));
+
+        /* Identify the IP address of the sender (to exclude the whole machine, not just FD) */
+        char sender_ip[INET_ADDRSTRLEN] = "";
+        if (exclude_fd > 0) {
+            for (int k = 0; k < max_clients; k++) {
+                if (client_sockets[k] == exclude_fd) {
+                    strncpy(sender_ip, subscribers[k].ip_address, INET_ADDRSTRLEN - 1);
+                    break;
+                }
+            }
+        }
+
         for (int i = 0; i < max_clients; i++) {
-            /* 
-             * Relay to all authenticated peers except the one that 
-             * just sent us this alert.
-             */
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
-                subscribers[i].auth_state == AUTH_OK &&
-                client_sockets[i] != exclude_fd) {
+                subscribers[i].auth_state == AUTH_OK) {
                 
-                enqueue_message(i, repl_msg, (size_t)len);
+                /* 1. EXCLUSION: Don't send back to the IP that sent us this alert */
+                if (strcmp(subscribers[i].ip_address, sender_ip) == 0) {
+                    continue;
+                }
+
+                /* 2. DE-DUPLICATION: Don't send twice to the same IP if multiple sockets exist */
+                bool already_sent_to_ip = false;
+                for (int j = 0; j < sent_to_ips_count; j++) {
+                    if (strcmp(sent_to_ips[j], subscribers[i].ip_address) == 0) {
+                        already_sent_to_ip = true;
+                        break;
+                    }
+                }
+                if (already_sent_to_ip) continue;
+
+                /* 3. PERFORMANCE ROUTING: Check Score in Mesh Table */
+                bool health_ok = true;
+                for (int n = 0; n < cluster_node_count; n++) {
+                    if (strcmp(cluster_nodes[n].ip, subscribers[i].ip_address) == 0) {
+                        if (cluster_nodes[n].metrics.last_success > 0 && 
+                            cluster_nodes[n].metrics.gorgona_score < 0.05) {
+                            health_ok = false;
+                        }
+                        break;
+                    }
+                }
+
+                if (health_ok) {
+                    enqueue_message(i, repl_msg, (size_t)len);
+                    /* Record this IP as "processed" for this broadcast cycle */
+                    if (sent_to_ips_count < (MAX_PEERS * 2)) {
+                        strncpy(sent_to_ips[sent_to_ips_count++], subscribers[i].ip_address, INET_ADDRSTRLEN - 1);
+                    }
+                }
             }
+        }
+        
+        if (verbose && sent_to_ips_count > 0) {
+            log_event("DEBUG", -1, NULL, 0, "Broadcast optimized: Alert %" PRIu64 " replicated to %d unique nodes", 
+                      alert->id, sent_to_ips_count);
         }
     }
 
@@ -740,30 +785,84 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }
 
-/* gorgona_utils.c */
-
 /**
- * Maintenance task to sync disk and free memory for all recipients.
- * This function is called during idle periods or status requests.
+ * Global Maintenance Cycle
+ * Handles Layer 1 (Storage cleanup) and Layer 2 (Aggressive Mesh Sync).
  */
 void run_global_maintenance(void) {
+    /* --- LAYER 1: Storage & Memory Cleanup --- */
     for (int i = 0; i < recipient_count; ) {
         Recipient *rec = &recipients[i];
-        
-        /* 1. Remove expired alerts from memory array */
         clean_expired_alerts(rec);
 
-        /* 2. Check if recipient is empty or threshold reached */
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
-        
         if (rec->count == 0 || rec->waste_count >= waste_limit) {
-            /* If alert_db_sync returns 1, the file was unlinked from disk */
             if (alert_db_sync(rec) == 1) {
-                /* Remove structure from memory and don't increment i */
                 remove_recipient_at_index(i);
                 continue;
             }
         }
         i++;
+    }
+
+    /* --- LAYER 2: Administrative Mesh Maintenance --- */
+    static time_t last_mesh_task = 0;
+    time_t now = time(NULL);
+
+    /* Используем интервал из конфигурации */
+    if (now - last_mesh_task >= sync_interval) { 
+        last_mesh_task = now;
+        
+        /* 1. Recalculate scores and evict dead nodes */
+        mesh_run_garbage_collector();
+
+        extern int port; // Our local listener port from gorgonad.c
+        
+        /* 2. Build Peer Exchange (PEX) list */
+        char pex_payload[2048];
+        int p_len = snprintf(pex_payload, sizeof(pex_payload), "PEX_LIST|%d|", port);
+        
+        int neighbors_count = 0;
+        for (int n = 0; n < cluster_node_count; n++) {
+            /* Share only active and responsive neighbors */
+            if (cluster_nodes[n].status == PEER_STATUS_AUTHENTICATED && cluster_nodes[n].last_seen > (now - 300)) {
+                if (p_len < (int)sizeof(pex_payload) - 64) {
+                    p_len += snprintf(pex_payload + p_len, sizeof(pex_payload) - p_len,
+                                     "%s:%d|", cluster_nodes[n].ip, cluster_nodes[n].port);
+                    neighbors_count++;
+                }
+            }
+        }
+
+        /* 3. Anti-Entropy: Get our highest Alert ID to share with cluster */
+        uint64_t my_max_id = get_max_alert_id();
+
+        /* 4. Disseminate to all authenticated peers */
+        for (int i = 0; i < max_clients; i++) {
+            if (client_sockets[i] > 0 && 
+                subscribers[i].type == SUB_TYPE_PEER && 
+                subscribers[i].auth_state == AUTH_OK) {
+                
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                uint64_t ts = (uint64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+                
+                /* [PING] Format: CMD | TS | PORT | MAX_ID */
+                char ping_cmd[128];
+                snprintf(ping_cmd, sizeof(ping_cmd), "PING|%" PRIu64 "|%d|%" PRIu64, ts, port, my_max_id);
+                send_mgmt_command(i, ping_cmd);
+
+                /* [PEX] Gossip update */
+                if (neighbors_count > 0) {
+                    send_mgmt_command(i, pex_payload);
+                }
+            }
+        }
+
+        if (verbose) {
+            log_event("DEBUG", -1, NULL, 0, 
+                      "L2 Mesh: Sync cycle complete (Interval: %ds, Neighbors: %d, MaxID: %" PRIu64 ")", 
+                      sync_interval, neighbors_count, my_max_id);
+        }
     }
 }

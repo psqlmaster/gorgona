@@ -122,6 +122,7 @@ All configuration files are located in `/etc/gorgona/`.
 ##### Server Configuration (gorgonad.conf)
 Controls the `gorgonad` daemon behavior.
 ```ini
+# vim /etc/gorgona/gorgonad.conf
 [server]
 port = 7777                                           # Listen port
 max_alerts = 1000                                     # Max alerts stored per key

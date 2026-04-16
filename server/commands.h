@@ -14,5 +14,6 @@
  * @param buffer The null-terminated message content
  */
 void handle_command(int sub_index, char *buffer);
+void send_mgmt_command(int sub_index, const char *cmd_plain);
 
 #endif /* COMMANDS_H */
