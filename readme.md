@@ -37,15 +37,18 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 #### Features
 
-- **End-to-End Security**: Messages are encrypted using RSA-OAEP (key exchange) and AES-GCM (content). The server only handles encrypted blobs and never sees raw data.
-- **Distributed Active-Active Replication**: Built-in P2P protocol for real-time alert synchronization and historical state reconciliation (Mutual Sync) between multiple servers.
-- **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Messages unlock exactly at `unlock_at` and expire after `expire_at`.
-- **Anti-Replay Protection**: Integrated defense against network packet re-injection using staleness filters and sliding-window deduplication.
-- **Remote Command Execution (RCE)**: Use the `-e/--exec` flag to trigger system commands upon decryption. Supports background daemons (`-d`) with centralized logging via `gorgona_LOG_FILE`.
-- **Hybrid Protocol Sniffer**: Automatically detects and handles both binary length-prefixed packets (for data) and plain-text commands (for interactive telnet/health checks).
-- **Flexible Persistence**: High-speed In-Memory mode or optional `mmap`-backed disk storage (`use_disk_db`) for reliability across server restarts.
-- **Efficient Storage**: Automatic ring-buffer management and "Vacuum" auto-compacting to keep the database lean and fast.
-- **Fast & Lightweight**: Zero-dependency implementation in pure C with OpenSSL; designed for high-concurrency and minimal resource footprint.
+- **Dual-Layer Cryptography**: Total security isolation.
+    - **Layer 1 (Command Plane)**: End-to-End security using RSA-OAEP for key transport and AES-256-GCM for content. The server acts as a "blind carrier" and never sees raw data.
+    - **Layer 2 (Management Plane)**: Administrative traffic (PEX, Sync, Heartbeats) is encapsulated in a secondary AES-256-GCM layer keyed by a cluster-wide PSK.
+- **Intelligent Mesh Networking**: High-speed P2P backbone with automated Peer Exchange (**PEX**). Nodes dynamically discover the cluster topology via gossip protocol, allowing the mesh to expand without manual configuration.
+- **Performance-Based Routing (Gorgona Score)**: Real-time health monitoring using RTT latency and rolling-average throughput. The system autonomously prioritizes high-performance paths and suppresses "toxic" (slow or unstable) nodes.
+- **Continuous Anti-Entropy**: Aggressive MaxID synchronization. Nodes continuously gossip their database state, triggering immediate delta-syncs to ensure 100% data consistency across the cluster even after network partitions.
+- **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Encrypted payloads are strictly time-bound: they unlock exactly at `unlock_at` and are automatically purged after `expire_at`.
+- **Autonomous Self-Healing**: Built-in persistence for active peers via `/var/lib/gorgona/peers.cache`. Nodes can bootstrap themselves and rebuild the entire mesh map even if the primary seed nodes are permanently unavailable.
+- **Anti-Replay Protection**: Integrated defense against network packet re-injection using cryptographic Proof-of-Knowledge handshakes, staleness filters, and sliding-window deduplication.
+- **Hybrid Protocol Sniffer**: A versatile engine that detects and handles binary length-prefixed packets (for high-speed data) and plain-text commands (for interactive diagnostics and health checks).
+- **Flexible & Efficient Storage**: High-speed In-Memory mode or `mmap`-backed disk persistence. Features automatic ring-buffer management and "Vacuum" auto-compaction to keep the database lean and fast.
+- **Fast & Lightweight**: Zero-dependency implementation in pure C99/C11 with OpenSSL. Engineered for high concurrency, low latency, and a minimal resource footprint in critical infrastructure.
 
 #### Advantages
 
@@ -135,7 +138,8 @@ vacuum_threshold_percent = 50                         # Auto-cleanup threshold f
 
 [replication]
 sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key
-peer = 64.188.70.158:7777                             # Remote peer address to sync with
+sync_interval = 60                                    # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
+peer = 64.188.70.158:7777                             # Remote peer address(seed) to sync with
 ```
 
 ##### Client Configuration (gorgona.conf)
@@ -360,43 +364,49 @@ cmd="status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3"; echo "$cmd" | nc 64.188.7
 **Output:**
 ```ini
 --- Gorgona Node [64.188.70.158 7777] Detailed Status ---
-Version: 2.9.2
-Uptime: 1d 4h 43m
+Version: 2.9.3
+Uptime: 0d 0h 20m
 Connections:
   - Active Clients: 1 / 100
-  - Authenticated Peers: 2 / 1 (configured)
+  - Authenticated Peers: 2 / 1 (connected)
 Storage Metrics:
   - DB Storage Mode: Persistent (Disk)
-  - Unique Recipients (Keys): 4
-  - Active Alerts (Live): 2171
-  - Database Size: 1.55 MB
-  - Disk Waste (Awaiting Vacuum): 18
+  - Unique Recipients (Keys): 5
+  - Active Alerts (Live): 2526
+  - Database Size: 1.91 MB
+  - Disk Waste (Awaiting Vacuum): 22
   - Vacuum Threshold: 50%
   - History Starts From: 2026-04-05 12:51:59 UTC
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
+--- L2 Cluster Topology (Known nodes: 1) ---
+  [46.138.247.148 :7777 ] Score: 0.10 | RTT:  184.0 ms | Spd:  376.1 KB/s | SEED [UP]
 -----------------------------------------------------
 --- Gorgona Node [192.168.1.200 7777] Detailed Status ---
-Version: 2.9.2
-Uptime: 1d 4h 44m
+Version: 2.9.3
+Uptime: 0d 0h 4m
 Connections:
-  - Active Clients: 3 / 100
-  - Authenticated Peers: 2 / 1 (configured)
+  - Active Clients: 4 / 100
+  - Authenticated Peers: 2 / 1 (connected)
 Storage Metrics:
   - DB Storage Mode: Persistent (Disk)
-  - Unique Recipients (Keys): 4
-  - Active Alerts (Live): 2171
-  - Database Size: 1.62 MB
-  - Disk Waste (Awaiting Vacuum): 18
+  - Unique Recipients (Keys): 5
+  - Active Alerts (Live): 2526
+  - Database Size: 1.90 MB
+  - Disk Waste (Awaiting Vacuum): 8
   - Vacuum Threshold: 50%
   - History Starts From: 2026-04-05 12:51:59 UTC
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
+--- L2 Cluster Topology (Known nodes: 2) ---
+  [64.188.70.158  :7777 ] Score: 0.09 | RTT:  185.0 ms | Spd:  186.6 KB/s | SEED [UP]
+  [46.138.247.148 :7777 ] Score: 0.00 | RTT:    0.0 ms | Spd:    0.0 KB/s | PEX  [DEAD]
 -----------------------------------------------------
+
 ```
 
 #### Run Server
