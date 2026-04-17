@@ -364,52 +364,53 @@ cmd="status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3"; echo "$cmd" | nc 64.188.7
 **Output:**
 ```ini
 --- Gorgona Node [64.188.70.158 7777] Detailed Status ---
-Version: 2.9.5
+Version: 2.9.6
 Uptime: 0d 0h 1m
 Connections:
   - Active Clients: 1 / 100
-  - Authenticated Peers: 1 / 1 (connected)
-Storage Metrics:
-  - DB Storage Mode: Persistent (Disk)
-  - Unique Recipients (Keys): 5
-  - Active Alerts (Live): 3167
-  - Cluster Pulse (MaxID): 166992221638656
-  - Database Size: 2.15 MB
-  - Disk Waste (Awaiting Vacuum): 0
-  - Vacuum Threshold: 50%
-  - History Starts From:  [2026-04-05 12:51:59 UTC]
-  - Last Data Ingest:     [2026-04-06 19:27:28 UTC]
-Operational Configuration:
-  - Max Alerts per Key: 1000
-  - Max Message Size: 2 MB
-  - Logging Level: info
---- L2 Cluster Topology (Known nodes: 1) ---
-  [46.138.247.148 :7777 ] Score: 0.33 | RTT:  182.0 ms | Spd: 5042.9 KB/s | SEED [UP]
------------------------------------------------------
---- Gorgona Node [192.168.1.200 7777] Detailed Status ---
-Version: 2.9.5
-Uptime: 0d 0h 4m
-Connections:
-  - Active Clients: 4 / 100
   - Authenticated Peers: 3 / 1 (connected)
 Storage Metrics:
   - DB Storage Mode: Persistent (Disk)
-  - Unique Recipients (Keys): 5
-  - Active Alerts (Live): 3167
-  - Cluster Pulse (MaxID): 166992221638656
-  - Database Size: 2.16 MB
+  - Unique Recipients (Keys): 4
+  - Active Alerts (Live): 3202
+  - Cluster Pulse (MaxID): 167001095340032
+  - Database Size: 2.45 MB
   - Disk Waste (Awaiting Vacuum): 1
   - Vacuum Threshold: 50%
   - History Starts From:  [2026-04-05 12:51:59 UTC]
-  - Last Data Ingest:     [2026-04-06 19:27:28 UTC]
+  - Last Data Ingest:     [2026-04-17 21:29:11 UTC]
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
 --- L2 Cluster Topology (Known nodes: 2) ---
-  [64.188.70.158  :7777 ] Score: 0.08 | RTT:  182.0 ms | Spd:    0.0 KB/s | SEED [UP]
-  [46.138.247.148 :7777 ] Score: 0.32 | RTT:   45.0 ms | Spd:    0.0 KB/s | CACHE [UP]
+  [46.138.247.148 :7777 ] Score: 0.56 | RTT:  183.0 ms | Spd: 9724.7 KB/s | SEED [UP]
+  [192.168.1.10   :7777 ] Score: 0.00 | RTT:    0.0 ms | Spd:    0.0 KB/s | PEX  [DEAD]
 -----------------------------------------------------
+--- Gorgona Node [192.168.1.200 7777] Detailed Status ---
+Version: 2.9.6
+Uptime: 0d 0h 1m
+Connections:
+  - Active Clients: 3 / 100
+  - Authenticated Peers: 6 / 1 (connected)
+Storage Metrics:
+  - DB Storage Mode: Persistent (Disk)
+  - Unique Recipients (Keys): 4
+  - Active Alerts (Live): 3202
+  - Cluster Pulse (MaxID): 167001095340032
+  - Database Size: 2.45 MB
+  - Disk Waste (Awaiting Vacuum): 1
+  - Vacuum Threshold: 50%
+  - History Starts From:  [2026-04-05 12:51:59 UTC]
+  - Last Data Ingest:     [2026-04-17 21:29:11 UTC]
+Operational Configuration:
+  - Max Alerts per Key: 1000
+  - Max Message Size: 2 MB
+  - Logging Level: info
+--- L2 Cluster Topology (Known nodes: 3) ---
+  [64.188.70.158  :7777 ] Score: 0.58 | RTT:  189.0 ms | Spd: 10392.2 KB/s | SEED [UP]
+  [46.138.247.148 :7777 ] Score: 0.32 | RTT:   46.0 ms | Spd:    0.0 KB/s | CACHE [UP]
+  [192.168.1.10   :7777 ] Score: 0.32 | RTT:   45.0 ms | Spd:    0.0 KB/s | PEX  [UP]
 ```
 
 #### Run Server
