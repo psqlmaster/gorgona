@@ -422,19 +422,31 @@ void run_server(int server_fd) {
             }
         }
 
+        /* Dynamic timeout calculation */
+        time_t now = time(NULL);
+        static time_t last_maintenance = 0;
+        /* When the program is first launched, we set the time of the last check to the current time */
+        if (last_maintenance == 0) last_maintenance = now;
+        /* Calculate the time remaining until the next synchronization */
+        int elapsed = (int)(now - last_maintenance);
+        int seconds_to_next_sync = sync_interval - elapsed;
+        if (seconds_to_next_sync < 0) seconds_to_next_sync = 0;
         struct timeval timeout;
-        timeout.tv_sec = 30;  /* Wake up every 5 seconds */
+        /* Optimal interval: wait no more than 5 seconds to quickly detect 
+           new connections and status changes, or less if the server is already nearby. */
+        timeout.tv_sec = (seconds_to_next_sync > 5) ? 5 : seconds_to_next_sync;
         timeout.tv_usec = 0;
-
+        /* Attempt to connect to peers (non-blocking) */
         try_connect_peers();
-
+        /* Waiting for activity on the sockets or for a timeout */
         activity = select(max_sd + 1, &readfds, &writefds, NULL, &timeout);  
-
-        if (activity == 0) {
-            /* EVENT: Idle - The server is not busy, perfect time for background cleanup */
+        /* After the `select` statement, check the time again: is it time for maintenance? */
+        now = time(NULL);
+        if (activity == 0 || (now - last_maintenance) >= sync_interval) {
             run_global_maintenance();
+            last_maintenance = now; 
             continue;
-        }
+        } 
 
         if ((activity < 0) && (errno != EINTR)) {
             log_event("ERROR", -1, NULL, 0, "Select error: %s", strerror(errno));

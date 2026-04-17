@@ -142,7 +142,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         else if (current_section == SECTION_REPLICATION) {
             if (strcmp(key, "sync_interval") == 0) {
                 *sync_interval = atoi(value);
-                if (*sync_interval < 1) *sync_interval = 1; // Защита от дурака
+                if (*sync_interval < 1) *sync_interval = 1;
             }
             else if (strcmp(key, "sync_psk") == 0) { 
                 /* Pre-shared key for inter-server authentication */

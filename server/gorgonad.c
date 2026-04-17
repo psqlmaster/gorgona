@@ -126,6 +126,9 @@ int main(int argc, char *argv[]) {
     read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
                 log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp); 
     sync_interval = sync_interval_tmp;
+    if (verbose) {
+        printf("DEBUG: sync_interval applied: %d seconds\n", sync_interval);
+    }
     mesh_init(sync_psk);
     mesh_load_peers_cache();
     log_event("INFO", -1, NULL, 0, "Layer 2: Management Plane Initialized with PSK fingerprint");

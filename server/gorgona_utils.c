@@ -643,12 +643,16 @@ void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
 /**
  * Broadcasts a new alert to all authorized peers using Intelligent Routing.
  * 
- * IMPROVED:
- * 1. IP-level exclusion (Prevents sending back to the source IP).
- * 2. De-duplication (Ensures only one copy is sent per unique IP).
- * 3. Performance filtering (Skips nodes with critically low Gorgona Score).
+ * Logic Highlights:
+ * 1. IP-level exclusion: Prevents sending data back to the sender's IP address.
+ * 2. IP-level de-duplication: Sends only one packet per physical IP even if multiple sockets exist.
+ * 3. Adaptive Trust Routing: 
+ *    - SEED nodes (from config) ALWAYS receive data (backbone priority).
+ *    - New nodes (last_success == 0) ALWAYS receive data (probation period).
+ *    - PEX nodes with Score < 0.05 are suppressed to protect cluster performance.
  */
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
+    /* 1. Resource Preparation: Encode binary fields to Base64 for network transport */
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     char *bt     = base64_encode(alert->text, alert->text_len);
     char *bk     = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
@@ -657,9 +661,11 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
 
     if (!ph_b64 || !bt || !bk || !bi || !bg) {
         free(ph_b64); free(bt); free(bk); free(bi); free(bg);
+        log_event("ERROR", -1, NULL, 0, "Broadcast aborted: Base64 allocation failure");
         return;
     }
 
+    /* 2. Message Construction */
     size_t msg_capacity = max_message_size + 2048; 
     char *repl_msg = malloc(msg_capacity);
     if (!repl_msg) {
@@ -672,11 +678,12 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
                        ph_b64, bt, bk, bi, bg);
 
     if (len > 0) {
+        /* Array to track physical IPs that already received the alert in this cycle */
         int sent_to_ips_count = 0;
-        char sent_to_ips[MAX_PEERS * 2][INET_ADDRSTRLEN]; 
+        char sent_to_ips[MAX_PEERS * 4][INET_ADDRSTRLEN]; 
         memset(sent_to_ips, 0, sizeof(sent_to_ips));
 
-        /* Identify the IP address of the sender (to exclude the whole machine, not just FD) */
+        /* Identify the IP of the peer that sent us this alert (if any) */
         char sender_ip[INET_ADDRSTRLEN] = "";
         if (exclude_fd > 0) {
             for (int k = 0; k < max_clients; k++) {
@@ -687,17 +694,18 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
             }
         }
 
+        /* 3. Selective Dissemination Loop */
         for (int i = 0; i < max_clients; i++) {
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
                 subscribers[i].auth_state == AUTH_OK) {
                 
-                /* 1. EXCLUSION: Don't send back to the IP that sent us this alert */
+                /* EXCLUSION: Don't send back to the originating IP address */
                 if (strcmp(subscribers[i].ip_address, sender_ip) == 0) {
                     continue;
                 }
 
-                /* 2. DE-DUPLICATION: Don't send twice to the same IP if multiple sockets exist */
+                /* DE-DUPLICATION: Ensure only one message is sent per IP */
                 bool already_sent_to_ip = false;
                 for (int j = 0; j < sent_to_ips_count; j++) {
                     if (strcmp(sent_to_ips[j], subscribers[i].ip_address) == 0) {
@@ -707,34 +715,51 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
                 }
                 if (already_sent_to_ip) continue;
 
-                /* 3. PERFORMANCE ROUTING: Check Score in Mesh Table */
-                bool health_ok = true;
+                /**
+                 * 4. INTELLIGENT ROUTING & ADAPTIVE TRUST
+                 * Check the mesh table for this peer's quality score.
+                 */
+                bool performant = true;
                 for (int n = 0; n < cluster_node_count; n++) {
                     if (strcmp(cluster_nodes[n].ip, subscribers[i].ip_address) == 0) {
-                        if (cluster_nodes[n].metrics.last_success > 0 && 
-                            cluster_nodes[n].metrics.gorgona_score < 0.05) {
-                            health_ok = false;
+                        /* 
+                         * TRUST EXCEPTIONS:
+                         * - SEED nodes are trusted infrastructure (never skipped).
+                         * - New nodes with no history (last_success == 0) get the data immediately.
+                         */
+                        if (!cluster_nodes[n].is_seed && cluster_nodes[n].metrics.last_success > 0) {
+                            /* FILTER: Suppress push only for dynamic PEX nodes that are proven slow */
+                            if (cluster_nodes[n].metrics.gorgona_score < 0.05) {
+                                performant = false;
+                            }
                         }
                         break;
                     }
                 }
 
-                if (health_ok) {
+                if (performant) {
                     enqueue_message(i, repl_msg, (size_t)len);
-                    /* Record this IP as "processed" for this broadcast cycle */
-                    if (sent_to_ips_count < (MAX_PEERS * 2)) {
+                    
+                    /* Log IP into the processed list for this cycle */
+                    if (sent_to_ips_count < (MAX_PEERS * 4)) {
                         strncpy(sent_to_ips[sent_to_ips_count++], subscribers[i].ip_address, INET_ADDRSTRLEN - 1);
+                    }
+                } else {
+                    if (verbose) {
+                        log_event("DEBUG", client_sockets[i], subscribers[i].ip_address, subscribers[i].port, 
+                                  "Suppressed REPL (Toxic PEX node). Waiting for Nudge/Sync.");
                     }
                 }
             }
         }
         
         if (verbose && sent_to_ips_count > 0) {
-            log_event("DEBUG", -1, NULL, 0, "Broadcast optimized: Alert %" PRIu64 " replicated to %d unique nodes", 
+            log_event("DEBUG", -1, NULL, 0, "Broadcast Optimized: Alert %" PRIu64 " pushed to %d unique nodes", 
                       alert->id, sent_to_ips_count);
         }
     }
 
+    /* 5. Cleanup Resources */
     free(repl_msg);
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }

@@ -83,13 +83,32 @@ static void process_send(int i, char *buffer) {
         char *success_msg = "Alert added successfully";
         enqueue_message(i, success_msg, strlen(success_msg));
         
-        /* Notify subscribers only on REAL success */
         Recipient *rec = find_recipient(pubkey_hash);
         if (rec) {
             Alert *new_a = &rec->alerts[rec->count - 1];
             notify_subscribers(pubkey_hash, new_a);
-            /* Рассылаем всем пирам, кроме того, кто прислал (если это был пир) */
+            
+            /* INSTANT DATA TRANSMISSION */
             broadcast_replication(pubkey_hash, new_a, sd);
+
+            /* INSTANT NOTIFICATION (Anti-Entropy Push) 
+             * We're sending a small MGMT package with our new MaxID 
+             * Even if the node is slow and we skipped the BROADCAST above,  
+             * This short message will prompt him to sync whenever he can. 
+             */
+            uint64_t my_new_max = get_max_alert_id();
+            char nudge[64];
+            snprintf(nudge, sizeof(nudge), "MAXID_NUDGE|%" PRIu64, my_new_max);
+            
+            for (int p = 0; p < max_clients; p++) {
+                if (client_sockets[p] > 0 && 
+                    subscribers[p].type == SUB_TYPE_PEER && 
+                    subscribers[p].auth_state == AUTH_OK &&
+                    client_sockets[p] != sd) { // Не шлем тому, кто прислал
+                    
+                    send_mgmt_command(p, nudge);
+                }
+            }
         }
     } else if (result == -1) {
         char *err = "Error: Stale alert (unlock_at time is too old)";
@@ -492,6 +511,23 @@ static void process_mgmt_frame(int sub_index, char *frame) {
             /* Shift payload to skip "PEX_LIST|PORT|" and get to the peer list */
             char *list_start = strchr((char*)plain + 9, '|');
             if (list_start) mesh_discover_nodes(list_start + 1, sub->ip_address);
+        }
+
+        if (strncmp((char*)plain, "MAXID_NUDGE|", 12) == 0) {
+            uint64_t remote_max = strtoull((char*)plain + 12, NULL, 10);
+            uint64_t my_local_max = get_max_alert_id();
+
+            if (remote_max > my_local_max) {
+                /* Ого! У соседа есть что-то новое. Не ждем интервала, просим SYNC сейчас! */
+                char sync_req[64];
+                snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_local_max);
+                enqueue_message(sub_index, sync_req, strlen(sync_req));
+                
+                if (verbose) {
+                    log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                              "Event-driven SYNC triggered by NUDGE (Remote ID: %" PRIu64 ")", remote_max);
+                }
+            }
         }
 
         free(plain_copy);
