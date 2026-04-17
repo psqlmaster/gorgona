@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include <stdatomic.h>
+#include <time.h>
 
 /* Custom epoch for Snowflake (January 1, 2025, in milliseconds) */
 #define SNOWFLAKE_EPOCH 1735689600000ULL
@@ -19,5 +20,5 @@ extern uint64_t last_timestamp;         /* Last timestamp used (ms) */
 
 /* Generating a Snowflake ID */
 uint64_t generate_snowflake_id(void);
-
+time_t snowflake_to_timestamp(uint64_t id);
 #endif

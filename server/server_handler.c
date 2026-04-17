@@ -7,6 +7,7 @@
 #include "commands.h"
 #include "gorgona_utils.h"
 #include "admin_mesh.h" 
+#include "snowflake.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -708,6 +709,15 @@ void run_server(int server_fd) {
                                             int uptime_d = (int)(uptime_sec / 86400);
                                             int uptime_h = (int)((uptime_sec / 3600) - (uptime_d * 24));
                                             int uptime_m = (int)((uptime_sec / 60) - (uptime_d * 1440) - (uptime_h * 60));
+                                            uint64_t current_max_id = get_max_alert_id();
+                                            char pulse_time_str[32] = "N/A";
+                                            
+                                            if (current_max_id > 0) {
+                                                /* Декодируем время из ID */
+                                                time_t id_time = snowflake_to_timestamp(current_max_id);
+                                                struct tm *tm_id = gmtime(&id_time);
+                                                strftime(pulse_time_str, sizeof(pulse_time_str), "%Y-%m-%d %H:%M:%S UTC", tm_id);
+                                            }
 
                                             /* 4. Final Assemble - Part 1: L1 Stats */
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
@@ -721,26 +731,28 @@ void run_server(int server_fd) {
                                                 "  - DB Storage Mode: %s\n"
                                                 "  - Unique Recipients (Keys): %d\n"
                                                 "  - Active Alerts (Live): %d\n"
-                                                "%s" /* Это строка disk_metrics, она уже содержит \n */
-                                                "  - History Starts From: %s UTC\n"
+                                                "  - Cluster Pulse (MaxID): %" PRIu64 "\n"
+                                                "  - Last Data Ingest:     [%s]\n"
+                                                "%s" 
+                                                "  - History Starts From:  [%s UTC]\n"
                                                 "Operational Configuration:\n"
                                                 "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
                                                 "  - Logging Level: %s\n",
-                                                node_ip,                                    /* %s */
-                                                node_port,                                  /* %d */
-                                                VERSION ? VERSION : "1.0",                  /* %s */
-                                                uptime_d, uptime_h, uptime_m,               /* %d %d %d */
-                                                active_clients, max_clients,                /* %d %d */
-                                                authenticated_peers, remote_peer_count,     /* %d %d */
-                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)", /* %s */
-                                                recipient_count,                            /* %d */
-                                                active_alerts,                              /* %d */
-                                                disk_metrics,                               /* %s */
-                                                oldest_time,                                /* %s */
-                                                max_alerts,                                 /* %d */
-                                                (size_t)(max_message_size / (1024 * 1024)), /* %zu */
-                                                log_level                                   /* %s */
+                                                node_ip, node_port,
+                                                VERSION ? VERSION : "1.0",
+                                                uptime_d, uptime_h, uptime_m,
+                                                active_clients, max_clients,
+                                                authenticated_peers, remote_peer_count,
+                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
+                                                recipient_count, active_alerts,
+                                                current_max_id,
+                                                pulse_time_str,
+                                                disk_metrics,
+                                                oldest_time,
+                                                max_alerts,
+                                                (size_t)(max_message_size / (1024 * 1024)),
+                                                log_level
                                             );
 
                                             /* 5. Final Assemble - Part 2: L2 Management Mesh */
