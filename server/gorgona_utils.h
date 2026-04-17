@@ -63,7 +63,7 @@ typedef struct {
     time_t unlock_at; 
     time_t expire_at; 
     int active;
-    int *active_ptr;   /* Pointer to 'active' field inside mmap */
+    uint64_t *active_ptr;   /* Pointer to 'active' field inside mmap */
     bool is_mmaped;    /* Flag: is data in mmap or heap */
 } Alert;
 

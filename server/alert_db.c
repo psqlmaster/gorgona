@@ -49,7 +49,7 @@ static void update_alert_pointers(Recipient *rec, unsigned char *old_base, unsig
     for (int i = 0; i < rec->count; i++) {
         Alert *a = &rec->alerts[i];
         if (a->is_mmaped) {
-            if (a->active_ptr) a->active_ptr = (int *)(new_base + ((unsigned char *)a->active_ptr - old_base));
+            if (a->active_ptr) a->active_ptr = (uint64_t *)(new_base + ((unsigned char *)a->active_ptr - old_base));
             if (a->text) a->text = new_base + (a->text - old_base);
             if (a->encrypted_key) a->encrypted_key = new_base + (a->encrypted_key - old_base);
             if (a->iv) a->iv = new_base + (a->iv - old_base);
@@ -131,7 +131,7 @@ int alert_db_save_alert(Recipient *rec, Alert *alert) {
     v64 = (uint64_t)alert->unlock_at; memcpy(p, &v64, 8); p += 8;
     v64 = (uint64_t)alert->expire_at; memcpy(p, &v64, 8); p += 8;
     
-    alert->active_ptr = (int *)p; 
+    alert->active_ptr = (uint64_t *)p; 
     v64 = (uint64_t)alert->active; memcpy(p, &v64, 8); p += 8;
 
     v64 = (uint64_t)alert->text_len; memcpy(p, &v64, 8); p += 8;
@@ -202,7 +202,7 @@ int alert_db_load_recipients(void) {
                 memcpy(&t64, p, 8); a->create_at = (time_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->unlock_at = (time_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->expire_at = (time_t)t64; p += 8;
-                a->active_ptr = (int *)p;
+                a->active_ptr = (uint64_t *)p;
                 memcpy(&t64, p, 8); a->active = (int)t64; p += 8;
                 memcpy(&t64, p, 8); a->text_len = (size_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->encrypted_key_len = (size_t)t64; p += 8;
@@ -356,7 +356,7 @@ int alert_db_sync(Recipient *rec) {
         if (i != j) *a = rec->alerts[i];
         
         unsigned char *p = base + off;
-        a->active_ptr = (int *)(p + 32); 
+        a->active_ptr = (uint64_t *)(p + 32); 
         a->text = p + 64;
         a->encrypted_key = a->text + a->text_len;
         a->iv = a->encrypted_key + a->encrypted_key_len;
