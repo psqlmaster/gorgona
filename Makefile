@@ -100,7 +100,12 @@ deb-changelog:
 	@echo "" >> debian/changelog.new
 	@if [ -f debian/changelog ]; then cat debian/changelog >> debian/changelog.new; fi
 	@mv debian/changelog.new debian/changelog
-
+# Main target for package building
+# We pass versions as arguments to the script
+build-packages:
+	@echo "Starting separate builds for Client ($(CLIENT_VER)) and Server ($(SERVER_VER))"
+	@chmod +x build_packages.sh
+	@./build_packages.sh "$(CLIENT_VER)" "$(SERVER_VER)"
 # --- Cleanup ---
 clean:
 	@echo "Removing build artifacts..."
