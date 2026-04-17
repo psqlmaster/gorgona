@@ -732,27 +732,29 @@ void run_server(int server_fd) {
                                                 "  - Unique Recipients (Keys): %d\n"
                                                 "  - Active Alerts (Live): %d\n"
                                                 "  - Cluster Pulse (MaxID): %" PRIu64 "\n"
-                                                "  - Last Data Ingest:     [%s]\n"
-                                                "%s" 
+                                                "%s" /* disk_metrics: Size, Waste, Threshold */
                                                 "  - History Starts From:  [%s UTC]\n"
+                                                "  - Last Data Ingest:     [%s]\n"
                                                 "Operational Configuration:\n"
                                                 "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
                                                 "  - Logging Level: %s\n",
-                                                node_ip, node_port,
-                                                VERSION ? VERSION : "1.0",
-                                                uptime_d, uptime_h, uptime_m,
-                                                active_clients, max_clients,
-                                                authenticated_peers, remote_peer_count,
-                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
-                                                recipient_count, active_alerts,
-                                                current_max_id,
-                                                pulse_time_str,
-                                                disk_metrics,
-                                                oldest_time,
-                                                max_alerts,
-                                                (size_t)(max_message_size / (1024 * 1024)),
-                                                log_level
+                                                node_ip,                                    /* %s */
+                                                node_port,                                  /* %d */
+                                                VERSION ? VERSION : "1.0",                  /* %s */
+                                                uptime_d, uptime_h, uptime_m,               /* %d %d %d */
+                                                active_clients, max_clients,                /* %d %d */
+                                                authenticated_peers, remote_peer_count,     /* %d %d */
+                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)", /* %s */
+                                                recipient_count,                            /* %d */
+                                                active_alerts,                              /* %d */
+                                                current_max_id,                             /* %" PRIu64 " */
+                                                disk_metrics,                               /* %s */
+                                                oldest_time,                                /* %s (History Starts From) */
+                                                pulse_time_str,                             /* %s (Last Data Ingest) */
+                                                max_alerts,                                 /* %d */
+                                                (size_t)(max_message_size / (1024 * 1024)), /* %zu */
+                                                log_level                                   /* %s */
                                             );
 
                                             /* 5. Final Assemble - Part 2: L2 Management Mesh */
