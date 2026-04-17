@@ -72,11 +72,11 @@ uint64_t generate_snowflake_id(void) {
 
 /**
  * Extracts the UNIX timestamp from a Snowflake ID.
- * Corrected: Handles the timestamp as SECONDS (matching your ID generator).
+ * 1. Uses 12-bit shift to match the generator logic.
+ * 2. Converts milliseconds back to seconds for time_t.
  */
 time_t snowflake_to_timestamp(uint64_t id) {
     if (id == 0) return 0;
-    uint64_t seconds_since_custom_epoch = (id >> 22);
-    uint64_t epoch_seconds = SNOWFLAKE_EPOCH / 1000;
-    return (time_t)(seconds_since_custom_epoch + epoch_seconds);
+    uint64_t ms_from_custom_epoch = (id >> 12);
+    return (time_t)((ms_from_custom_epoch + SNOWFLAKE_EPOCH) / 1000);
 }
