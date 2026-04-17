@@ -365,50 +365,50 @@ cmd="status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3"; echo "$cmd" | nc 64.188.7
 ```ini
 --- Gorgona Node [64.188.70.158 7777] Detailed Status ---
 Version: 2.9.5
-Uptime: 0d 0h 3m
+Uptime: 0d 0h 1m
 Connections:
   - Active Clients: 1 / 100
   - Authenticated Peers: 1 / 1 (connected)
 Storage Metrics:
   - DB Storage Mode: Persistent (Disk)
   - Unique Recipients (Keys): 5
-  - Active Alerts (Live): 3165
-  - Cluster Pulse (MaxID): 166986611654656
-  - Database Size: 2.14 MB
+  - Active Alerts (Live): 3167
+  - Cluster Pulse (MaxID): 166992221638656
+  - Database Size: 2.15 MB
   - Disk Waste (Awaiting Vacuum): 0
   - Vacuum Threshold: 50%
   - History Starts From:  [2026-04-05 12:51:59 UTC]
-  - Last Data Ingest:     [2026-04-06 19:05:10 UTC]
+  - Last Data Ingest:     [2026-04-06 19:27:28 UTC]
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
 --- L2 Cluster Topology (Known nodes: 1) ---
-  [46.138.247.148 :7777 ] Score: 0.22 | RTT:  179.0 ms | Spd: 2854.3 KB/s | SEED [UP]
+  [46.138.247.148 :7777 ] Score: 0.33 | RTT:  182.0 ms | Spd: 5042.9 KB/s | SEED [UP]
 -----------------------------------------------------
 --- Gorgona Node [192.168.1.200 7777] Detailed Status ---
 Version: 2.9.5
-Uptime: 0d 0h 3m
+Uptime: 0d 0h 4m
 Connections:
-  - Active Clients: 3 / 100
+  - Active Clients: 4 / 100
   - Authenticated Peers: 3 / 1 (connected)
 Storage Metrics:
   - DB Storage Mode: Persistent (Disk)
   - Unique Recipients (Keys): 5
-  - Active Alerts (Live): 3164
-  - Cluster Pulse (MaxID): 166986611654656
-  - Database Size: 2.14 MB
-  - Disk Waste (Awaiting Vacuum): 0
+  - Active Alerts (Live): 3167
+  - Cluster Pulse (MaxID): 166992221638656
+  - Database Size: 2.16 MB
+  - Disk Waste (Awaiting Vacuum): 1
   - Vacuum Threshold: 50%
   - History Starts From:  [2026-04-05 12:51:59 UTC]
-  - Last Data Ingest:     [2026-04-06 19:05:10 UTC]
+  - Last Data Ingest:     [2026-04-06 19:27:28 UTC]
 Operational Configuration:
   - Max Alerts per Key: 1000
   - Max Message Size: 2 MB
   - Logging Level: info
 --- L2 Cluster Topology (Known nodes: 2) ---
-  [64.188.70.158  :7777 ] Score: 0.08 | RTT:  178.0 ms | Spd:    0.0 KB/s | SEED [UP]
-  [46.138.247.148 :7777 ] Score: 0.32 | RTT:   46.0 ms | Spd:    0.0 KB/s | CACHE [UP]
+  [64.188.70.158  :7777 ] Score: 0.08 | RTT:  182.0 ms | Spd:    0.0 KB/s | SEED [UP]
+  [46.138.247.148 :7777 ] Score: 0.32 | RTT:   45.0 ms | Spd:    0.0 KB/s | CACHE [UP]
 -----------------------------------------------------
 ```
 
