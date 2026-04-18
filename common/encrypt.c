@@ -555,7 +555,7 @@ char *base64_encode(const unsigned char *data, size_t len) {
 
     BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
     BIO_write(bio, data, len);
-    BIO_flush(bio);
+    (void)BIO_flush(bio); 
 
     BIO_get_mem_ptr(bio, &bufferPtr);
     char *out = malloc(bufferPtr->length + 1);
