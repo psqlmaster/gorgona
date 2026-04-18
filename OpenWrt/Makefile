@@ -5,7 +5,7 @@ STAGING_DIR=$(OPENWRT_DIR)/staging_dir
 INCLUDE_DIR=$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/include
 CC = $(TOOLCHAIN_DIR)/bin/aarch64-openwrt-linux-musl-gcc
 CFLAGS = -Oz -std=c99 -Wall -Icommon -Iclient -I$(INCLUDE_DIR) -DVERSION=\"$(VERSION)\" -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
-LDFLAGS = -L$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/lib -lcrypto -lssl
+LDFLAGS = -L$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/lib -lcrypto -lssl -lm
 
 
 TEST_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags check)
