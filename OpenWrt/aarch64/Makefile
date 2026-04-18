@@ -4,7 +4,7 @@ TOOLCHAIN_DIR=$(OPENWRT_DIR)/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0
 STAGING_DIR=$(OPENWRT_DIR)/staging_dir
 INCLUDE_DIR=$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/include
 CC = $(TOOLCHAIN_DIR)/bin/aarch64-openwrt-linux-musl-gcc
-CFLAGS = -Oz -std=c99 -Wall -Icommon -Iclient -I$(INCLUDE_DIR) -DVERSION=\"$(VERSION)\" -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
+CFLAGS = -Oz -std=c99 -Wall -I../../common -I../../client -I$(INCLUDE_DIR) -DVERSION=\"$(VERSION)\" -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
 LDFLAGS = -L$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/lib -lcrypto -lssl -lm
 
 
@@ -18,10 +18,10 @@ VERSION = $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' | tr
 DEFAULT_CHANGELOG_MSG = New release of gorgona client and server.
 
 # Source files
-gorgona_SRC = client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c common/encrypt.c common/common.c
-gorgonaD_SRC = server/gorgonad.c server/config.c server/gorgona_utils.c server/server_handler.c server/snowflake.c server/alert_db.c \
-common/encrypt.c common/common.c server/commands.c server/admin_mesh.c
-TEST_SRC = test/test_config.c test/test_alert_listen.c test/test_gorgona.c
+gorgona_SRC = ../../client/gorgona.c ../../client/alert_send.c ../../client/alert_listen.c ../../client/config.c ../../common/encrypt.c ../../common/common.c
+gorgonaD_SRC = ../../server/gorgonad.c ../../server/config.c ../../server/gorgona_utils.c ../../server/server_handler.c ../../server/snowflake.c ../../server/alert_db.c \
+../../common/encrypt.c ../../common/common.c ../../server/commands.c ../../server/admin_mesh.c
+TEST_SRC = ../../test/test_config.c ../../test/test_alert_listen.c ../../test/test_gorgona.c
 
 # Object files
 gorgona_OBJ = $(gorgona_SRC:.c=.o)
@@ -29,10 +29,10 @@ gorgonaD_OBJ = $(gorgonaD_SRC:.c=.o)
 TEST_OBJ = $(TEST_SRC:.c=.o)
 
 # Test object files (без дублирующих модулей)
-TEST_CONFIG_OBJ = test/test_config.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o common/common.o
+TEST_CONFIG_OBJ = ../../test/test_config.o ../../client/alert_send.o ../../client/alert_listen.o ../../client/config.o ../../common/encrypt.o ../../common/common.o
 #TEST_ALERT_SEND_OBJ = test/test_alert_send.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o
-TEST_ALERT_LISTEN_OBJ = test/test_alert_listen.o client/alert_send.o client/alert_listen.o client/config.o common/encrypt.o common/common.o
-TEST_GORGONA_OBJ = test/test_gorgona.o
+TEST_ALERT_LISTEN_OBJ = ../../test/test_alert_listen.o ../../client/alert_send.o ../../client/alert_listen.o ../../client/config.o ../../common/encrypt.o ../../common/common.o
+TEST_GORGONA_OBJ = ../../test/test_gorgona.o
 
 # Test executables
 TEST_EXEC = test/test_config test/test_alert_listen test/test_gorgona
@@ -45,7 +45,7 @@ gorgona: $(gorgona_OBJ)
 	$(CC) $(gorgona_OBJ) -o gorgona $(LDFLAGS)
 
 # Build gorgonad
-gorgonad: $(gorgonaD_OBJ)
+gorgonad: $(gorgona_OBJ)
 	$(CC) $(gorgonaD_OBJ) -o gorgonad $(LDFLAGS)
 
 # Compile source files to object files
@@ -93,15 +93,15 @@ deb-changelog:
 		echo ""; \
 		echo " -- Aleksandr Scheglov <globalalek@gmail.com>  $$(date -R)"; \
 		echo ""; \
-		cat debian/changelog; \
-	} > debian/changelog.new; \
-	mv debian/changelog.new debian/changelog; \
+		cat ../../debian/changelog; \
+	} > ../../debian/changelog.new; \
+	mv ../../debian/changelog.new ../../debian/changelog; \
 	echo "Changelog updated manually without dch"
 
 # Build Debian packages
 build-packages: deb-changelog
 	@echo "Running build_packages.sh to build Debian packages with version $(VERSION)"
-	@./build_packages.sh
+	@../../build_packages.sh
 
 # Clean up
 clean:
