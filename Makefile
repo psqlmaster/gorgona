@@ -22,7 +22,7 @@ TEST_LDFLAGS := $(LDFLAGS) $(shell pkg-config --libs check 2>/dev/null || echo "
 # Common files used by both Client and Server
 COMMON_SRC  := common/encrypt.c common/common.c
 
-CLIENT_SRC  := client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c $(COMMON_SRC)
+CLIENT_SRC  := client/gorgona.c client/alert_send.c client/alert_listen.c client/config.c client/client_history.c $(COMMON_SRC)
 SERVER_SRC  := server/gorgonad.c server/config.c server/gorgona_utils.c server/server_handler.c \
                server/snowflake.c server/alert_db.c server/commands.c server/admin_mesh.c $(COMMON_SRC)
 
@@ -37,9 +37,9 @@ TEST_OBJ    := $(TEST_SRC:.c=.o)
 
 # Test dependencies mapped to client-specific objects
 TEST_CONFIG_OBJ       := test/test_config.o client/alert_send.client.o client/alert_listen.client.o \
-                         client/config.client.o common/encrypt.client.o common/common.client.o
+                         client/client_history.client.o client/config.client.o common/encrypt.client.o common/common.client.o
 TEST_ALERT_LISTEN_OBJ := test/test_alert_listen.o client/alert_send.client.o client/alert_listen.client.o \
-                         client/config.client.o common/encrypt.client.o common/common.client.o
+                         client/client_history.client.o client/config.client.o common/encrypt.client.o common/common.client.o
 TEST_GORGONA_OBJ      := test/test_gorgona.o
 
 TEST_EXEC := test/test_config test/test_alert_listen test/test_gorgona

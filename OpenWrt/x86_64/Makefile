@@ -12,7 +12,7 @@ SERVER_VER := $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/de
 
 # Define source paths relative to this directory (../../)
 COMMON_SRC  = ../../common/encrypt.c ../../common/common.c
-CLIENT_SRC  = ../../client/gorgona.c ../../client/alert_send.c ../../client/alert_listen.c ../../client/config.c $(COMMON_SRC)
+CLIENT_SRC  = ../../client/gorgona.c ../../client/alert_send.c ../../client/alert_listen.c ../../client/config.c ../../client/client_history.c $(COMMON_SRC)
 SERVER_SRC  = ../../server/gorgonad.c ../../server/config.c ../../server/gorgona_utils.c ../../server/server_handler.c \
               ../../server/snowflake.c ../../server/alert_db.c ../../server/commands.c ../../server/admin_mesh.c $(COMMON_SRC)
 

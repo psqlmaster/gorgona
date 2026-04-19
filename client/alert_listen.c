@@ -8,6 +8,7 @@
 #include "encrypt.h"
 #include "config.h"
 #include "common.h"
+#include "client_history.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -309,6 +310,7 @@ static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config,
         printf("No matching config key found for pending alert message: %s\n", plaintext);
     }
 
+    client_history_record(pa->id);
     free(plaintext);
 
 cleanup:
@@ -346,6 +348,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
     if (strncmp(response, "REPL|", 5) == 0 || 
         strncmp(response, "SYNC|", 5) == 0 || 
         strncmp(response, "AUTH|", 5) == 0 ||
+        strncmp(response, "MAXID_NUDGE|", 12) == 0 || 
         strcmp(response, "AUTH_SUCCESS") == 0 ||
         strcmp(response, "AUTH_FAILED") == 0) {
         return;
@@ -393,7 +396,14 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
      * -------------------------------------------------------------------------
      */
     uint64_t id = strtoull(id_str, NULL, 10);
-    
+
+    /* [IDEMPOTENCY] Skip processing if already in history */
+    if (!client_history_is_new(id)) {
+        if (verbose) printf("History: Skipping duplicate Alert ID %" PRIu64 "\n", id);
+        free(copy);
+        return;
+    }
+
     /* Snowflake ID Logic: 
      * Extract the timestamp (bits 63-12), add custom epoch, and convert to seconds. */
     time_t create_at = ((id >> 12) + SNOWFLAKE_EPOCH) / 1000;
@@ -498,6 +508,9 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
                                  &plaintext, priv_path, verbose);
 
     if (status == 0 && plaintext) {
+        /* SUCCESS: Write to persistent history log MAPPED in memory */
+        client_history_record(id);
+
         if (!execute) {
             printf("Decrypted Content:\n%s\n", plaintext);
         } else {
@@ -644,6 +657,8 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
     Config config;
     read_config(&config, verbose);
+    /* [IDEMPOTENCY] Initialize the tracker */
+    client_history_init();
     
     int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1800;
 

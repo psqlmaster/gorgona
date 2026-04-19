@@ -1,7 +1,7 @@
 ![ ](gorgona.png)
 ---
 #### Gorgona. Decentralized P2P Distributed Cron & Remote Execution Engine. End-to-End Encrypted, Time-Locked, and Resilient.  
->[📖 -> How I wrote a distributed Cron in C with P2P replication](story.md)
+>[📖 -> How I wrote a distributed Cron in C with P2P replication](docs/story.md)
 
 - [Introduction](#introduction)
 - [Features](#features)
@@ -717,7 +717,7 @@ graph TD
 - **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
 
 **Next Frontiers:**
-- **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point. [See roadmap p2p mash](roadmap_p2p_mash.md).
+- **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point. [See roadmap p2p mash](docs/roadmap_p2p_mash.md).
 - **Performance-Driven Routing**: Real-time monitoring of **Effective Throughput (Bytes/sec)**. Moving beyond simple Pings to intelligent traffic steering that prioritizes peers based on actual hardware performance (Disk/CPU) and network health.
 - **Symmetric Sidecar Mesh**: Achieving ultimate resilience by deploying Gorgonad on every node as a local proxy. [See prom_push roadmap](plugins/prom_push/readme.md).
 - **High-Concurrency Engine**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support thousands of simultaneous P2P connections per node with zero overhead.
