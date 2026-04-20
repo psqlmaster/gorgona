@@ -87,8 +87,8 @@ make clean && make && \
 sudo mkdir -p /etc/gorgona && \
 printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
 sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && \
-sudo cp ./gorgona /usr/bin && \
-gorgona listen last 4 RWTPQzuhzBw=
+sudo cp ./gorgona /usr/bin && sudo mkdir -p /var/lib/gorgona && \
+sudo gorgona listen last 4 RWTPQzuhzBw=
 ```
 
 #### Installation
@@ -175,6 +175,12 @@ start_app = /usr/local/bin/app_start.sh time_limit = 60
 sysadmin = /usr/local/bin/gorgona_sysadmin.sh time_limit = 10
 status = /usr/bin/uptime
 ```
+
+- Create dir for file `/var/lib/gorgona/peers.cache`
+```bash
+sudo mkdir -p /var/lib/gorgona
+```
+---
 
 #### Service Installation (systemd)
 If not using the `.deb` package, install manually:
