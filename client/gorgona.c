@@ -5,9 +5,16 @@
 */
 
 #include "encrypt.h"
+#include "admin_mesh.h"
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
+#include "common.h"
+
+extern int verbose;
+extern int sync_interval;
+extern int execute;
+extern int daemon_exec_flag;
 
 extern int send_alert(int argc, char *argv[], int verbose);
 extern int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_exec_flag);
@@ -68,9 +75,6 @@ void print_help(const char *program_name) {
 }
 
 int main(int argc, char *argv[]) {
-    int verbose = 0;
-    int execute = 0;
-    int daemon_exec_flag = 0;
     int opt;
 
     /* Define long options for getopt_long */
@@ -79,6 +83,7 @@ int main(int argc, char *argv[]) {
         {"verbose", no_argument, 0, 'v'},
         {"exec", no_argument, 0, 'e'},
         {"version", no_argument, 0, 'V'},
+        {"daemon-exec", no_argument, 0, 'd'},
         {0, 0, 0, 0}
     };
 
@@ -134,5 +139,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    mesh_force_save = true; 
     return 0;
 }

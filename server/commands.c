@@ -248,14 +248,13 @@ static void process_subscribe(int i, char *buffer) {
  */
 static void process_auth(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    char *copy = strdup(buffer + 5); /* Пропускаем "AUTH|" */
+    char *copy = strdup(buffer + 5); 
     if (!copy) return;
 
     char *psk = strtok(copy, "|");
     char *max_alerts_str = strtok(NULL, "|");
 
     if (!psk || !max_alerts_str) {
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Malformed AUTH packet received");
         cleanup_subscriber(i);
         free(copy);
         return;
@@ -265,38 +264,36 @@ static void process_auth(int i, char *buffer) {
 
     /* 1. Проверка пароля */
     if (strcmp(psk, sync_psk) != 0) {
-        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Peer authentication failed: Wrong PSK");
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Auth failed: Wrong PSK");
         enqueue_message(i, "Error: Wrong PSK", 15);
         sub->close_after_send = true;
     } 
     /* 2. Проверка лимита базы (max_alerts) */
-    else if (peer_max_alerts != max_alerts) {
+    /* ИЗМЕНЕНИЕ: Если пришел 0 — это КЛИЕНТ. Если > 0 — это ПИР. */
+    else if (peer_max_alerts > 0 && peer_max_alerts != max_alerts) {
         log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
-                  "Cluster capacity mismatch! Local: %d, Peer: %d. Closing connection.", 
-                  max_alerts, peer_max_alerts);
-        
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg), 
-                               "Error: max_alerts mismatch. Cluster expects %d", max_alerts);
-        enqueue_message(i, err_msg, err_len);
+                  "Cluster capacity mismatch! Peer: %d, Local: %d", peer_max_alerts, max_alerts);
+        enqueue_message(i, "Error: max_alerts mismatch", 26);
         sub->close_after_send = true;
     } 
     else {
-        /* Все совпало */
-        sub->type = SUB_TYPE_PEER;
-        sub->auth_state = AUTH_OK;
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer authenticated (Capacity: %d)", max_alerts);
+        /* Успех */
+        if (peer_max_alerts == 0) {
+            sub->type = SUB_TYPE_CLIENT;
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Client authenticated via PSK");
+        } else {
+            sub->type = SUB_TYPE_PEER;
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer authenticated (Capacity: %d)", max_alerts);
+        }
         
-        /* Отвечаем успехом и своим лимитом для взаимной проверки */
+        sub->auth_state = AUTH_OK;
+        
         char resp[64];
         int r_len = snprintf(resp, sizeof(resp), "AUTH_SUCCESS|%d", max_alerts);
         enqueue_message(i, resp, r_len);
 
-        /* Запрашиваем историю */
-        uint64_t my_max = get_max_alert_id();
-        char sync_req[64];
-        int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);
-        enqueue_message(i, sync_req, (size_t)len);
+        /* Если это ПИР (сервер), он запросит SYNC сам. 
+           Если это КЛИЕНТ, мы просто подтвердили вход. */
     }
     free(copy);
 }
@@ -304,29 +301,35 @@ static void process_auth(int i, char *buffer) {
 /**
  * Handles the "REPL|" command for alert replication between peers.
  * Also measures throughput to calculate peer performance scores.
+ * 
+ * Note: Features "Anti-Entropy Storm Protection" to distinguish between 
+ * real-time events and historical state transfers.
  */
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
     gettimeofday(&start_tv, NULL);
 
     Subscriber *sub = &subscribers[i];
+    
+    /* Security: Ensure the peer is authorized to replicate data */
     if (sub->auth_state != AUTH_OK) return;
 
     size_t raw_len = strlen(buffer);
-    char *rest = strdup(buffer + 5);
+    char *rest = strdup(buffer + 5); /* Skip "REPL|" */
     if (!rest) return;
 
-    /* Parse REPL parameters */
-    char *id_str = strtok(rest, "|");
-    char *create_str = strtok(NULL, "|");
-    char *unlock_str = strtok(NULL, "|");
-    char *expire_str = strtok(NULL, "|");
-    char *hash_b64 = strtok(NULL, "|");
-    char *text_b64 = strtok(NULL, "|");
-    char *key_b64 = strtok(NULL, "|");
-    char *iv_b64 = strtok(NULL, "|");
-    char *tag_b64 = strtok(NULL, "|");
+    /* Parse REPL parameters from the protocol frame */
+    char *id_str      = strtok(rest, "|");
+    char *create_str  = strtok(NULL, "|");
+    char *unlock_str  = strtok(NULL, "|");
+    char *expire_str  = strtok(NULL, "|");
+    char *hash_b64    = strtok(NULL, "|");
+    char *text_b64    = strtok(NULL, "|");
+    char *key_b64     = strtok(NULL, "|");
+    char *iv_b64      = strtok(NULL, "|");
+    char *tag_b64     = strtok(NULL, "|");
 
+    /* Validation: Ensure the mandatory GCM authentication tag is present */
     if (tag_b64) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
@@ -336,24 +339,56 @@ static void process_repl(int i, char *buffer) {
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
 
+        /* Validate recipient hash length before proceeding */
         if (ph && h_len == PUBKEY_HASH_LEN) {
-            int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, sub->sock, original_id, c_at);
+            
+            /* Attempt to add the replicated alert to the local database */
+            int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
+                                sub->sock, original_id, c_at);
+            
             if (res == 0) {
+                /* --- PERFORMANCE TRACKING --- */
                 gettimeofday(&end_tv, NULL);
                 double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
                                (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
+                
+                /* Update mesh metrics with recent throughput data */
                 mesh_update_speed(sub->ip_address, raw_len, delta);
 
                 Recipient *rec = find_recipient(ph);
                 if (rec) {
                     Alert *new_a = &rec->alerts[rec->count - 1];
+                    
+                    /* Notify any local clients subscribed to this key */
                     notify_subscribers(ph, new_a);
-                    broadcast_replication(ph, new_a, sub->sock);
+                    
+                    /**
+                     * --- GOSSIP SUPPRESSION LOGIC ---
+                     * To prevent infinite loops and "synchronization storms" in segmented networks,
+                     * we only broadcast alerts that are considered "Fresh" (real-time events).
+                     * 
+                     * If the alert's creation time is older than the STALE_THRESHOLD, it is 
+                     * treated as a historical sync (State Transfer) and will NOT be re-broadcast.
+                     */
+                    time_t now = time(NULL);
+                    if ((now - c_at) < STALE_THRESHOLD_SEC) {
+                        /* Active real-time event: propagate to the rest of the cluster */
+                        broadcast_replication(ph, new_a, sub->sock);
+                    } else {
+                        /* Historical sync: silent ingestion only to protect network bandwidth */
+                        if (verbose) {
+                            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                                      "Suppressed gossip for historical ID %" PRIu64 " (Catch-up sync)", 
+                                      original_id);
+                        }
+                    }
                 }
             }
             free(ph);
         }
     }
+    
+    /* Clean up the temporary buffer copy */
     free(rest);
 }
 

@@ -32,6 +32,7 @@
 #### Introduction
 
 `gorgona` is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, `gorgona` ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing, telemetry transport.).
+The project includes an **Autonomous Intelligent Client** (`gorgona`) that features self-healing connectivity, parallel peer probing (Happy Eyeballs), and a local execution history to guarantee exactly-once processing across a distributed mesh.
 
 The project includes a client (`gorgona`) for key generation, sending messages, and listening for alerts, and a server (`gorgonad`) for securely storing and delivering them.
 
@@ -41,6 +42,10 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
     - **Layer 1 (Command Plane)**: End-to-End security using RSA-OAEP for key transport and AES-256-GCM for content. The server acts as a "blind carrier" and never sees raw data.
     - **Layer 2 (Management Plane)**: Administrative traffic (PEX, Sync, Heartbeats) is encapsulated in a secondary AES-256-GCM layer keyed by a cluster-wide PSK.
 - **Intelligent Mesh Networking**: High-speed P2P backbone with automated Peer Exchange (**PEX**). Nodes dynamically discover the cluster topology via gossip protocol, allowing the mesh to expand without manual configuration.
+- **Hybrid Operation Modes**:
+    - **Smart Mesh Mode**: Enabled by providing a `sync_psk` in the client config. The client uses the Layer 2 Management Plane to discover the full cluster topology via PEX, monitors peer health (Gorgona Score), and automatically switches to the fastest available node.
+    - **Legacy Mode**: Active when `sync_psk` is omitted or commented out. The client acts as a traditional point-to-point utility, connecting strictly to the single IP/Port defined in the configuration.
+- **Execution Sovereignty**: Uses a memory-mapped persistent history log (`/var/lib/gorgona/history.log`) to ensure that even if the client jumps between different servers, a unique Snowflake command is executed exactly once.
 - **Performance-Based Routing (Gorgona Score)**: Real-time health monitoring using RTT latency and rolling-average throughput. The system autonomously prioritizes high-performance paths and suppresses "toxic" (slow or unstable) nodes.
 - **Continuous Anti-Entropy**: Aggressive MaxID synchronization. Nodes continuously gossip their database state, triggering immediate delta-syncs to ensure 100% data consistency across the cluster even after network partitions.
 - **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Encrypted payloads are strictly time-bound: they unlock exactly at `unlock_at` and are automatically purged after `expire_at`.
@@ -59,12 +64,18 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **No Third-Party Reliance**: Operates locally or via direct client-server communication.
 - **Flexible Storage Options**: Run in memory-only mode for high-speed, ephemeral operations or enable disk persistence for durability without losing alerts on server restarts.
 
-#### Database & Cluster Administration (PostgreSQL, Greenplum)
+#### Resilience & Bootstrapping
 
-- Gorgona is uniquely suited for managing distributed database systems like **Greenplum** or large-scale **PostgreSQL** farms. It provides a secure, time-locked channel to orchestrate operations across multiple segment nodes simultaneously.
-- **Orchestration**: Restart nodes, trigger backups (`pg_dump`), or rotate logs on 100+ servers with a single encrypted command.
-- **Security**: Commands are E2E encrypted; even if your monitoring server is compromised, the attacker cannot forge commands without the private RSA keys.
-- **Survivability**: Thanks to P2P replication, management commands reach all nodes even if some network segments are unstable.
+Gorgona is designed to survive total infrastructure failures:
+- **Peer Caching**: Discovered nodes are persisted to `/var/lib/gorgona/peers.cache`. If the primary server in the config is down, the client will attempt to reach the mesh using all known historical addresses.
+- **Execution Idempotency**: The client tracks processed Alert IDs in a high-performance text-based log at `/var/lib/gorgona/history.log`. This log prevents command re-runs when transitioning between mesh nodes.
+- **Penalty Box**: If a node misbehaves or drops the connection during handshake, the client applies a temporary 5-minute "penalty," automatically excluding it from the connection race to favor stable providers.
+
+#### Multi-Platform support (Embedded Friendly)
+Gorgona is engineered for standard Linux servers and restricted embedded systems:
+- **Native OpenWrt support**: Cross-compiled binaries available for `x86_64` and `aarch64` (OpenWrt 23.05/24.10).
+- **OpenBMC ready**: Extremely low footprint and zero-dependency C implementation make it ideal for Baseboard Management Controllers (BMC).
+- **Storage longevity**: Optimized `mmap` I/O significantly reduces Flash memory wear-leveling cycles on routers and IoT devices.
 
 #### Quick Start
 
@@ -137,6 +148,10 @@ use_disk_db = true                                    # Enable mmap-backed persi
 vacuum_threshold_percent = 50                         # Auto-cleanup threshold for deleted records
 
 [replication]
+# If sync_psk is set, the client joins the Layer 2 Mesh:
+# 1. Automatically discovers new nodes and updates /var/lib/gorgona/peers.cache
+# 2. Uses parallel probes (Happy Eyeballs) to find the fastest entry point
+# 3. Prioritizes 127.0.0.1 if a local sidecar daemon is running
 sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key
 sync_interval = 60                                    # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
 peer = 64.188.70.158:7777                             # Remote peer address(seed) to sync with
@@ -148,6 +163,7 @@ Controls the `gorgona` client and Remote Command Execution (RCE) mappings.
 [server]
 ip = 64.188.70.158 
 port = 7777
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key (optionally)
 
 # Per-key command sections (Recommended)
 [exec_commands:RWTPQzuhzBw=]
@@ -609,6 +625,8 @@ graph TD
 <details>
 <summary><b>Click to view detailed internal logic (Packet parsing, State machine, DB Sync)</b></summary>
 
+---
+
 ```ini
 [Server Start]
    |
@@ -706,6 +724,27 @@ graph TD
 ```
 </details>
 
+- **Client Architecture**
+```mermaid
+graph TD
+    subgraph Client_Logic
+        CL_START[Start Client] --> CL_CONF{PSK set?}
+        CL_CONF -->|No| CL_LEGACY[Legacy Mode: Connect to Config IP]
+        CL_CONF -->|Yes| CL_SMART[Mesh Mode: Parallel Probes to Top-3 Nodes]
+        CL_SMART --> CL_AUTH[L2 Handshake]
+        CL_AUTH --> CL_PEX[Receive & Cache Topology]
+    end
+    
+    subgraph Execution
+        RECV[Receive Alert] --> IDEM{ID in history.log?}
+        IDEM -->|Yes| DROP[Discard Duplicate]
+        IDEM -->|No| DECRYPT[Decrypt & Record ID]
+        DECRYPT --> EXEC[Run Command / Display]
+    end
+    
+    CL_LEGACY --> RECV
+    CL_PEX --> RECV
+```
 ---
 #### Future Plans & Evolution
 

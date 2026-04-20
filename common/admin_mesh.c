@@ -7,6 +7,7 @@
 #define PEERS_CACHE_FILE "/var/lib/gorgona/peers.cache"
 #define MAX_CACHE_PEERS 10
 #include "admin_mesh.h"
+#include "common.h" 
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
@@ -20,6 +21,7 @@
 static uint8_t mgmt_key[MGMT_K_LEN];
 MeshNode cluster_nodes[MAX_PEERS * 4];
 int cluster_node_count = 0;
+bool mesh_force_save = false; 
 
 void mesh_init(const char *psk) {
     SHA256((const unsigned char*)psk, strlen(psk), mgmt_key);
@@ -240,6 +242,10 @@ void mesh_discover_nodes(const char *payload, const char *sender_ip) {
             n->is_seed = false; /* PEX discovered nodes are dynamic */
             
             log_event("INFO", -1, ip, p, "L2 Mesh: New neighbor discovered via gossip");
+
+            if (mesh_force_save) {
+                mesh_save_peers_cache();
+            }
         }
 
         token = strtok(NULL, "|");
@@ -294,50 +300,64 @@ const char* mesh_get_best_peer_ip() {
 }
 
 /**
- * Defensive Peer Caching.
- * Saves the mesh map ONLY if we have authenticated high-quality peers.
- * Prevents overwriting a good cache with an empty one during startup failures.
+ * Persists the mesh topology to the cache file.
+ * Logic differs between Client (force save everything) and Server (save high-quality peers).
  */
 void mesh_save_peers_cache() {
-    int good_nodes_count = 0;
+    int nodes_to_save = 0;
     
-    /* 1. Сначала считаем, а есть ли вообще кого сохранять? */
+    /* 1. Count nodes based on role */
     for (int i = 0; i < cluster_node_count; i++) {
-        if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED && 
-            cluster_nodes[i].metrics.gorgona_score > 0.05) {
-            good_nodes_count++;
+        if (mesh_force_save) {
+            /* CLIENT ROLE: Save every node discovered via PEX (we trust the server's encryption) */
+            nodes_to_save++;
+        } else {
+            /* SERVER ROLE: Save only stable, performant peers to avoid cache pollution */
+            if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED && 
+                cluster_nodes[i].metrics.gorgona_score > 0.05) {
+                nodes_to_save++;
+            }
         }
     }
 
-    /* 
-     * If we don't have a single active node right now, we DO NOT open the file. 
-     * It's better to keep the old cache than to write an empty file. 
-     */
-    if (good_nodes_count == 0) {
+    /* 2. Guard: If no valid nodes found, skip file I/O to protect existing cache */
+    if (nodes_to_save == 0) {
         if (verbose) {
-            log_event("DEBUG", -1, NULL, 0, "Mesh: Peer cache save skipped (No active peers to persist)");
+            log_event("DEBUG", -1, NULL, 0, "Mesh: Peer cache save skipped (Table empty)");
         }
         return;
     }
 
-    /* Only now do we open the file for writing */
+    /* 3. Write to file */
     FILE *fp = fopen(PEERS_CACHE_FILE, "w");
     if (!fp) {
-        log_event("WARN", -1, NULL, 0, "Mesh: Failed to open %s for writing", PEERS_CACHE_FILE);
+        log_event("ERROR", -1, NULL, 0, "Mesh: Failed to open %s for writing", PEERS_CACHE_FILE);
         return;
     }
 
     int saved = 0;
     for (int i = 0; i < cluster_node_count && saved < MAX_CACHE_PEERS; i++) {
         MeshNode *n = &cluster_nodes[i];
-        if (n->status == PEER_STATUS_AUTHENTICATED) {
+        
+        bool should_write = false;
+        if (mesh_force_save) {
+            /* Client saves everyone we know */
+            should_write = true;
+        } else if (n->status == PEER_STATUS_AUTHENTICATED) {
+            /* Server saves only those who are alive right now */
+            should_write = true;
+        }
+
+        if (should_write) {
             fprintf(fp, "%s:%d\n", n->ip, n->port);
             saved++;
         }
     }
 
     fclose(fp);
-    log_event("INFO", -1, NULL, 0, "Mesh: Peer cache persisted (%d nodes)", saved);
+    if (verbose) {
+        log_event("INFO", -1, NULL, 0, "Mesh: Cache file updated (%d nodes saved)", saved);
+    }
 }
 
 /**

@@ -38,6 +38,8 @@
 #define AUTH_SENT       1
 #define AUTH_OK         2
 
+#define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
+
 extern int max_alerts;
 extern int vacuum_threshold; 
 

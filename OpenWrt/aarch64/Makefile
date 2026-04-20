@@ -1,73 +1,92 @@
-# Compiler and flags
-OPENWRT_DIR=~/crosscompile/openwrt
-TOOLCHAIN_DIR=$(OPENWRT_DIR)/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl
-STAGING_DIR=$(OPENWRT_DIR)/staging_dir
-INCLUDE_DIR=$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/include
-CC = $(TOOLCHAIN_DIR)/bin/aarch64-openwrt-linux-musl-gcc
-CFLAGS = -Oz -std=c99 -Wall -I../../common -I../../client -I$(INCLUDE_DIR) -DVERSION=\"$(VERSION)\" -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
-LDFLAGS = -L$(STAGING_DIR)/target-aarch64_cortex-a53_musl/usr/lib -lcrypto -lssl -lm
+# --- Gorgona Multi-SDK Cross-Compilation Makefile for aarch64 ---
+# Architecture: aarch64 (ARM64 Routers, e.g., RPi, NanoPi)
+# OS Target: OpenWrt (musl libc)
 
-# Version definition from Git tag
-VERSION = $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' | tr -d '\n' || echo "0.0.0")
+SDK_ROOT = $(HOME)/crosscompile
+# Find only folders related to aarch64 SDKs (ignore .tar.xz and .tar.zst files)
+SDKS = $(shell find $(SDK_ROOT) -maxdepth 1 -type d -name "openwrt-sdk-*aarch64*")
 
-# Default changelog message (used if no commits or CHANGELOG_MSG is not set)
-DEFAULT_CHANGELOG_MSG = New release of gorgona client and server.
+# Retrieve software versions from Git tags
+CLIENT_VER := $(shell git describe --tags --match "gorgona-v*" --abbrev=0 2>/dev/null | sed 's/gorgona-v//' || echo "0.0.0")
+SERVER_VER := $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/dev/null | sed 's/gorgonad-v//' || echo "0.0.0")
 
-# Source files
-gorgona_SRC = ../../client/gorgona.c ../../client/alert_send.c ../../client/alert_listen.c ../../client/config.c ../../common/encrypt.c ../../common/common.c ../../client/client_history.c
-gorgonaD_SRC = ../../server/gorgonad.c ../../server/config.c ../../server/gorgona_utils.c ../../server/server_handler.c ../../server/snowflake.c ../../server/alert_db.c \
-../../common/encrypt.c ../../common/common.c ../../server/commands.c ../../server/admin_mesh.c
+# Define source paths relative to this directory (../../)
+# 1. COMMON_SRC: Now includes admin_mesh.c since it's shared in the common folder
+COMMON_SRC  = ../../common/encrypt.c ../../common/common.c ../../common/admin_mesh.c
 
-# Object files
-gorgona_OBJ = $(gorgona_SRC:.c=.o)
-gorgonaD_OBJ = $(gorgonaD_SRC:.c=.o)
+# 2. CLIENT_SRC: Added globals.c and peer_manager.c
+CLIENT_SRC  = ../../client/gorgona.c \
+              ../../client/globals.c \
+              ../../client/alert_send.c \
+              ../../client/alert_listen.c \
+              ../../client/config.c \
+              ../../client/client_history.c \
+              ../../client/peer_manager.c \
+              $(COMMON_SRC)
 
-# Targets
-all: gorgona gorgonad
+# 3. SERVER_SRC: Corrected paths to point to current architecture
+SERVER_SRC  = ../../server/gorgonad.c \
+              ../../server/config.c \
+              ../../server/gorgona_utils.c \
+              ../../server/server_handler.c \
+              ../../server/snowflake.c \
+              ../../server/alert_db.c \
+              ../../server/commands.c \
+              $(COMMON_SRC)
 
-# Build gorgona
-gorgona: $(gorgona_OBJ)
-	$(CC) $(gorgona_OBJ) -o gorgona $(LDFLAGS)
+# Iterate through all discovered SDKs and run the build-one target
+all:
+	@if [ -z "$(SDKS)" ]; then echo "No aarch64 SDKs found in $(SDK_ROOT)"; exit 1; fi
+	@for sdk in $(SDKS); do \
+		$(MAKE) --no-print-directory build-one SDK_DIR=$$sdk; \
+	done
 
-# Build gorgonad
-gorgonad: $(gorgonaD_OBJ)
-	$(CC) $(gorgonaD_OBJ) -o gorgonad $(LDFLAGS)
+build-one:
+	@# Retrieve the OpenWrt version from the SDK's .config (fallback to folder name)
+	@V=$$(grep "CONFIG_VERSION_NUMBER=" $(SDK_DIR)/.config 2>/dev/null | cut -d'=' -f2 | tr -d '"'); \
+	if [ -z "$$V" ]; then V=$$(basename $(SDK_DIR) | cut -d'-' -f3); fi; \
+	\
+	# Locate dynamic paths inside the SDK's staging_dir \
+	STAGING_DIR=$${SDK_DIR}/staging_dir; \
+	TOOLCHAIN_DIR=$$(ls -d $${STAGING_DIR}/toolchain-aarch64_* 2>/dev/null | head -n 1); \
+	TARGET_DIR=$$(ls -d $${STAGING_DIR}/target-aarch64_* 2>/dev/null | head -n 1); \
+	\
+	# Set the cross-compiler binary path \
+	CC=$${TOOLCHAIN_DIR}/bin/aarch64-openwrt-linux-musl-gcc; \
+	\
+	# Verify that the SDK dependencies (OpenSSL headers) are ready \
+	if [ ! -f "$${TARGET_DIR}/usr/include/openssl/evp.h" ]; then \
+		echo "-------------------------------------------------------"; \
+		echo "Skipping: OpenWrt $$V (OpenSSL headers missing)"; \
+		echo "Solution: cd $$SDK_DIR && make package/libs/openssl/install"; \
+	else \
+		echo "-------------------------------------------------------"; \
+		echo "Target System: OpenWrt $$V (aarch64)"; \
+		\
+		# The OpenWrt toolchain wrapper requires STAGING_DIR to be in environment \
+		export STAGING_DIR=$${STAGING_DIR}; \
+		\
+		# Build Gorgona Client for the current target OS version \
+		$${CC} -Oz -std=c99 -Wall -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L \
+			-DVERSION=\"$(CLIENT_VER)\" \
+			-I../../common -I../../client \
+			-I$${TARGET_DIR}/usr/include \
+			$(CLIENT_SRC) -o gorgona_aarch64_$$V \
+			-L$${TARGET_DIR}/usr/lib -lssl -lcrypto -lm -lpthread; \
+		\
+		# Build Gorgona Server for the current target OS version \
+		$${CC} -Oz -std=c99 -Wall -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L \
+			-DVERSION=\"$(SERVER_VER)\" \
+			-I../../common -I../../client -I"../../server" \
+			-I$${TARGET_DIR}/usr/include \
+			$(SERVER_SRC) -o gorgonad_aarch64_$$V \
+			-L$${TARGET_DIR}/usr/lib -lssl -lcrypto -lm -lpthread; \
+		\
+		echo "Output: gorgona_aarch64_$$V, gorgonad_aarch64_$$V"; \
+	fi
 
-# Compile source files to object files
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Update debian/changelog with commit messages
-deb-changelog:
-	@echo "Updating debian/changelog with version $(VERSION)"
-	@CURRENT_TAG=$$(git --no-pager describe --tags --abbrev=0 2>/dev/null); \
-	CURRENT_TAG_OUT=$$(echo "$$CURRENT_TAG" | sed 's/^v//' | tr -d '\n' || echo "0.0.0"); \
-	PREV_TAG=$$(git --no-pager tag --sort=-v:refname | grep -A 1 "$$CURRENT_TAG" | tail -n 1); \
-	CHANGELOG_MESSAGE=$$(git --no-pager log --pretty="* %s" "$$PREV_TAG..$$CURRENT_TAG" 2>/dev/null | sort -u); \
-	if [ -z "$$CHANGELOG_MESSAGE" ]; then CHANGELOG_MESSAGE="$(DEFAULT_CHANGELOG_MSG)"; fi; \
-	{ \
-		echo "gorgona ($$CURRENT_TAG_OUT) stable; urgency=medium"; \
-		echo ""; \
-		echo "$$CHANGELOG_MESSAGE" | sed 's/^/  /'; \
-		echo ""; \
-		echo " -- Aleksandr Scheglov <globalalek@gmail.com>  $$(date -R)"; \
-		echo ""; \
-		cat ../../debian/changelog; \
-	} > ../../debian/changelog.new; \
-	mv ../../debian/changelog.new ../../debian/changelog; \
-	echo "Changelog updated manually without dch"
-
-# Build Debian packages
-build-packages: deb-changelog
-	@echo "Running build_packages.sh to build Debian packages with version $(VERSION)"
-	@../../build_packages.sh
-
-# Clean up
+# Cleanup binaries for all versions
 clean:
-	rm -f $(gorgona_OBJ) $(gorgonaD_OBJ) gorgona gorgonad
+	rm -f gorgona_aarch64_* gorgonad_aarch64_*
 
-# Rebuild everything
-rebuild: clean all
-
-# Phony targets
-.PHONY: all clean rebuild deb-changelog build-packages
+.PHONY: all clean build-one

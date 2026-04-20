@@ -22,7 +22,7 @@
 #include <strings.h> 
 #include <sys/time.h>
 
-#define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
+//#define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
 
 FILE *log_file = NULL;
 Recipient *recipients = NULL;
@@ -110,20 +110,6 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
         fflush(stdout); /* Ensure immediate output to terminal */
     }
 } 
-
-/* void get_utc_time_str(char *buffer, size_t buffer_size) {
-    time_t now = time(NULL);
-    struct tm *utc_time = gmtime(&now);
-    strftime(buffer, buffer_size, "[%Y-%m-%d %H:%M:%S UTC]", utc_time);
-} */
-
-void trim_string(char *str) {
-    size_t len = strlen(str);
-    while (len > 0 && (str[len - 1] == ' ' || str[len - 1] == '\n' || str[len - 1] == '\r')) {
-        str[len - 1] = '\0';
-        len--;
-    }
-}
 
 void format_time(time_t timestamp, char *buffer, size_t buffer_size) {
     struct tm *tm_info = gmtime(&timestamp);
@@ -862,22 +848,33 @@ void run_global_maintenance(void) {
         /* 3. Anti-Entropy: Get our highest Alert ID to share with cluster */
         uint64_t my_max_id = get_max_alert_id();
 
-        /* 4. Disseminate to all authenticated peers */
+        /* 4. Disseminate management data to all authorized entities */
         for (int i = 0; i < max_clients; i++) {
-            if (client_sockets[i] > 0 && 
-                subscribers[i].type == SUB_TYPE_PEER && 
-                subscribers[i].auth_state == AUTH_OK) {
+            /* 
+             * CRITICAL CHANGE: We check for AUTH_OK only. 
+             * This allows both Peers (Servers) and Authorized Clients to receive L2 updates.
+             */
+            if (client_sockets[i] > 0 && subscribers[i].auth_state == AUTH_OK) {
                 
-                struct timeval tv;
-                gettimeofday(&tv, NULL);
-                uint64_t ts = (uint64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
-                
-                /* [PING] Format: CMD | TS | PORT | MAX_ID */
-                char ping_cmd[128];
-                snprintf(ping_cmd, sizeof(ping_cmd), "PING|%" PRIu64 "|%d|%" PRIu64, ts, port, my_max_id);
-                send_mgmt_command(i, ping_cmd);
+                /* [PING / HEARTBEAT] 
+                 * We send PINGs only to other Nodes (Peers) to calculate RTT/Score. 
+                 * Standard clients don't need their latency measured by the server.
+                 */
+                if (subscribers[i].type == SUB_TYPE_PEER) {
+                    struct timeval tv;
+                    gettimeofday(&tv, NULL);
+                    uint64_t ts = (uint64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+                    
+                    char ping_cmd[128];
+                    /* Format: CMD | TS | PORT | MAX_ID */
+                    snprintf(ping_cmd, sizeof(ping_cmd), "PING|%" PRIu64 "|%d|%" PRIu64, ts, port, my_max_id);
+                    send_mgmt_command(i, ping_cmd);
+                }
 
-                /* [PEX] Gossip update */
+                /* [PEX / GOSSIP] 
+                 * Send the cluster map to anyone who knows the sync_psk.
+                 * This allows the Client to update its /var/lib/gorgona/peers.cache file.
+                 */
                 if (neighbors_count > 0) {
                     send_mgmt_command(i, pex_payload);
                 }

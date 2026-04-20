@@ -11,10 +11,28 @@ CLIENT_VER := $(shell git describe --tags --match "gorgona-v*" --abbrev=0 2>/dev
 SERVER_VER := $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/dev/null | sed 's/gorgonad-v//' || echo "0.0.0")
 
 # Define source paths relative to this directory (../../)
-COMMON_SRC  = ../../common/encrypt.c ../../common/common.c
-CLIENT_SRC  = ../../client/gorgona.c ../../client/alert_send.c ../../client/alert_listen.c ../../client/config.c ../../client/client_history.c $(COMMON_SRC)
-SERVER_SRC  = ../../server/gorgonad.c ../../server/config.c ../../server/gorgona_utils.c ../../server/server_handler.c \
-              ../../server/snowflake.c ../../server/alert_db.c ../../server/commands.c ../../server/admin_mesh.c $(COMMON_SRC)
+# 1. COMMON_SRC: Now includes admin_mesh.c since it's shared in the common folder
+COMMON_SRC  = ../../common/encrypt.c ../../common/common.c ../../common/admin_mesh.c
+
+# 2. CLIENT_SRC: Added globals.c and peer_manager.c
+CLIENT_SRC  = ../../client/gorgona.c \
+              ../../client/globals.c \
+              ../../client/alert_send.c \
+              ../../client/alert_listen.c \
+              ../../client/config.c \
+              ../../client/client_history.c \
+              ../../client/peer_manager.c \
+              $(COMMON_SRC)
+
+# 3. SERVER_SRC: Corrected paths to point to current architecture
+SERVER_SRC  = ../../server/gorgonad.c \
+              ../../server/config.c \
+              ../../server/gorgona_utils.c \
+              ../../server/server_handler.c \
+              ../../server/snowflake.c \
+              ../../server/alert_db.c \
+              ../../server/commands.c \
+              $(COMMON_SRC)
 
 # Iterate through all discovered SDKs and run the build-one target
 all:

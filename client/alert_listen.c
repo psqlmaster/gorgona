@@ -9,6 +9,8 @@
 #include "config.h"
 #include "common.h"
 #include "client_history.h"
+#include "admin_mesh.h"
+#include "peer_manager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +32,7 @@
 #include <time.h>
 #define _POSIX_C_SOURCE 200809L
 #define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 January 2025 в ms (из snowflake.h) */
+#define STICKY_NODE_PATH "/dev/shm/gorgona_sticky_node"
 
 typedef struct PendingAlert {
     char *pubkey_hash_b64;
@@ -115,15 +118,6 @@ char* sanitize_and_concat(const char *script, const char *args) {
 
     *ptr = '\0';
     return result;
-}
-
-/* Removes trailing spaces, \n, \r from a string */
-void trim_string(char *str) {
-    size_t len = strlen(str);
-    while (len > 0 && (str[len - 1] == ' ' || str[len - 1] == '\n' || str[len - 1] == '\r')) {
-        str[len - 1] = '\0';
-        len--;
-    }
 }
 
 /* Converts time_t to UTC string (buffer provided externally) */
@@ -337,9 +331,57 @@ cleanup:
  */
 void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
                     int verbose, int execute, Config *config, int daemon_exec_flag) {
-    
     /* -------------------------------------------------------------------------
-     * 1. PROTOCOL FILTERING: P2P NOISE REDUCTION
+     * 1. LAYER 2 DECRYPTION (New Block)
+     * -------------------------------------------------------------------------
+     * If the server sends an administrative mesh packet, it is wrapped in MGMT.
+     * We need to decrypt it using the sync_psk from our config.
+     */
+    bool l2_mesh_enabled = (config->sync_psk[0] != '\0');
+    if (strncmp(response, "MGMT|", 5) == 0) {
+        if (l2_mesh_enabled) {
+            char *frame = strdup(response + 5);
+            if (!frame) return;
+
+            char *iv_b64 = strtok(frame, "|");
+            char *tag_b64 = strtok(NULL, "|");
+            char *payload_b64 = strtok(NULL, "|");
+            
+            if (iv_b64 && tag_b64 && payload_b64) {
+                size_t iv_len, tag_len, p_len;
+                uint8_t *iv = base64_decode(iv_b64, &iv_len);
+                uint8_t *tag = base64_decode(tag_b64, &tag_len);
+                uint8_t *payload = base64_decode(payload_b64, &p_len);
+                
+                int decrypted_len;
+                /* Decrypt the payload using the admin_mesh.c module from common/ */
+                uint8_t *plain = mesh_decrypt(payload, (int)p_len, iv, tag, &decrypted_len);
+                
+                if (plain) {
+                    if (verbose) {
+                        printf("L2 Decrypted on Client: %s\n", (char*)plain);
+                    }
+                    
+                    /* [GOSSIP HANDLER] Process incoming PEX topology */
+                    if (strncmp((char*)plain, "PEX_LIST|", 9) == 0) {
+                        mesh_discover_nodes((char*)plain + 9, config->server_ip);  
+                    }
+                    /* Optionally, answer PING here if you want servers to track client latency */
+                    
+                    free(plain);
+                }
+                if (iv) free(iv); 
+                if (tag) free(tag); 
+                if (payload) free(payload);
+            }
+            free(frame);
+            return; /* Stop processing - this is a management packet, not data */
+        }
+         return; 
+    }   
+
+    /* -------------------------------------------------------------------------
+     * 2. PROTOCOL FILTERING: P2P NOISE REDUCTION
      * -------------------------------------------------------------------------
      * Ignore internal replication and synchronization traffic. These messages 
      * are intended for server-to-server communication and should not be 
@@ -355,7 +397,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
     }
 
     /* -------------------------------------------------------------------------
-     * 2. STATUS & ERROR HANDLING
+     * 3. STATUS & ERROR HANDLING
      * -------------------------------------------------------------------------
      * Check for plain-text status updates or error messages from the server.
      */
@@ -366,7 +408,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
     }
 
     /* -------------------------------------------------------------------------
-     * 3. ALERT PACKET PARSING
+     * 4. ALERT PACKET PARSING
      * -------------------------------------------------------------------------
      * Format: ALERT|pubkey_hash|id|unlock_at|expire_at|text|key|iv|tag
      */
@@ -392,7 +434,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
     }
 
     /* -------------------------------------------------------------------------
-     * 4. IDENTITY & TIMESTAMP RECONSTRUCTION
+     * 5. IDENTITY & TIMESTAMP RECONSTRUCTION
      * -------------------------------------------------------------------------
      */
     uint64_t id = strtoull(id_str, NULL, 10);
@@ -412,7 +454,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
     time_t now = time(NULL);
 
     /* -------------------------------------------------------------------------
-     * 5. SECURITY & ACCESS CONTROL
+     * 6. SECURITY & ACCESS CONTROL
      * -------------------------------------------------------------------------
      */
 
@@ -431,7 +473,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
     }
 
     /* -------------------------------------------------------------------------
-     * 6. METADATA DISPLAY
+     * 7. METADATA DISPLAY
      * -------------------------------------------------------------------------
      */
     printf("Received Alert: Recipient_Hash=%s\n", pubkey_hash_b64);
@@ -449,7 +491,7 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
            buf_create, buf_unlock, buf_expire);
 
     /* -------------------------------------------------------------------------
-     * 7. LIFECYCLE MANAGEMENT (EXPIRY & TIME-LOCK)
+     * 8. LIFECYCLE MANAGEMENT (EXPIRY & TIME-LOCK)
      * -------------------------------------------------------------------------
      */
 
@@ -484,11 +526,11 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
         return;
     }
 
-/* -------------------------------------------------------------------------
-     * 8. DECRYPTION & EXECUTION
-     * -------------------------------------------------------------------------
-     * If we reach here, the alert is unlocked and valid.
-     */
+    /* -------------------------------------------------------------------------
+    * 9. DECRYPTION & EXECUTION
+    * -------------------------------------------------------------------------
+    * If we reach here, the alert is unlocked and valid.
+    */
     size_t e_len, k_len, i_len, t_len;
     unsigned char *e_raw = base64_decode(encrypted_text, &e_len);
     unsigned char *k_raw = base64_decode(encrypted_key, &k_len);
@@ -656,358 +698,262 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
     }
 
     Config config;
+    /* [INIT] Initialize configuration and global tracking systems */
     read_config(&config, verbose);
-    /* [IDEMPOTENCY] Initialize the tracker */
-    client_history_init();
+
+    /* Logic: Switch between Smart Mesh Mode and Legacy Mode based on PSK presence */
+    bool l2_mesh_enabled = (config.sync_psk[0] != '\0');
+
+    if (l2_mesh_enabled) {
+        /* Layer 2 initialization (GCM Encryption + PEX system) */
+        mesh_init(config.sync_psk);
+        mesh_force_save = true; /* We want the client to persist peers.cache for future use */
+        if (verbose) printf("Client: Smart Mesh Mode enabled (Layer 2 initialized).\n");
+    } else {
+        if (verbose) printf("Client: Legacy Mode enabled (Layer 2 disabled).\n");
+    }
     
+    /* Execution History (Idempotency) is initialized regardless of mode for safety */
+    client_history_init(); 
+    
+    /* Connection management variables */
     int periodic_reconnect_sec = (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) ? 10 : 1800;
-
-    /* Determine whether you need to reconnect after a breakup */
     int should_reconnect = (strcmp(mode, "last") != 0 && strcmp(mode, "single") != 0);
-
+    int consecutive_failures = 0;
     char **key_hashes = NULL;
     int key_count = 0;
+    const int MAX_BACKOFF_CAP_MS = 60000;   /* 60 seconds */
+    const int MAX_FAILURES_CAP    = 16;     /* 2^16 = 65536 ms → capped anyway */
 
-    /* Backoff variables - exponential with fast start and cap */
-    int consecutive_failures = 0;
-    const int MAX_BACKOFF_CAP_MS = 60000;   // 60 seconds
-    const int MAX_FAILURES_CAP    = 16;     // 2^16 = 65536 ms → capped anyway
-
-    /* Infinite reconnection cycle for persistent modes */
+    /* INFINITE RECONNECTION CYCLE */
     while (1) {
-        /* ИСПРАВЛЕНИЕ: Собираем ключи ТОЛЬКО для режима last, чтобы получить историю по каждому */
+        /* 1. KEY COLLECTION LOGIC (Identify target recipients) */
         if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
             if (key_hashes) free_key_hashes(key_hashes, key_count);
             if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
-                fprintf(stderr, "Failed to collect key hashes\n");
+                fprintf(stderr, "Error: Critical failure in local key collection\n");
                 return 1;
             }
         } else {
-            /* ИСПРАВЛЕНИЕ: Если pubkey_hash_b64 == NULL, мы НЕ собираем ключи в список,
-               а работаем в режиме 'подписки на всё'. key_count должен быть 0. */
-            if (key_hashes) {
-                free_key_hashes(key_hashes, key_count);
-                key_hashes = NULL;
-            }
+            if (key_hashes) free_key_hashes(key_hashes, key_count);
+            key_hashes = NULL;
             if (pubkey_hash_b64) {
                 key_hashes = malloc(sizeof(char *));
                 if (!key_hashes) return 1;
                 key_hashes[0] = strdup(pubkey_hash_b64);
                 key_count = 1;
             } else {
-                key_count = 0; // Глобальный режим
+                key_count = 0; // Global discovery mode
             }
         }
 
-        /* Если key_count был 0 (глобальный режим), цикл выполнится 1 раз с NULL */
+        bool any_key_success = false;
+
+        /* 2. CONNECTION AND PROCESSING LOOP */
         for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
             char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
+            int sock = -1;
+
             if (verbose && current_pubkey_hash) {
-                printf("Debug: Processing key %s\n", current_pubkey_hash);
+                printf("Debug: Starting subscription session for key %s\n", current_pubkey_hash);
             }
 
-            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            /* --- 2.1 ESTABLISH MESH-AWARE CONNECTION --- */ 
+            /* peer_manager_load_cache automatically detects l2_mesh_enabled 
+               and adjusts the candidate list accordingly. */
+            peer_manager_load_cache(&config);
+            sock = peer_manager_get_best_connection();
+            
             if (sock < 0) {
-                perror("Socket creation error");
+                /* Display error only if it's the first attempt or we are in persistent mode */
+                if (should_reconnect || !any_key_success) {
+                    fprintf(stderr, "Mesh Error: All node candidates unreachable.\n");
+                }
                 goto backoff;
             }
-            
-            struct sockaddr_in serv_addr = { .sin_family = AF_INET, .sin_port = htons(config.server_port) };
-            if (inet_pton(AF_INET, config.server_ip, &serv_addr.sin_addr) <= 0) {
-                fprintf(stderr, "Invalid address: %s\n", config.server_ip);
-                close(sock);
-                goto backoff;
+
+            /* Identify the winning node for debug and penalty logic */
+            char current_ip[INET_ADDRSTRLEN] = "unknown";
+            struct sockaddr_in p_addr; 
+            socklen_t p_l = sizeof(p_addr);
+            if (getpeername(sock, (struct sockaddr *)&p_addr, &p_l) == 0) {
+                inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
             }
-            
-            if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-                fprintf(stderr, "Connection failed: %s\n", strerror(errno));
-                close(sock);
-                goto backoff;
-            }
-            
-            /* TCP keepalive settings */
-            int opt = 1;
-            if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) < 0) {
-                fprintf(stderr, "setsockopt SO_KEEPALIVE failed: %s\n", strerror(errno));
-            }
-#ifdef __linux__
-            int idle = 60;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
-            }
-            int interval = 10;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
-            }
-            int keep_count = 3;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
-            }
-#elif defined(__APPLE__)
-            int keepalive_time = 60;
-            if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepalive_time, sizeof(keepalive_time)) < 0) {
-                fprintf(stderr, "setsockopt TCP_KEEPALIVE failed: %s\n", strerror(errno));
-            }
-#endif
-            
-            /* SUCCESS → reset backoff */
-            consecutive_failures = 0;
 
             if (verbose) {
-                printf("Connected to %s:%d\n", config.server_ip, config.server_port);
+                printf("Connection Success: Established via [%s:%d]\n", current_ip, ntohs(p_addr.sin_port));
             }
 
-            /* Form request */
-            size_t needed_len = 256;
-            char *buffer = malloc(needed_len);
-            if (!buffer) {
-                fprintf(stderr, "Error: Failed to allocate memory\n");
-                close(sock);
-                goto backoff;
+            /* --- 2.2 LAYER 2 HANDSHAKE --- */
+            if (l2_mesh_enabled) {
+                char auth_req[256];
+                int auth_len = snprintf(auth_req, sizeof(auth_req), "AUTH|%s|0", config.sync_psk);
+                uint32_t auth_len_net = htonl(auth_len);
+                
+                /* Perform PSK-based authentication */
+                if (send(sock, &auth_len_net, sizeof(uint32_t), MSG_NOSIGNAL) != sizeof(uint32_t) ||
+                    send(sock, auth_req, auth_len, MSG_NOSIGNAL) != auth_len) {
+                    peer_manager_mark_bad(current_ip);
+                    close(sock); 
+                    continue; /* Try next available node */
+                }
+
+                /* SYNC BLOCK: Clear AUTH_SUCCESS from socket to keep alert stream clean */
+                uint32_t a_resp_len_n;
+                if (recv(sock, &a_resp_len_n, sizeof(uint32_t), MSG_WAITALL) == sizeof(uint32_t)) {
+                    size_t a_resp_len = ntohl(a_resp_len_n);
+                    if (a_resp_len < 1024) {
+                        char a_buf[1024];
+                        recv(sock, a_buf, a_resp_len, MSG_WAITALL);
+                        a_buf[a_resp_len] = '\0';
+                        if (verbose) printf("Mesh Status: %s\n", a_buf);
+                    }
+                }
+            } else if (verbose) {
+                printf("Mesh Status: Skipping L2 Handshake (Legacy Mode Active).\n");
             }
 
-            int len;
+            /* --- 2.3 STANDARD COMMAND (LISTEN/SUBSCRIBE) --- */
+            size_t needed_len = 512;
+            char *req_buffer = malloc(needed_len);
+            if (!req_buffer) { close(sock); goto backoff; }
+
+            int req_len;
             if (strcmp(mode, "single") == 0) {
-                len = snprintf(buffer, needed_len, "LISTEN|%s|%s", current_pubkey_hash, mode);
+                req_len = snprintf(req_buffer, needed_len, "LISTEN|%s|%s", current_pubkey_hash, mode);
             } else if (strcmp(mode, "last") == 0) {
-                if (current_pubkey_hash) {
-                    len = snprintf(buffer, needed_len, "LISTEN|%s|%s|%d", current_pubkey_hash, mode, count);
-                } else {
-                    len = snprintf(buffer, needed_len, "LISTEN||%s|%d", mode, count);
-                }
+                req_len = snprintf(req_buffer, needed_len, "LISTEN|%s|%s|%d", 
+                                   current_pubkey_hash ? current_pubkey_hash : "", mode, count);
             } else {
-                /* Добавляем '|', чтобы серверный strtok корректно обработал отсутствие ключа */
-                if (current_pubkey_hash) {
-                    len = snprintf(buffer, needed_len, "SUBSCRIBE %s|%s", mode, current_pubkey_hash);
-                } else {
-                    len = snprintf(buffer, needed_len, "SUBSCRIBE %s|", mode); 
-                }
+                /* Continuous subscriptions use standard SUBSCRIBE format */
+                req_len = snprintf(req_buffer, sizeof(char) * needed_len, "SUBSCRIBE %s|%s", 
+                                   mode, current_pubkey_hash ? current_pubkey_hash : "");
             }
             
-            /* Send request */
-            uint32_t msg_len_net = htonl(len);
-            ssize_t send_result = send(sock, &msg_len_net, sizeof(uint32_t), MSG_NOSIGNAL);
-            if (send_result != sizeof(uint32_t)) {
-                fprintf(stderr, "Send error (length): %s\n", strerror(errno));
-                free(buffer);
-                close(sock);
-                goto backoff;
+            /* Ship the protocol request to the mesh provider */
+            uint32_t msg_len_net = htonl(req_len);
+            if (send(sock, &msg_len_net, sizeof(uint32_t), MSG_NOSIGNAL) != sizeof(uint32_t) ||
+                send(sock, req_buffer, req_len, MSG_NOSIGNAL) != req_len) {
+                peer_manager_mark_bad(current_ip);
+                free(req_buffer); close(sock); 
+                continue; 
             }
+            free(req_buffer);
 
-            send_result = send(sock, buffer, len, MSG_NOSIGNAL);
-            if (send_result != len) {
-                fprintf(stderr, "Send error: %s\n", strerror(errno));
-                free(buffer);
-                close(sock);
-                goto backoff;
-            }
+            /* Signal that at least one node-key session was established */
+            any_key_success = true;
 
-            free(buffer);
-
-            /* Read responses */
-            int messages_received = 0;
+            /* --- 3. DATA RECEIVE LOOP --- */
             int connection_ok = 1;
-            struct timeval start_time;
-            gettimeofday(&start_time, NULL);
+            int messages_received = 0;
             int received_any_message = 0;
+            struct timeval start_time; 
+            gettimeofday(&start_time, NULL);
 
             while (connection_ok) {
-                /* Periodic reconnect check */
                 struct timeval current_time;
                 gettimeofday(&current_time, NULL);
                 long elapsed_sec = current_time.tv_sec - start_time.tv_sec;
                 if (elapsed_sec > periodic_reconnect_sec) {
-                    if (verbose) printf("Periodic reconnect after %ld seconds\n", elapsed_sec);
-                    connection_ok = 0;
-                    break;
+                    connection_ok = 0; break;
                 }
 
-                /* Find next unlock time */
+                /* [TIMELOCK LOGIC] Check pending alerts */
                 time_t now = time(NULL);
-                time_t next_unlock = 0;
-                PendingAlert *pa = pending_alerts;
-                while (pa) {
-                    if (pa->unlock_at > now && (!next_unlock || pa->unlock_at < next_unlock)) {
-                        next_unlock = pa->unlock_at;
-                    }
-                    pa = pa->next;
-                }
-
-                /* Set timeout for select */
-                struct timeval timeout, *timeout_ptr = NULL;
-                if (next_unlock) {
-                    long delay = next_unlock - now;
-                    if (delay < 0) delay = 0;
-                    timeout.tv_sec = delay;
-                    timeout.tv_usec = 0;
-                    timeout_ptr = &timeout;
-                }
-
-                /* Check pending alerts */
-                now = time(NULL);
                 PendingAlert **prev = &pending_alerts;
                 while (*prev) {
                     if ((*prev)->unlock_at <= now && (*prev)->expire_at > now) {
                         PendingAlert *to_exec = *prev;
                         *prev = to_exec->next;
                         execute_pending_alert(to_exec, verbose, &config, execute, daemon_exec_flag);
-                        free(to_exec->pubkey_hash_b64);
-                        free(to_exec->encrypted_text);
-                        free(to_exec->encrypted_key);
-                        free(to_exec->iv);
-                        free(to_exec->tag);
-                        free(to_exec);
-                    } else {
-                        prev = &(*prev)->next;
-                    }
+                        free(to_exec->pubkey_hash_b64); free(to_exec->encrypted_text);
+                        free(to_exec->encrypted_key); free(to_exec->iv);
+                        free(to_exec->tag); free(to_exec);
+                    } else prev = &(*prev)->next;
                 }
 
-                /* Use select to wait for data */
-                fd_set readfds;
-                FD_ZERO(&readfds);
-                FD_SET(sock, &readfds);
-                int activity = select(sock + 1, &readfds, NULL, NULL, timeout_ptr);
+                fd_set readfds; FD_ZERO(&readfds); FD_SET(sock, &readfds);
+                struct timeval timeout = { .tv_sec = 2, .tv_usec = 0 };
 
-                if (activity < 0) {
-                    if (errno == EINTR) continue;
-                    fprintf(stderr, "Select error: %s\n", strerror(errno));
-                    connection_ok = 0;
-                    break;
-                }
-
+                int activity = select(sock + 1, &readfds, NULL, NULL, &timeout);
+                if (activity < 0) { if (errno == EINTR) continue; connection_ok = 0; break; }
                 if (activity == 0) {
+                    /* Для разовых режимов выходим по таймауту тишины */
+                    if (!should_reconnect) break;
                     continue;
                 }
 
-                /* Read response length */
+                consecutive_failures = 0; 
                 uint32_t resp_len_net;
-                ssize_t valread = recv(sock, &resp_len_net, sizeof(uint32_t), MSG_WAITALL);
-                if (valread == 0) {
-                    if (verbose) fprintf(stderr, "Debug: Connection closed by server\n");
-                    connection_ok = 0;
-                    break;
-                } else if (valread < 0) {
-                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                        continue;
+                ssize_t valread = recv(sock, &resp_len_net, 4, MSG_WAITALL);
+                if (valread <= 0) {
+                    if (valread == 0) {
+                        /* Сервер просто закрыл сокет - для LAST/SINGLE это НОРМАЛЬНО */
+                        if (strcmp(mode, "last") != 0 && strcmp(mode, "single") != 0) {
+                            peer_manager_mark_bad(current_ip);
+                        }
+                    } else {
+                        /* Это реальная ошибка сокета */
+                        peer_manager_mark_bad(current_ip);
                     }
-                    fprintf(stderr, "Read error (length): %s\n", strerror(errno));
-                    connection_ok = 0;
-                    break;
-                } else if (valread != sizeof(uint32_t)) {
-                    fprintf(stderr, "Incomplete length read: %zd/%zu\n", valread, sizeof(uint32_t));
-                    connection_ok = 0;
+                    connection_ok = 0; 
                     break;
                 }
 
                 size_t resp_len = ntohl(resp_len_net);
-                if (resp_len == 0 || resp_len > 50 * 1024 * 1024) { /*50mb max 1 alert*/
-                    fprintf(stderr, "Invalid response length: %zu\n", resp_len);
-                    connection_ok = 0;
-                    break;
-                }
+                if (resp_len == 0 || resp_len > 50 * 1024 * 1024) { connection_ok = 0; break; }
 
                 char *resp_buffer = malloc(resp_len + 1);
-                if (!resp_buffer) {
-                    fprintf(stderr, "Error: Failed to allocate memory for response\n");
-                    connection_ok = 0;
-                    break;
-                }
+                if (!resp_buffer) { connection_ok = 0; break; }
 
-                size_t total_read = 0;
-                while (total_read < resp_len && connection_ok) {
-                    valread = recv(sock, resp_buffer + total_read, resp_len - total_read, 0);
-                    if (valread == 0) {
-                        if (verbose) fprintf(stderr, "Debug: Connection closed by server during data read\n");
-                        connection_ok = 0;
-                        break;
-                    } else if (valread < 0) {
-                        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                            continue;
-                        }
-                        fprintf(stderr, "Read error: %s\n", strerror(errno));
-                        connection_ok = 0;
-                        break;
-                    }
-                    total_read += valread;
+                if (recv(sock, resp_buffer, resp_len, MSG_WAITALL) != (ssize_t)resp_len) {
+                    free(resp_buffer); connection_ok = 0; break;
                 }
-
-                if (!connection_ok) {
-                    free(resp_buffer);
-                    break;
-                }
-
-                if (total_read != resp_len) {
-                    fprintf(stderr, "Incomplete data read: %zu/%zu\n", total_read, resp_len);
-                    free(resp_buffer);
-                    connection_ok = 0;
-                    break;
-                }
-
                 resp_buffer[resp_len] = '\0';
-                if (verbose) {
-                    printf("Received response: %s\n", resp_buffer);
-                }
 
                 parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config, daemon_exec_flag);
 
-                if (strcmp(mode, "last") == 0 && strncmp(resp_buffer, "ALERT|", 6) == 0) {
-                    messages_received++;
+                if (strncmp(resp_buffer, "ALERT|", 6) == 0) {
                     received_any_message = 1;
-                    if (pubkey_hash_b64 && messages_received >= count) {
-                        free(resp_buffer);
-                        connection_ok = 0;
-                        break;
+                    any_key_success = true;
+                    if (strcmp(mode, "last") == 0) {
+                        messages_received++;
+                        if (messages_received >= count) { free(resp_buffer); connection_ok = 0; break; }
                     }
                 }
-
                 free(resp_buffer);
+                if (strcmp(mode, "single") == 0) { connection_ok = 0; break; }
             }
             
             close(sock);
- 
+
             if (strcmp(mode, "last") == 0 && !pubkey_hash_b64 && verbose && !received_any_message) {
                 printf("Debug: No messages for key %s\n", current_pubkey_hash ? current_pubkey_hash : "NULL");
             }
 
-            /* If we reached here after inner while(connection_ok) → connection was lost/closed */
-            consecutive_failures++;   // count this as failure for next attempt
+            /* Если режим не постоянный, и это был последний ключ - выходим из функции */
+            if (!should_reconnect && (key_idx == (key_count > 0 ? key_count - 1 : 0))) {
+                if (key_hashes) free_key_hashes(key_hashes, key_count);
+                mesh_save_peers_cache();
+                return 0;
+            }
         }
 
+        /* --- 4. BACKOFF & RECOVERY (только для live/new) --- */
         backoff: 
+        if (key_hashes) { free_key_hashes(key_hashes, key_count); key_hashes = NULL; key_count = 0; }
+        if (!should_reconnect) return 0;
 
-        if (key_hashes) {
-            free_key_hashes(key_hashes, key_count);
-            key_hashes = NULL;
-            key_count = 0;
-        }
+        int backoff_ms = (1 << consecutive_failures) * 1000;
+        if (backoff_ms > MAX_BACKOFF_CAP_MS) backoff_ms = MAX_BACKOFF_CAP_MS;
 
-        /* For last/single mode, exit after completion */
-        if (strcmp(mode, "last") == 0 || strcmp(mode, "single") == 0) {
-            return 0;
-        }
+        char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
+        fprintf(stderr, "%s Connection lost, reconnecting in %d ms...\n", time_str, backoff_ms);
 
-        /* For persistent modes - reconnect with backoff */
-        if (should_reconnect) {
-            int backoff_ms = 1 << consecutive_failures;           // 1, 2, 4, 8, 16, ...
-            if (backoff_ms > MAX_BACKOFF_CAP_MS) {
-                backoff_ms = MAX_BACKOFF_CAP_MS;
-            }
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(stderr, "%s Connection lost / failed, reconnecting in ~%d ms (attempt %d)...\n",
-                    time_str, backoff_ms, consecutive_failures + 1);
-
-            struct timespec ts;
-            ts.tv_sec = backoff_ms / 1000;
-            ts.tv_nsec = (backoff_ms % 1000) * 1000000L;
-            nanosleep(&ts, NULL); 
-
-            if (consecutive_failures < MAX_FAILURES_CAP) {
-                consecutive_failures++;
-            }
-            // loop continues → next iteration of while(1)
-        }
-    }   // end of while(1)
+        struct timespec ts = { .tv_sec = backoff_ms / 1000, .tv_nsec = (backoff_ms % 1000) * 1000000L };
+        nanosleep(&ts, NULL); 
+        if (consecutive_failures < MAX_FAILURES_CAP) consecutive_failures++;
+    }
 
     return 0;
 }
