@@ -394,41 +394,38 @@ static void process_repl(int i, char *buffer) {
 
 /**
  * Handles the "SYNC|last_id" command.
- * The remote peer requests all historical alerts created after the specified last_id.
- * This ensures that a newly connected or previously offline node can catch up 
- * with the current state of the cluster.
+ * IMPROVED: Only transfers ACTIVE alerts to minimize network waste.
  */
 static void process_sync(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     
-    /* Ensure the peer is authenticated before processing synchronization */
     if (sub->auth_state != AUTH_OK) {
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unauthorized sync request ignored");
         return;
     }
 
-    /* Parse the last known ID provided by the peer */
     uint64_t last_id = strtoull(buffer + 5, NULL, 10);
-    log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-              "Peer requested historical sync starting from ID: %" PRIu64, last_id);
-
     int count = 0;
 
-    /* Iterate through all recipients and their alert records */
+    /* Iterate through all recipients managed by this node */
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         for (int a = 0; a < rec->count; a++) {
-            /* Only send alerts that are newer than the peer's last known ID */
-            if (rec->alerts[a].id > last_id) {
+            /* 
+             * CRITICAL FIX: Only send alerts that are:
+             * 1. Newer than the requested ID.
+             * 2. Actually ACTIVE (not expired or deactivated).
+             */
+            if (rec->alerts[a].id > last_id && rec->alerts[a].active) {
                 send_alert_to_peer(i, rec->hash, &rec->alerts[a]);
                 count++;
             }
         }
     }
 
-    /* Log the completion of the synchronization task */
     log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-              "Sync completed: %d historical alerts transferred to peer", count);
+              "Sync completed: %d active alerts transferred to peer (ID > %" PRIu64 ")", 
+              count, last_id);
 }
 
 void send_mgmt_command(int sub_index, const char *cmd_plain) {
