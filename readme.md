@@ -594,36 +594,47 @@ The server uses a high-performance `select()`-based multiplexing loop to handle 
 
 ```mermaid
 graph TD
-    A[Start Server] --> B{Incoming Event}
-    B -->|New Connection| C[Accept & Non-blocking Setup]
+    A[("Start Server")] --> B{Incoming Event}
+    B -->|New Connection| C["Accept & Non-blocking Setup"]
     B -->|Data Received| D{Protocol Sniffer}
-    B -->|Timer: 10s| REPL_MGR[Peer Connection Manager]
+    B -->|Timer: 10s| REPL_MGR["Peer Connection Manager"]
 
-    D -->|First Byte < 32| E[Binary Mode: Parse Header & Payload]
-    D -->|First Byte >= 32| F[Text Mode: Handle Interactive Commands]
+    D -->|First Byte < 32| E["Binary Mode: Parse Header & Payload"]
+    D -->|First Byte >= 32| F["Text Mode: Handle Interactive Commands"]
 
     E --> G{Command Dispatcher}
     F --> G
 
-    G -->|AUTH / SYNC| REPL_LOGIC[P2P Reconciliation]
+    G -->|AUTH / SYNC| REPL_LOGIC["P2P Reconciliation"]
     G -->|SEND / REPL| H{Security & Anti-Replay}
-    G -->|LISTEN / SUBSCRIBE| I[Filter & Fetch Alerts]
+    G -->|LISTEN / SUBSCRIBE| I["Filter & Fetch Alerts"]
 
-    H -->|Valid| K[Add to DB & Notify Subscribers]
-    K -->|If new local| FORWARD[Broadcast to Peers]
+    H -->|Valid| K["Add to DB & Notify Subscribers"]
+    K -->|If new local| FORWARD["Broadcast to Peers"]
 
-    REPL_LOGIC --> REPL_SYNC[Mutual History Reconciliation]
+    REPL_LOGIC --> REPL_SYNC["Mutual History Reconciliation"]
     REPL_MGR -->|Reconnect| C
 
-    I --> L[Queue Data/Success Msg]
+    I --> L["Queue Data/Success Msg"]
     K --> L
 
     L --> M{Close After Send?}
-    M -->|Yes| N[Set Graceful Shutdown Flag]
+    M -->|Yes| N["Set Graceful Shutdown Flag"]
 
-    B -->|Socket Writable| O[Process Outbound Queue]
+    B -->|Socket Writable| O["Process Outbound Queue"]
     O --> P{Flag Set & Queue Empty?}
-    P -->|Yes| Q[Graceful Socket Close]
+    P -->|Yes| Q["Graceful Socket Close"]
+
+    %% Styles
+    classDef startEnd fill:#2b5b84,stroke:#1a3f5c,stroke-width:2px,color:#fff,font-weight:bold
+    classDef process fill:#4a90c4,stroke:#2c5a7a,stroke-width:2px,color:#fff
+    classDef decision fill:#e67e22,stroke:#b45f1b,stroke-width:2px,color:#fff
+    classDef special fill:#27ae60,stroke:#1e8449,stroke-width:2px,color:#fff
+
+    class A,Q startEnd
+    class C,E,F,I,K,FORWARD,REPL_SYNC,L,N,O process
+    class B,D,G,H,M,P decision
+    class REPL_MGR,REPL_LOGIC special
 ```
 <details>
 <summary><b>Click to view detailed internal logic (Packet parsing, State machine, DB Sync)</b></summary>
@@ -727,26 +738,33 @@ graph TD
 ```
 </details>
 
-- **Client Architecture**
+---
+
+**Client Architecture**
 ```mermaid
 graph TD
-    subgraph Client_Logic
-        CL_START[Start Client] --> CL_CONF{PSK set?}
-        CL_CONF -->|No| CL_LEGACY[Legacy Mode: Connect to Config IP]
-        CL_CONF -->|Yes| CL_SMART[Mesh Mode: Parallel Probes to Top-3 Nodes]
-        CL_SMART --> CL_AUTH[L2 Handshake]
-        CL_AUTH --> CL_PEX[Receive & Cache Topology]
-    end
+    CL_START[("Start Client")] --> CL_CONF{PSK set?}
+    CL_CONF -->|No| CL_LEGACY["Legacy Mode: Connect to Config IP"]
+    CL_CONF -->|Yes| CL_SMART["Mesh Mode: Parallel Probes to Top-3 Nodes"]
+    CL_SMART --> CL_AUTH["L2 Handshake"]
+    CL_AUTH --> CL_PEX["Receive & Cache Topology"]
     
-    subgraph Execution
-        RECV[Receive Alert] --> IDEM{ID in history.log?}
-        IDEM -->|Yes| DROP[Discard Duplicate]
-        IDEM -->|No| DECRYPT[Decrypt & Record ID]
-        DECRYPT --> EXEC[Run Command / Display]
-    end
+    RECV["Receive Alert"] --> IDEM{ID in history.log?}
+    IDEM -->|Yes| DROP["Discard Duplicate"]
+    IDEM -->|No| DECRYPT["Decrypt & Record ID"]
+    DECRYPT --> EXEC["Run Command / Display"]
     
     CL_LEGACY --> RECV
     CL_PEX --> RECV
+
+    %% Styles
+    classDef startEnd fill:#2b5b84,stroke:#1a3f5c,stroke-width:2px,color:#fff,font-weight:bold
+    classDef process fill:#4a90c4,stroke:#2c5a7a,stroke-width:2px,color:#fff
+    classDef decision fill:#e67e22,stroke:#b45f1b,stroke-width:2px,color:#fff
+
+    class CL_START startEnd
+    class CL_LEGACY,CL_SMART,CL_AUTH,CL_PEX,RECV,DROP,DECRYPT,EXEC process
+    class CL_CONF,IDEM decision
 ```
 ---
 #### Future Plans & Evolution
