@@ -82,12 +82,9 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 ```bash
 sudo apt update && sudo apt install -y libssl-dev git gcc make && \
 git clone --depth 1 https://github.com/psqlmaster/gorgona.git && \
-cd gorgona && \
-make clean && make && \
-sudo mkdir -p /etc/gorgona && \
-printf "[server]\nip = 64.188.70.158\nport = 7777\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
-sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && \
-sudo cp ./gorgona /usr/bin && sudo mkdir -p /var/lib/gorgona && \
+cd gorgona && make clean && make && sudo mkdir -p /etc/gorgona /var/lib/gorgona && \
+printf "[server]\nip = 64.188.70.158\nport = 7777\nsync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3\n" | sudo tee /etc/gorgona/gorgona.conf >/dev/null && \
+sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && sudo cp ./gorgona /usr/bin && sudo mkdir -p /var/lib/gorgona && \
 sudo gorgona listen last 4 RWTPQzuhzBw=
 ```
 
