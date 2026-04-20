@@ -102,42 +102,41 @@ void cleanup_subscriber(int index) {
 }
 
 /**
- * Queue a binary message (length + payload) for sending.
+ * Merged Binary Enqueue (Fixes 40ms Nagle/Delayed ACK delay)
+ * We pack [length:4] + [payload:N] into a single contiguous memory block.
  */
 void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
+    if (!msg || msg_len == 0) return;
+
+    /* Performance Logging */
     log_event("DEBUG", subscribers[sub_index].sock, subscribers[sub_index].ip_address, 
-              subscribers[sub_index].port, "Enqueued response (%zu bytes): %.*s", 
-              msg_len, (int)msg_len, msg);
-    OutBuffer *new_buf;
-    uint32_t len_net = htonl(msg_len);
+              subscribers[sub_index].port, "Enqueued combined response (%zu bytes payload)", 
+              msg_len);
 
-    /* 1. Enqueue 4-byte length header */
-    new_buf = malloc(sizeof(OutBuffer));
+    /* Allocate one block for everything: 4 bytes for header + N bytes for payload */
+    size_t total_payload_size = sizeof(uint32_t) + msg_len;
+    
+    OutBuffer *new_buf = malloc(sizeof(OutBuffer));
     if (!new_buf) return;
-    new_buf->data = malloc(sizeof(uint32_t));
-    if (!new_buf->data) { free(new_buf); return; }
-    memcpy(new_buf->data, &len_net, sizeof(uint32_t));
-    new_buf->len = sizeof(uint32_t);
-    new_buf->pos = 0;
-    new_buf->next = NULL;
 
-    if (subscribers[sub_index].out_tail) {
-        subscribers[sub_index].out_tail->next = new_buf;
-        subscribers[sub_index].out_tail = new_buf;
-    } else {
-        subscribers[sub_index].out_head = subscribers[sub_index].out_tail = new_buf;
+    new_buf->data = malloc(total_payload_size);
+    if (!new_buf->data) {
+        free(new_buf);
+        return;
     }
 
-    /* 2. Enqueue actual message data */
-    new_buf = malloc(sizeof(OutBuffer));
-    if (!new_buf) return;
-    new_buf->data = malloc(msg_len);
-    if (!new_buf->data) { free(new_buf); return; }
-    memcpy(new_buf->data, msg, msg_len);
-    new_buf->len = msg_len;
+    /* 1. Pack the 4-byte big-endian length header at the beginning */
+    uint32_t len_net = htonl((uint32_t)msg_len);
+    memcpy(new_buf->data, &len_net, sizeof(uint32_t));
+
+    /* 2. Pack the actual message data right after the header */
+    memcpy(new_buf->data + sizeof(uint32_t), msg, msg_len);
+
+    new_buf->len = total_payload_size;
     new_buf->pos = 0;
     new_buf->next = NULL;
 
+    /* 3. Add this SINGLE atomic packet to the outgoing queue */
     if (subscribers[sub_index].out_tail) {
         subscribers[sub_index].out_tail->next = new_buf;
         subscribers[sub_index].out_tail = new_buf;

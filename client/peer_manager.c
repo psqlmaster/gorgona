@@ -26,7 +26,9 @@ static time_t penalty_times[MAX_PEER_TARGETS];
 static int penalty_count = 0;
 int peer_count = 0;
 
-/* Helper to add unique peer addresses and prevent duplicates */
+/**
+ * Helper to add unique peer addresses and prevent duplicates.
+ */
 static void add_peer(const char *ip, int port) {
     if (peer_count >= MAX_PEER_TARGETS || !ip || strlen(ip) < 7) return;
     
@@ -47,41 +49,37 @@ static void add_peer(const char *ip, int port) {
 
 /**
  * Loads peers into the local candidate table.
- * 
- * Logic flow:
- * 1. If config->sync_psk is EMPTY (missing or commented out): 
- *    Enters Legacy Mode. Connects strictly to the static IP defined in config.
- * 2. If config->sync_psk is PRESENT:
- *    Enters Smart Mesh Mode. Loads all available targets for parallel probes.
- * 
- * @param config Pointer to the client's configuration structure.
+ * Logic:
+ * 1. If sync_psk is missing: Legacy mode (Static IP only).
+ * 2. If sync_psk is present: Smart Mesh mode. Config IP has top priority, then cache.
  */
 void peer_manager_load_cache(Config *config) {
     peer_count = 0;
     memset(known_peers, 0, sizeof(known_peers));
-    /* OPTION A: LEGACY MODE */
+
+    /* CASE 1: LEGACY MODE (L2 Disabled) */
     if (config->sync_psk[0] == '\0') {
         if (config->server_ip[0] != '\0') {
             add_peer(config->server_ip, config->server_port);
         }
-        
         if (verbose) {
-            printf("Mesh Status: L2 disabled (no sync_psk). Fallback to legacy static node [%s:%d]\n", 
+            printf("Mesh Status: L2 disabled. Fallback to legacy static node [%s:%d]\n", 
                    config->server_ip, config->server_port);
         }
-        return; /* Stop right here. No sidecar, no cache, just one node */
+        return; 
     }
-    /* OPTION B: SMART MESH MODE */
+
+    /* CASE 2: SMART MESH MODE (L2 Enabled) */
     if (verbose) {
         printf("Mesh Status: L2 enabled. Compiling endpoint candidates...\n");
     }
-    /* Priority 1: Sidecar Mode (Always check local loopback first) */
-    add_peer("127.0.0.1", config->server_port);
-    /* Priority 2: Configured Static IP */
-    if (config->server_ip[0] != '\0' && strcmp(config->server_ip, "127.0.0.1") != 0) {
+
+    /* Priority 1: User-defined IP from config. This is our primary target. */
+    if (config->server_ip[0] != '\0') {
         add_peer(config->server_ip, config->server_port);
     }
-    /* Priority 3: Cached nodes from Mesh PEX intelligence */
+
+    /* Priority 2: Previously cached nodes from Mesh PEX intelligence */
     FILE *fp = fopen(PEERS_CACHE_PATH, "r");
     if (fp) {
         char line[128];
@@ -90,12 +88,7 @@ void peer_manager_load_cache(Config *config) {
             char *colon = strchr(line, ':');
             if (colon) {
                 *colon = '\0';
-                char *ip = line;
-                
-                /* Guard: Filter out loopback duplicates from cache */
-                if (strcmp(ip, "127.0.0.1") != 0 && strcmp(ip, "localhost") != 0) {
-                    add_peer(ip, atoi(colon + 1));
-                }
+                add_peer(line, atoi(colon + 1));
             }
         }
         fclose(fp);
@@ -103,10 +96,17 @@ void peer_manager_load_cache(Config *config) {
 }
 
 /**
- * Iterative best connection finder.
- * Tries candidates one by one with a non-blocking timeout.
+ * High-performance connection selector.
+ * Implements 'Sticky Node' logic to bypass scanning in loop executions.
  */
 int peer_manager_get_best_connection(void) {
+    /* Step 0: Try to reuse a proven node from the RAM-based sticky cache */
+    int sticky_sock = try_sticky_node(verbose);
+    if (sticky_sock >= 0) {
+        /* Already in blocking mode and verified by try_sticky_node */
+        return sticky_sock;
+    }
+
     time_t now = time(NULL);
     if (peer_count == 0) return -1;
 
@@ -124,7 +124,6 @@ int peer_manager_get_best_connection(void) {
         int sd = socket(AF_INET, SOCK_STREAM, 0);
         if (sd < 0) continue;
 
-        /* Non-blocking mode for connect timeout control */
         int flags = fcntl(sd, F_GETFL, 0);
         fcntl(sd, F_SETFL, flags | O_NONBLOCK);
 
@@ -141,41 +140,36 @@ int peer_manager_get_best_connection(void) {
             fflush(stdout);
         }
 
-        /* 3. Attempt Connection */
+        /* 3. Connection attempt with timeout */
         int res = connect(sd, (struct sockaddr *)&addr, sizeof(addr));
-        
         if (res < 0 && errno == EINPROGRESS) {
             struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
             fd_set wfds; FD_ZERO(&wfds); FD_SET(sd, &wfds);
-            
             res = select(sd + 1, NULL, &wfds, NULL, &tv);
             if (res > 0) {
                 int error = 0; socklen_t len = sizeof(error);
                 getsockopt(sd, SOL_SOCKET, SO_ERROR, &error, &len);
                 res = (error == 0) ? 0 : -1;
-            } else {
-                res = -1; /* Timeout or generic failure */
-            }
+            } else res = -1;
         }
 
-        /* 4. Handle Result */
         if (res == 0) {
             if (verbose) printf("CONNECTED\n");
 
-            /* Restore BLOCKING mode for regular operation */
+            /* Restore blocking mode for data transmission */
             int f = fcntl(sd, F_GETFL, 0);
             fcntl(sd, F_SETFL, f & ~O_NONBLOCK);
             
-            /* Apply a protection timeout for data receipt */
             struct timeval rtv = { .tv_sec = 10, .tv_usec = 0 };
             setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
             
-            return sd; /* Winner found */
+            /* Save this successful node as 'Sticky' for future calls */
+            save_sticky_node(known_peers[i].ip, known_peers[i].port);
+            
+            return sd; 
         }
 
-        if (verbose) {
-            printf("FAILED (%s)\n", strerror(errno));
-        } 
+        if (verbose) printf("FAILED (%s)\n", strerror(errno));
         close(sd);
     }
 
@@ -183,18 +177,15 @@ int peer_manager_get_best_connection(void) {
 }
 
 /**
- * Ingests a decrypted PEX_LIST and updates /var/lib/gorgona/peers.cache
- * Expected payload: "REPORTED_PORT|IP1:PORT1|IP2:PORT2|..."
+ * Updates the peer cache with discovered nodes from Mesh gossip.
  */
 void peer_manager_update_cache(const char *payload) {
     if (!payload || strlen(payload) == 0) return;
 
-    /* 1. Skip the first part (the reported port of the sender) */
     char *list_start = strchr(payload, '|');
     if (!list_start) return;
-    list_start++; /* Now points to IP:PORT list */
+    list_start++; 
 
-    /* 2. Open cache for checking and appending */
     FILE *fp = fopen(PEERS_CACHE_PATH, "a+");
     if (!fp) return;
 
@@ -203,19 +194,14 @@ void peer_manager_update_cache(const char *payload) {
 
     while (token) {
         if (strchr(token, ':')) {
-            /* Check if we already have this record to avoid duplicates */
             fseek(fp, 0, SEEK_SET);
             char line[128];
             bool duplicate = false;
             while (fgets(line, sizeof(line), fp)) {
                 trim_string(line);
-                if (strcmp(line, token) == 0) {
-                    duplicate = true;
-                    break;
-                }
+                if (strcmp(line, token) == 0) { duplicate = true; break; }
             }
 
-            /* Add only new unique peers */
             if (!duplicate) {
                 fseek(fp, 0, SEEK_END);
                 fprintf(fp, "%s\n", token);
@@ -230,14 +216,12 @@ void peer_manager_update_cache(const char *payload) {
 }
 
 /**
- * Flags the node as “problematic” 
- * He won't be participating in the Happy Eyeballs race for the next 5 minutes. 
+ * Penalizes a node for protocol/auth failure to avoid retrying it.
  */
 void peer_manager_mark_bad(const char *ip) {
     if (!ip) return;
     time_t now = time(NULL);
     
-    /* If it's already on the list, update the time */
     for (int i = 0; i < penalty_count; i++) {
         if (strcmp(penalty_ips[i], ip) == 0) {
             penalty_times[i] = now;
@@ -249,6 +233,6 @@ void peer_manager_mark_bad(const char *ip) {
         strncpy(penalty_ips[penalty_count], ip, INET_ADDRSTRLEN - 1);
         penalty_times[penalty_count] = now;
         penalty_count++;
-        if (verbose) printf("Mesh: Applied 5m penalty to node %s (Auth/Protocol failure)\n", ip);
+        if (verbose) printf("Mesh: Applied 5m penalty to node %s\n", ip);
     }
 }

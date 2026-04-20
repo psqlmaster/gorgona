@@ -7,7 +7,6 @@
 #define _XOPEN_SOURCE 700
 #include "encrypt.h"
 #include "config.h"
-#include "common.h"
 #include "admin_mesh.h"
 #include "peer_manager.h"
 #include <stdio.h>
@@ -167,21 +166,27 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
                              pubkey_hash_b64, (long)unlock_at, (long)expire_at, 
                              encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
 
+    struct timeval tv_start, tv_conn, tv_auth, tv_send, tv_ack;
+    gettimeofday(&tv_start, NULL);
+
     /* 5. MESH-AWARE CONNECTION */
     peer_manager_load_cache(&config);
     int sock = peer_manager_get_best_connection();
+    gettimeofday(&tv_conn, NULL);
+
     if (sock < 0) {
         fprintf(stderr, "Mesh Error: All node candidates are unreachable.\n");
         goto cleanup_all;
     }
 
     char current_ip[INET_ADDRSTRLEN] = "unknown";
-    struct sockaddr_in p_addr; socklen_t p_l = sizeof(p_addr);
+    struct sockaddr_in p_addr; 
+    socklen_t p_l = sizeof(p_addr);
     if (getpeername(sock, (struct sockaddr *)&p_addr, &p_l) == 0) {
         inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
     }
 
-    /* 6. MESH LAYER AUTHENTICATION */
+    /* 6. MESH LAYER AUTHENTICATION (The L2 Handshake) */
     if (l2_enabled) {
         char auth_req[256];
         int al = snprintf(auth_req, 256, "AUTH|%s|0", config.sync_psk);
@@ -190,13 +195,17 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
             peer_manager_mark_bad(current_ip);
             close(sock); goto cleanup_all;
         }
-        /* Drain auth response */
+        /* Drain auth response - this is a blocking RTT call */
         uint32_t a_r_l_n;
         if (read(sock, &a_r_l_n, 4) == 4) {
             size_t a_r_l = ntohl(a_r_l_n);
-            if (a_r_l < 1024) { char a_buf[1024]; read(sock, a_buf, a_r_l); }
+            if (a_r_l < 1024) { 
+                char a_buf[1024]; 
+                read(sock, a_buf, a_r_l); 
+            }
         }
     }
+    gettimeofday(&tv_auth, NULL);
 
     /* 7. DATA TRANSMISSION (CHUNKED) */
     if (verbose_flag) printf("Transmission: Sending %d bytes to %s\n", total_len, current_ip);
@@ -217,14 +226,8 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         
         if (sent <= 0) { aborted = true; break; }
         total_sent += sent;
-
-        /* Early error detection via select */
-        struct timeval tv_poll = {0, 0};
-        fd_set rset; FD_ZERO(&rset); FD_SET(sock, &rset);
-        if (select(sock + 1, &rset, NULL, NULL, &tv_poll) > 0) {
-            aborted = true; break;
-        }
-    }
+   }
+    gettimeofday(&tv_send, NULL);
 
     /* 8. WAIT FOR SERVER ACKNOWLEDGEMENT */
     if (!aborted) {
@@ -237,7 +240,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
                 char *resp_buf = malloc(resp_len + 1);
                 if (read(sock, resp_buf, resp_len) == (ssize_t)resp_len) {
                     resp_buf[resp_len] = '\0';
-                    printf("Server: %s\n", resp_buf);
+                    printf("Server Result: %s\n", resp_buf);
                 }
                 free(resp_buf);
             }
@@ -246,8 +249,25 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         peer_manager_mark_bad(current_ip);
         fprintf(stderr, "Error: Transmission failed or server dropped the connection.\n");
     }
+    gettimeofday(&tv_ack, NULL);
 
-    close(sock);
+    if (verbose_flag) {
+        double diff_conn = (tv_conn.tv_sec - tv_start.tv_sec) * 1000.0 + (tv_conn.tv_usec - tv_start.tv_usec) / 1000.0;
+        double diff_auth = (tv_auth.tv_sec - tv_conn.tv_sec) * 1000.0 + (tv_auth.tv_usec - tv_conn.tv_usec) / 1000.0;
+        double diff_send = (tv_send.tv_sec - tv_auth.tv_sec) * 1000.0 + (tv_send.tv_usec - tv_auth.tv_usec) / 1000.0;
+        double diff_ack  = (tv_ack.tv_sec - tv_send.tv_sec) * 1000.0 + (tv_ack.tv_usec - tv_send.tv_usec) / 1000.0;
+        double diff_total = (tv_ack.tv_sec - tv_start.tv_sec) * 1000.0 + (tv_ack.tv_usec - tv_start.tv_usec) / 1000.0;
+
+        printf("\n--- Performance Metrics ---\n");
+        printf("TCP Connection:   %.2f ms\n", diff_conn);
+        printf("L2 Mesh Auth:     %.2f ms (Wait for AUTH_SUCCESS)\n", diff_auth);
+        printf("Data Send:        %.2f ms (Raw Payload)\n", diff_send);
+        printf("Server ACK:       %.2f ms (Wait for Confirmation)\n", diff_ack);
+        printf("Total Net Time:   %.2f ms\n", diff_total);
+        printf("---------------------------\n");
+    }
+
+    close(sock); 
 
 cleanup_all:
     if (buffer) free(buffer);
