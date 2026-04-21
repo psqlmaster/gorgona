@@ -1,7 +1,7 @@
 /* 
+* server/snowflake.h
 * BSD 3-Clause License
 * Copyright (c) 2025, Alexander Shcheglov
-* All rights reserved. 
 */
 
 #ifndef SNOWFLAKE_H
@@ -15,10 +15,16 @@
 #define SNOWFLAKE_EPOCH 1735689600000ULL
 
 /* Global variables */
-extern atomic_uint_least16_t sequence;  /* Sequence number (12 bit, 0-4095) */
-extern uint64_t last_timestamp;         /* Last timestamp used (ms) */
+extern atomic_uint_least16_t sequence;  
+extern uint64_t last_timestamp;         
 
 /* Generating a Snowflake ID */
 uint64_t generate_snowflake_id(void);
+
+/**
+ * Extracts timestamp from ID. 
+ * Note: Implementation should be in snowflake.c
+ */
 time_t snowflake_to_timestamp(uint64_t id);
+
 #endif

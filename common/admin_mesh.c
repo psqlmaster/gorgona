@@ -36,6 +36,16 @@ void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac) {
     HMAC(EVP_sha256(), mgmt_key, MGMT_K_LEN, nonce, CHALLENGE_LEN, out_hmac, &len);
 }
 
+/* Comparison function for qsort: descending by score */
+static int mesh_cmp_nodes(const void *a, const void *b) {
+    const MeshNode *nodeA = (const MeshNode *)a;
+    const MeshNode *nodeB = (const MeshNode *)b;
+    
+    if (nodeA->metrics.gorgona_score > nodeB->metrics.gorgona_score) return -1;
+    if (nodeA->metrics.gorgona_score < nodeB->metrics.gorgona_score) return 1;
+    return 0;
+}
+
 void mesh_recalculate_scores() {
     time_t now = time(NULL);
     extern int sync_interval;
@@ -62,6 +72,10 @@ void mesh_recalculate_scores() {
         }
 
         n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY);
+        /* Sort nodes so the most reliable/fastest appear at the top of the array */
+        if (cluster_node_count > 1) {
+            qsort(cluster_nodes, cluster_node_count, sizeof(MeshNode), mesh_cmp_nodes);
+        }
     }
 }
 

@@ -187,12 +187,12 @@ void remove_recipient_at_index(int index) {
  * Updated cleanup function. 
  * Note: Must handle index externally if called in a loop.
  */
-void clean_expired_alerts(Recipient *rec) {
-    time_t now = time(NULL);
+void clean_expired_alerts_logic(Recipient *rec, time_t reference_time) {
     int expired_found = 0;
 
     for (int i = 0; i < rec->count; ) {
-        if (rec->alerts[i].active && rec->alerts[i].expire_at <= now) {
+        /* Используем переданное время reference_time вместо time(NULL) */
+        if (rec->alerts[i].active && rec->alerts[i].expire_at <= reference_time) {
             if (use_disk_db) {
                 alert_db_deactivate_alert(&rec->alerts[i]);
                 rec->waste_count++;
@@ -206,17 +206,16 @@ void clean_expired_alerts(Recipient *rec) {
         }
     }
 
-    /* 
-     * Trigger disk sync only for reclaimed waste. 
-     * We no longer trigger sync for rec->count == 0 here; 
-     * that is now handled exclusively by the global maintenance loop.
-     */
     if (use_disk_db && expired_found > 0) {
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
         if (rec->waste_count >= waste_limit) {
             alert_db_sync(rec);
         }
     }
+}
+
+void clean_expired_alerts(Recipient *rec) {
+    clean_expired_alerts_logic(rec, time(NULL));
 }
 
 void remove_oldest_alert(Recipient *rec) {
@@ -801,11 +800,18 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
  * Handles Layer 1 (Storage cleanup) and Layer 2 (Aggressive Mesh Sync).
  */
 void run_global_maintenance(void) {
-    time_t now = time(NULL);
+    time_t now = time(NULL); /* Системное время для сетевых таймаутов */
+    
+    /* 1. Определяем "Логическое время кластера" по Pulse */
+    uint64_t max_id = get_max_alert_id();
+    time_t cluster_now = (max_id > 0) ? snowflake_to_timestamp(max_id) : now;
+    
     /* --- LAYER 1: Storage & Memory Cleanup --- */
     for (int i = 0; i < recipient_count; ) {
         Recipient *rec = &recipients[i];
-        clean_expired_alerts(rec);
+        
+        /* Используем логическое время (синхронно на всех нодах) */
+        clean_expired_alerts_logic(rec, cluster_now);
 
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
         if (rec->count == 0 || rec->waste_count >= waste_limit) {
@@ -820,14 +826,14 @@ void run_global_maintenance(void) {
     /* --- LAYER 2: Administrative Mesh Maintenance --- */
     static time_t last_mesh_task = 0;
 
-    /* We use the interval specified in the configuration */
+    /* Используем системное 'now', так как это касается работы сокетов */
     if (now - last_mesh_task >= sync_interval) { 
         last_mesh_task = now;
         
         /* 1. Recalculate scores and evict dead nodes */
         mesh_run_garbage_collector();
 
-        extern int port; /* Our local listener port from gorgonad.c */
+        extern int port;
         
         /* 2. Build Peer Exchange (PEX) list */
         char pex_payload[2048];
@@ -835,7 +841,7 @@ void run_global_maintenance(void) {
         
         int neighbors_count = 0;
         for (int n = 0; n < cluster_node_count; n++) {
-            /* Share only active and responsive neighbors */
+            /* Проверка таймаута ноды по системному времени */
             if (cluster_nodes[n].status == PEER_STATUS_AUTHENTICATED && cluster_nodes[n].last_seen > (now - 300)) {
                 if (p_len < (int)sizeof(pex_payload) - 64) {
                     p_len += snprintf(pex_payload + p_len, sizeof(pex_payload) - p_len,

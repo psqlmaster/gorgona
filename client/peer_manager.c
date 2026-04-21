@@ -48,38 +48,30 @@ static void add_peer(const char *ip, int port) {
 }
 
 /**
- * Loads peers into the local candidate table.
- * Logic:
- * 1. If sync_psk is missing: Legacy mode (Static IP only).
- * 2. If sync_psk is present: Smart Mesh mode. Config IP has top priority, then cache.
+ * Populates the internal candidate table with prioritized endpoints.
+ * 
+ * Logic workflow for Smart Mesh mode:
+ * 1. MESH CACHE: Highest priority. Proven peers discovered via Gossip/PEX are 
+ *    probed first to leverage network proximity and performance scores.
+ * 2. STATIC CONFIG: Secondary priority. Serves as a fallback if the dynamic 
+ *    cache is empty or all cached nodes are unreachable.
+ * @param config Pointer to the initialized client configuration.
  */
 void peer_manager_load_cache(Config *config) {
     peer_count = 0;
     memset(known_peers, 0, sizeof(known_peers));
 
-    /* CASE 1: LEGACY MODE (L2 Disabled) */
+    /* Case A: Legacy mode fallback when Layer 2 (PSK) is not defined */
     if (config->sync_psk[0] == '\0') {
         if (config->server_ip[0] != '\0') {
             add_peer(config->server_ip, config->server_port);
         }
-        if (verbose) {
-            printf("Mesh Status: L2 disabled. Fallback to legacy static node [%s:%d]\n", 
-                   config->server_ip, config->server_port);
-        }
         return; 
     }
 
-    /* CASE 2: SMART MESH MODE (L2 Enabled) */
-    if (verbose) {
-        printf("Mesh Status: L2 enabled. Compiling endpoint candidates...\n");
-    }
+    /* Case B: Smart Mesh mode connectivity logic */
 
-    /* Priority 1: User-defined IP from config. This is our primary target. */
-    if (config->server_ip[0] != '\0') {
-        add_peer(config->server_ip, config->server_port);
-    }
-
-    /* Priority 2: Previously cached nodes from Mesh PEX intelligence */
+    /* PRIORITY 1: Distributed Intelligence (Gossip Cache) */
     FILE *fp = fopen(PEERS_CACHE_PATH, "r");
     if (fp) {
         char line[128];
@@ -88,25 +80,80 @@ void peer_manager_load_cache(Config *config) {
             char *colon = strchr(line, ':');
             if (colon) {
                 *colon = '\0';
+                /* Add dynamic peer. Due to sorting on the server side, 
+                   high-score peers appear early in the file. */
                 add_peer(line, atoi(colon + 1));
             }
         }
         fclose(fp);
     }
+
+    /* PRIORITY 2: Administrative Bootstrap (Static IP from gorgona.conf) */
+    if (config->server_ip[0] != '\0') {
+        add_peer(config->server_ip, config->server_port);
+    }
+    
+    if (verbose) {
+        printf("Mesh Status: Orchestration candidates loaded (Count: %d, Head: %s)\n", 
+               peer_count, peer_count > 0 ? known_peers[0].ip : "None");
+    }
 }
 
 /**
- * High-performance connection selector.
- * Implements 'Sticky Node' logic to bypass scanning in loop executions.
+ * High-performance connection selector with Migration Intelligence.
+ * 
+ * Logic:
+ * 1. Checks if a 'Sticky' node exists.
+ * 2. Compares the Sticky node with the current Top Priority candidate from Mesh.
+ * 3. If they differ, the Sticky cache is ignored to allow 'migration' to a 
+ *    better performing node discovered via PEX.
  */
 int peer_manager_get_best_connection(void) {
-    /* Step 0: Try to reuse a proven node from the RAM-based sticky cache */
-    int sticky_sock = try_sticky_node(verbose);
-    if (sticky_sock >= 0) {
-        /* Already in blocking mode and verified by try_sticky_node */
-        return sticky_sock;
+    char sticky_ip[INET_ADDRSTRLEN] = "";
+    int sticky_port = 0;
+    bool has_sticky = false;
+
+    /* Read current sticky node metadata without connecting yet */
+    int s_fd = open(STICKY_NODE_PATH, O_RDONLY);
+    if (s_fd >= 0) {
+        char buf[64];
+        ssize_t n = read(s_fd, buf, sizeof(buf)-1);
+        close(s_fd);
+        if (n > 0) {
+            buf[n] = '\0';
+            char *colon = strchr(buf, ':');
+            if (colon) {
+                *colon = '\0';
+                strncpy(sticky_ip, buf, INET_ADDRSTRLEN - 1);
+                sticky_port = atoi(colon + 1);
+                has_sticky = true;
+            }
+        }
     }
 
+    /* 
+     * MIGRATION CHECK:
+     * If we have mesh candidates and the Top Priority node (Head) is 
+     * different from our Sticky node, we trigger a fresh probe cycle.
+     */
+    if (has_sticky && peer_count > 0) {
+        if (strcmp(sticky_ip, known_peers[0].ip) != 0) {
+            if (verbose) {
+                printf("Mesh: Migration triggered. Better candidate [%s] found (Current sticky: %s)\n", 
+                       known_peers[0].ip, sticky_ip);
+            }
+            has_sticky = false; /* Ignore sticky to force the loop below */
+        }
+    }
+
+    /* Fast path: Use sticky node only if it's still our best choice */
+    if (has_sticky) {
+        if (verbose) printf("Mesh: Using sticky node [%s:%d]\n", sticky_ip, sticky_port);
+        int sd = connect_with_timeout(sticky_ip, sticky_port, PROBE_TIMEOUT_MS);
+        if (sd >= 0) return sd;
+    }
+
+    /* Slow path: Standard Probing Cycle */
     time_t now = time(NULL);
     if (peer_count == 0) return -1;
 
@@ -120,7 +167,6 @@ int peer_manager_get_best_connection(void) {
         }
         if (punished) continue;
 
-        /* 2. Setup Socket */
         int sd = socket(AF_INET, SOCK_STREAM, 0);
         if (sd < 0) continue;
 
@@ -131,19 +177,16 @@ int peer_manager_get_best_connection(void) {
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
         addr.sin_port = htons(known_peers[i].port);
-        if (inet_pton(AF_INET, known_peers[i].ip, &addr.sin_addr) <= 0) {
-            close(sd); continue;
-        }
+        inet_pton(AF_INET, known_peers[i].ip, &addr.sin_addr);
 
         if (verbose) {
             printf("  -> Probing: %s:%d... ", known_peers[i].ip, known_peers[i].port);
             fflush(stdout);
         }
 
-        /* 3. Connection attempt with timeout */
         int res = connect(sd, (struct sockaddr *)&addr, sizeof(addr));
         if (res < 0 && errno == EINPROGRESS) {
-            struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 }; // 1s timeout for migration probe
             fd_set wfds; FD_ZERO(&wfds); FD_SET(sd, &wfds);
             res = select(sd + 1, NULL, &wfds, NULL, &tv);
             if (res > 0) {
@@ -155,17 +198,11 @@ int peer_manager_get_best_connection(void) {
 
         if (res == 0) {
             if (verbose) printf("CONNECTED\n");
-
-            /* Restore blocking mode for data transmission */
             int f = fcntl(sd, F_GETFL, 0);
             fcntl(sd, F_SETFL, f & ~O_NONBLOCK);
             
-            struct timeval rtv = { .tv_sec = 10, .tv_usec = 0 };
-            setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
-            
-            /* Save this successful node as 'Sticky' for future calls */
+            /* Update sticky memory to the new best peer */
             save_sticky_node(known_peers[i].ip, known_peers[i].port);
-            
             return sd; 
         }
 

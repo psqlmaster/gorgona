@@ -626,25 +626,21 @@ void run_server(int server_fd) {
                                     } 
                                     /* COMMAND: status <psk> - Authenticated diagnostic report */
                                     else if (strncmp(sub->in_buffer, "status", 6) == 0) {
-                                        /* Basic authentication logic: skip "status" keyword and find the key */
                                         char *provided_psk = sub->in_buffer + 6;
-                                        while (*provided_psk == ' ') provided_psk++; /* Skip whitespace */
+                                        while (*provided_psk == ' ') provided_psk++; 
 
                                         if (provided_psk[0] == '\0' || strcmp(provided_psk, sync_psk) != 0) {
-                                            log_event("WARN", sd, sub->ip_address, sub->port, "Unauthorized status request (Invalid PSK)");
-                                            enqueue_text_only(i, "Error: Unauthorized. Usage: status <sync_psk>\n", 45);
+                                            log_event("WARN", sd, sub->ip_address, sub->port, "Unauthorized status request");
+                                            enqueue_text_only(i, "Error: Unauthorized\n", 19);
                                         } else {
+                                            /* 1. Предварительная очистка базы по логическому времени Pulse */
                                             run_global_maintenance();
-                                            /* Authentication successful - Gather detailed metrics */
-                                            
-                                            /* We increased the buffer to 4096, since the L2 table can be large */
+
                                             char status_msg[4096];
                                             int pos = 0; 
-
                                             time_t now = time(NULL);
-                                            double uptime_sec = difftime(now, server_start_time);
-                                            
-                                            /* get ip port */
+
+                                            /* Получаем IP и порт сервера */
                                             struct sockaddr_in node_addr;
                                             socklen_t node_addr_len = sizeof(node_addr);
                                             char node_ip[INET_ADDRSTRLEN] = "0.0.0.0";
@@ -654,71 +650,57 @@ void run_server(int server_fd) {
                                                 node_port = ntohs(node_addr.sin_port);
                                             }
 
-                                            /* 1. Connection metrics */
+                                            /* 2. Метрики соединений */
                                             int active_clients = 0;
                                             int authenticated_peers = 0;
                                             for (int j = 0; j < max_clients; j++) {
                                                 if (client_sockets[j] > 0) {
-                                                    if (subscribers[j].type == SUB_TYPE_PEER && subscribers[j].auth_state == AUTH_OK) {
-                                                        authenticated_peers++;
-                                                    } else if (subscribers[j].type == SUB_TYPE_CLIENT) {
-                                                        active_clients++;
+                                                    if (subscribers[j].auth_state == AUTH_OK) {
+                                                        if (subscribers[j].type == SUB_TYPE_PEER) authenticated_peers++;
+                                                        else active_clients++;
                                                     }
                                                 }
                                             }
 
-                                            /* 2. Storage metrics calculation */
-                                            int active_alerts = 0;
+                                            /* 3. Расчет метрик хранилища по живой памяти */
+                                            int live_alerts = 0;
                                             int total_waste = 0;
                                             size_t total_bytes = 0;
                                             time_t oldest_ts = 0;
 
                                             for (int r = 0; r < recipient_count; r++) {
-                                                clean_expired_alerts(&recipients[r]);
-                                                total_waste += recipients[r].waste_count;
-                                                total_bytes += recipients[r].used_size;
+                                                Recipient *rec = &recipients[r];
+                                                total_waste += rec->waste_count;
+                                                total_bytes += rec->used_size;
                                                 
-                                                for (int a = 0; a < recipients[r].count; a++) {
-                                                    if (recipients[r].alerts[a].active) {
-                                                        active_alerts++;
-                                                        /* We are looking for the time of the oldest active alert */
-                                                        if (oldest_ts == 0 || recipients[r].alerts[a].create_at < oldest_ts) {
-                                                            oldest_ts = recipients[r].alerts[a].create_at;
+                                                for (int a = 0; a < rec->count; a++) {
+                                                    if (rec->alerts[a].active) {
+                                                        live_alerts++;
+                                                        if (oldest_ts == 0 || rec->alerts[a].create_at < oldest_ts) {
+                                                            oldest_ts = rec->alerts[a].create_at;
                                                         }
                                                     }
                                                 }
                                             }
 
-                                            char oldest_time[32] = "N/A";
-                                            if (active_alerts > 0 && oldest_ts > 0) {
-                                                struct tm *tm_info = gmtime(&oldest_ts);
-                                                strftime(oldest_time, sizeof(oldest_time), "%Y-%m-%d %H:%M:%S", tm_info);
-                                            }
-
-                                            /* 3. Prepare storage-specific strings */
-                                            char disk_metrics[512] = "";
-                                            if (use_disk_db) {
-                                                snprintf(disk_metrics, sizeof(disk_metrics),
-                                                         "  - Database Size: %.2f MB\n"
-                                                         "  - Disk Waste (Awaiting Vacuum): %d\n"
-                                                         "  - Vacuum Threshold: %d%%\n",
-                                                         (double)total_bytes / (1024 * 1024), total_waste, vacuum_threshold);
-                                            }
-
-                                            int uptime_d = (int)(uptime_sec / 86400);
-                                            int uptime_h = (int)((uptime_sec / 3600) - (uptime_d * 24));
-                                            int uptime_m = (int)((uptime_sec / 60) - (uptime_d * 1440) - (uptime_h * 60));
+                                            /* 4. Форматирование временных меток (Cluster Pulse Time) */
                                             uint64_t current_max_id = get_max_alert_id();
                                             char pulse_time_str[32] = "N/A";
-                                            
+                                            char oldest_time_str[32] = "N/A";
+                                            struct tm tm_res;
+
                                             if (current_max_id > 0) {
-                                                /* Декодируем время из ID */
-                                                time_t id_time = snowflake_to_timestamp(current_max_id);
-                                                struct tm *tm_id = gmtime(&id_time);
-                                                strftime(pulse_time_str, sizeof(pulse_time_str), "%Y-%m-%d %H:%M:%S UTC", tm_id);
+                                                time_t pulse_t = snowflake_to_timestamp(current_max_id);
+                                                if (gmtime_r(&pulse_t, &tm_res)) strftime(pulse_time_str, 32, "%Y-%m-%d %H:%M:%S", &tm_res);
+                                            }
+                                            if (oldest_ts > 0) {
+                                                if (gmtime_r(&oldest_ts, &tm_res)) strftime(oldest_time_str, 32, "%Y-%m-%d %H:%M:%S", &tm_res);
                                             }
 
-                                            /* 4. Final Assemble - Part 1: L1 Stats */
+                                            double uptime_sec = difftime(now, server_start_time);
+                                            int ud = (int)(uptime_sec/86400), uh = (int)(uptime_sec/3600)%24, um = (int)(uptime_sec/60)%60;
+
+                                            /* 5. Финальная сборка в вашем оригинальном формате */
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
                                                 "--- Gorgona Node [%s %d] Detailed Status ---\n" 
                                                 "Version: %s\n"
@@ -731,68 +713,43 @@ void run_server(int server_fd) {
                                                 "  - Unique Recipients (Keys): %d\n"
                                                 "  - Active Alerts (Live): %d\n"
                                                 "  - Cluster Pulse (MaxID): %" PRIu64 "\n"
-                                                "%s" /* disk_metrics: Size, Waste, Threshold */
+                                                "  - Database Size: %.2f MB\n"
+                                                "  - Disk Waste (Awaiting Vacuum): %d\n"
+                                                "  - Vacuum Threshold: %d%%\n"
                                                 "  - History Starts From:  [%s UTC]\n"
-                                                "  - Last Data Ingest:     [%s]\n"
+                                                "  - Last Data Ingest:     [%s UTC]\n"
                                                 "Operational Configuration:\n"
                                                 "  - Max Alerts per Key: %d\n"
                                                 "  - Max Message Size: %zu MB\n"
                                                 "  - Logging Level: %s\n",
-                                                node_ip,                                    /* %s */
-                                                node_port,                                  /* %d */
-                                                VERSION ? VERSION : "1.0",                  /* %s */
-                                                uptime_d, uptime_h, uptime_m,               /* %d %d %d */
-                                                active_clients, max_clients,                /* %d %d */
-                                                authenticated_peers, remote_peer_count,     /* %d %d */
-                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)", /* %s */
-                                                recipient_count,                            /* %d */
-                                                active_alerts,                              /* %d */
-                                                current_max_id,                             /* %" PRIu64 " */
-                                                disk_metrics,                               /* %s */
-                                                oldest_time,                                /* %s (History Starts From) */
-                                                pulse_time_str,                             /* %s (Last Data Ingest) */
-                                                max_alerts,                                 /* %d */
-                                                (size_t)(max_message_size / (1024 * 1024)), /* %zu */
-                                                log_level                                   /* %s */
+                                                node_ip, node_port, VERSION, ud, uh, um,
+                                                active_clients, max_clients,
+                                                authenticated_peers, remote_peer_count,
+                                                use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
+                                                recipient_count, live_alerts, current_max_id,
+                                                (double)total_bytes / (1024 * 1024), total_waste, vacuum_threshold,
+                                                oldest_time_str, pulse_time_str,
+                                                max_alerts, (size_t)(max_message_size / (1024 * 1024)), log_level
                                             );
 
-                                            /* 5. Final Assemble - Part 2: L2 Management Mesh */
-                                            mesh_recalculate_scores(); /* Update the metrics before outputting */
-                                            
+                                            /* 6. Секция L2 Топологии */
+                                            mesh_recalculate_scores(); 
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "--- L2 Cluster Topology (Known nodes: %d) ---\n", cluster_node_count);
                                             
-                                            if (cluster_node_count == 0) {
-                                                pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
-                                                                "  (No mesh peers discovered or configured)\n");
-                                            } else {
-                                                for (int n = 0; n < cluster_node_count; n++) {
-                                                    MeshNode *node = &cluster_nodes[n];
-                                                    
-                                                    /* Buffer overflow protection (leaving room for the ending) */
-                                                    if (pos >= sizeof(status_msg) - 256) {
-                                                        pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, "  ... [Table Truncated]\n");
-                                                        break;
-                                                    }
-                                                    
-                                                    char *origin = "PEX ";
-                                                    if (node->is_seed) origin = "SEED";
-                                                    else if (node->is_cached) origin = "CACHE";
-                                                    pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
-                                                        "  [%-15s:%-5d] Score: %4.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
-                                                        node->ip, node->port, 
-                                                        node->metrics.gorgona_score,
-                                                        node->metrics.last_rtt, 
-                                                        node->metrics.rolling_avg_speed / 1024.0,
-                                                        origin, 
-                                                        (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD"); 
-                                                }
+                                            for (int n = 0; n < cluster_node_count && pos < (int)sizeof(status_msg) - 256; n++) {
+                                                MeshNode *node = &cluster_nodes[n];
+                                                pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
+                                                    "  [%-15s:%-5d] Score: %.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
+                                                    node->ip, node->port, node->metrics.gorgona_score,
+                                                    node->metrics.last_rtt, node->metrics.rolling_avg_speed / 1024.0,
+                                                    node->is_seed ? "SEED" : (node->is_cached ? "CACHE" : "PEX "),
+                                                    (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD"); 
                                             }
                                             
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "-----------------------------------------------------\n");
 
-                                            /* We are sending the fully assembled message */
                                             enqueue_text_only(i, status_msg, pos);
                                         }
                                         sub->close_after_send = true;
