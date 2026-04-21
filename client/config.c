@@ -50,10 +50,20 @@ void read_config(Config *config, int verbose) {
     char line[512];
 
     while (fgets(line, sizeof(line), conf_fp)) {
+        /* 
+         * 1. Remove comments immediately: anything following a '#' is ignored.
+         * This ensures parameters like sync_psk don't include trailing comments.
+         */
+        char *comment_ptr = strchr(line, '#');
+        if (comment_ptr) {
+            *comment_ptr = '\0';
+        }
+
+        /* 2. Trim leading and trailing whitespace from the remaining content */
         char *trimmed = trim_spaces(line);
         
-        /* Skip empty lines and comments */
-        if (*trimmed == '\0' || *trimmed == '#') continue;
+        /* Skip lines that are now empty */
+        if (*trimmed == '\0') continue;
 
         /* Parse section headers [section] */
         if (trimmed[0] == '[') {
@@ -62,7 +72,7 @@ void read_config(Config *config, int verbose) {
                 *end = '\0';
                 char *sec = trim_spaces(trimmed + 1);
 
-                /* Handle exec_commands sections. Supports both:
+                /* Handle exec_commands sections. Supports:
                    [exec_commands] -> commands available to everyone
                    [exec_commands:KEY] -> commands available only for KEY */
                 if (strncmp(sec, "exec_commands", 13) == 0) {
@@ -71,11 +81,11 @@ void read_config(Config *config, int verbose) {
                     
                     char *colon = strchr(sec, ':');
                     if (colon) {
-                        /* Specific key required */
+                        /* Specific authentication key required for this section */
                         strncpy(current_required_key, trim_spaces(colon + 1), sizeof(current_required_key) - 1);
                         current_required_key[sizeof(current_required_key) - 1] = '\0';
                     } else {
-                        /* No specific key (public section) */
+                        /* Public section (no specific required_key) */
                         current_required_key[0] = '\0';
                     }
                     
@@ -88,7 +98,7 @@ void read_config(Config *config, int verbose) {
                     current_required_key[0] = '\0';
                 } 
                 else {
-                    /* Reset flags for any other sections */
+                    /* Reset flags for unknown sections */
                     in_server_section = 0;
                     in_exec_section = 0;
                 }
@@ -110,12 +120,13 @@ void read_config(Config *config, int verbose) {
                 } else if (strcmp(key, "port") == 0) {
                     config->server_port = atoi(value);
                 } else if (strcmp(key, "sync_psk") == 0) {
+                    /* value is now clean of comments thanks to the global strip at step 1 */
                     strncpy(config->sync_psk, value, sizeof(config->sync_psk) - 1);
                     config->sync_psk[sizeof(config->sync_psk) - 1] = '\0';
                 }
             } 
             else if (in_exec_section) {
-                /* Handle 'key = value' */
+                /* Handle 'key = value' parameter overrides inside the section */
                 if (strcmp(key, "key") == 0) {
                     strncpy(current_required_key, value, sizeof(current_required_key) - 1);
                     current_required_key[sizeof(current_required_key) - 1] = '\0';
@@ -124,23 +135,22 @@ void read_config(Config *config, int verbose) {
 
                 if (config->exec_count < MAX_EXEC_COMMANDS) {
                     ExecCommand *cmd = &config->exec_commands[config->exec_count];
-                    cmd->time_limit = 0; /* By default, there is no limit */
-                    /* Replace everything to the right of the #, including the # itself, with the end of the line */
-                    char *comment_ptr = strchr(value, '#');
-                    if (comment_ptr) {
-                        *comment_ptr = '\0';
-                    }
-                    /* find time_limit in the remaining (empty) string */
+                    cmd->time_limit = 0; /* No limit by default */
+                    
+                    /* 
+                     * Search for the "time_limit =" token in the value string.
+                     * Since comments are already removed, we only look for our metadata.
+                     */
                     char *limit_ptr = strstr(value, "time_limit =");
                     if (limit_ptr) {
-                        /* Extract the number */
+                        /* Extract the numerical value */
                         cmd->time_limit = atoi(limit_ptr + 12);
-                        /* Trim the line before “time_limit =” so that only the path remains */
+                        /* Null-terminate the string before metadata to isolate the binary path */
                         *limit_ptr = '\0';
                     }
                     char *cleaned_path = trim_spaces(value);
 
-                    /* Копируем результат в структуру */
+                    /* Populate the command structure */
                     strncpy(cmd->key, key, sizeof(cmd->key) - 1);
                     cmd->key[sizeof(cmd->key) - 1] = '\0';
                     
@@ -151,8 +161,9 @@ void read_config(Config *config, int verbose) {
                     cmd->required_key[sizeof(cmd->required_key) - 1] = '\0';
 
                     if (verbose) {
-                        printf("Config: Loaded exec_command[%d]: key='%s' path='%s' limit=%ds\n",
-                               config->exec_count, cmd->key, cmd->value, cmd->time_limit);
+                        printf("Config: Loaded exec_command[%d]: key='%s' path='%s' limit=%ds req_key='%s'\n",
+                               config->exec_count, cmd->key, cmd->value, cmd->time_limit,
+                               cmd->required_key[0] ? cmd->required_key : "(any)");
                     }
                     config->exec_count++;
                 }

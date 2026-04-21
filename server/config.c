@@ -27,15 +27,6 @@ typedef enum {
  * Supports two main sections:
  * [server]      - General server settings (port, limits, logging, etc.)
  * [replication] - P2P synchronization settings (PSK, peer list)
- * 
- * @param port Output for server listen port
- * @param max_alerts Output for max alerts per recipient
- * @param max_clients Output for max simultaneous connections
- * @param max_log_size Output for log rotation threshold (in bytes)
- * @param log_level Output buffer for the logging verbosity level
- * @param max_message_size Output for max allowed incoming payload size
- * @param use_disk_db Output flag for persistent storage (boolean)
- * @param vacuum_threshold Output for the database auto-cleanup percentage
  */
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
                  char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, int *sync_interval) {
@@ -71,13 +62,19 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
 
     /* Line-by-line parsing loop */
     while (fgets(line, sizeof(line), conf_fp)) {
-        /* Remove inline comments (anything after #) */
+        /* 
+         * 1. GLOBAL COMMENT STRIPPING
+         * Remove inline comments (anything starting from #).
+         * This ensures that "key = value # comment" becomes "key = value "
+         */
         char *comment = strchr(line, '#');
         if (comment) {
             *comment = '\0';
         }
 
-        /* Skip leading whitespace to find the start of the key or section */
+        /* 2. FIND START OF DATA
+         * Skip leading whitespace to find the start of the key or section 
+         */
         char *start = line;
         while (*start && isspace((unsigned char)*start)) {
             start++;
@@ -88,7 +85,9 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
             continue;
         }
 
-        /* Detect and switch between [sections] */
+        /* 3. SECTION DETECTION
+         * Detect and switch between [sections] 
+         */
         if (*start == '[') {
             if (strncmp(start, "[server]", 8) == 0) {
                 current_section = SECTION_SERVER;
@@ -100,7 +99,11 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
             continue;
         }
 
-        /* Tokenize the line into Key and Value using '=' as the primary delimiter */
+        /* 4. TOKENIZATION
+         * Tokenize the line into Key and Value using '=' and whitespaces as delimiters.
+         * Using " \t\r\n" as delimiters in strtok ensures that any trailing spaces 
+         * before the now-deleted '#' are ignored.
+         */
         char *key = strtok(start, " =\t\r\n");
         char *value = strtok(NULL, " =\t\r\n");
         
@@ -108,11 +111,13 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
             continue;
         }
 
-        /* Sanitize key and value by trimming trailing whitespace */
+        /* Sanitize key and value (safety trim) */
         trim_string(key);
         trim_string(value);
 
-        /* Parse keys based on the active section context */
+        /* 5. DATA ASSIGNMENT
+         * Parse keys based on the active section context 
+         */
         if (current_section == SECTION_SERVER) {
             if (strcmp(key, "port") == 0) { 
                 *port = atoi(value);
@@ -145,7 +150,10 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
                 if (*sync_interval < 1) *sync_interval = 1;
             }
             else if (strcmp(key, "sync_psk") == 0) { 
-                /* Pre-shared key for inter-server authentication */
+                /* 
+                 * Pre-shared key for inter-server authentication.
+                 * Now value is guaranteed to be only the key string, even if a comment followed.
+                 */
                 strncpy(sync_psk, value, sizeof(sync_psk) - 1);
                 sync_psk[sizeof(sync_psk) - 1] = '\0';
             } 
@@ -153,28 +161,26 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
                 /* Peer format: IP:PORT (e.g., 127.0.0.1:7777) */
                 char *colon = strchr(value, ':');
                 if (colon) {
-                    *colon = '\0'; // Теперь 'value' указывает на IP, а 'colon + 1' на порт
+                    *colon = '\0'; /* 'value' is now IP, 'colon + 1' is port string */
                     int p_port = atoi(colon + 1);
 
-                    /* 1. Инициализируем узел в новой Mesh-таблице (Layer 2) */
+                    /* 1. Initialize node in the Mesh table (Layer 2) */
                     if (cluster_node_count < (MAX_PEERS * 4)) {
                         MeshNode *n = &cluster_nodes[cluster_node_count++];
                         memset(n, 0, sizeof(MeshNode));
                         
                         strncpy(n->ip, value, INET_ADDRSTRLEN - 1);
                         n->port = p_port;
-                        n->is_seed = true;            // Эти узлы из конфига — скелет сети
+                        n->is_seed = true;            /* Seed nodes are the backbone */
                         n->status = PEER_STATUS_OFFLINE;
-                        n->discovered_at = time(NULL); // Для GC и отладки
+                        n->discovered_at = time(NULL); 
                         n->last_seen = time(NULL);
                         
-                        // Лог для отладки (будет виден в режиме verbose)
                         if (verbose) {
                             printf("Config: Added seed node %s:%d to Layer 2 table\n", n->ip, n->port);
                         }
                     }
-                    /* 2. Сохраняем в старый массив для совместимости (legacy connection loop) */
-                    /* Важно: здесь проверяем старую границу MAX_PEERS */
+                    /* 2. Keep in legacy array for compatibility (older connection loops) */
                     if (remote_peer_count < MAX_PEERS) {
                         strncpy(remote_peers[remote_peer_count].ip, value, INET_ADDRSTRLEN - 1);
                         remote_peers[remote_peer_count].port = p_port;
@@ -187,6 +193,6 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
         }
     }
 
-    /* Cleanup */
+    /* Cleanup and finalize */
     fclose(conf_fp);
 }
