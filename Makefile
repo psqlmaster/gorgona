@@ -28,7 +28,7 @@ CLIENT_SRC  := client/gorgona.c client/globals.c client/alert_send.c \
 
 SERVER_SRC  := server/gorgonad.c server/config.c server/gorgona_utils.c \
                server/server_handler.c server/snowflake.c server/alert_db.c \
-               server/commands.c $(COMMON_SRC)
+               server/commands.c server/metrics.c $(COMMON_SRC)
 
 # --- Object File Logic ---
 CLIENT_OBJ  := $(CLIENT_SRC:.c=.client.o)

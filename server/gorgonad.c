@@ -19,6 +19,7 @@
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include "admin_mesh.h"
+#include "metrics.h"
 
 int verbose = 0;
 int port;  
@@ -130,6 +131,7 @@ int main(int argc, char *argv[]) {
         printf("DEBUG: sync_interval applied: %d seconds\n", sync_interval);
     }
     mesh_init(sync_psk);
+    metrics_init_ssl(); 
     mesh_load_peers_cache();
     log_event("INFO", -1, NULL, 0, "Layer 2: Management Plane Initialized with PSK fingerprint");
 

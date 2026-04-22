@@ -8,6 +8,7 @@
 #include "gorgona_utils.h"
 #include "admin_mesh.h" 
 #include "snowflake.h"
+#include "metrics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +17,6 @@
 #include <netinet/tcp.h>
 #include <sys/select.h>
 #include <errno.h>
-#include <ctype.h>
 #include <time.h>
 #include <stdbool.h>
 #include <fcntl.h>
@@ -30,7 +30,7 @@ extern char log_level[32];
 extern int client_sockets[];
 extern Subscriber subscribers[];
 
-static time_t server_start_time = 0;
+time_t server_start_time = 0;
 
 /*
  * Configures TCP Keepalive to maintain connection stability
@@ -40,9 +40,9 @@ static void set_tcp_keepalive(int fd) {
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
 #ifdef __linux__
-    int idle = 30;     // Начинать проверку через 30 сек простоя
-    int interval = 5;  // Интервал между пробами 5 сек
-    int keep_count = 3; // 3 неудачных пробы = обрыв
+    int idle = 30;     /* Start the check after 30 seconds of inactivity */ 
+    int interval = 5;  /* The interval between samples is 5 seconds */ 
+    int keep_count = 3; /* 3 failed attempts = failure */
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
@@ -525,69 +525,83 @@ void run_server(int server_fd) {
                         if (!sub->in_buffer) {
                             log_event("ERROR", sd, sub->ip_address, sub->port, "Memory allocation failed");
                             cleanup_subscriber(i); 
-                            return;
+                            continue;
                         }
                         sub->in_pos = 0;
                     }
 
-                    char byte;
-                    valread = read(sd, &byte, 1);
+                    char peek_byte;
+                    /* PEEK: look at the first byte without removing it from the socket queue */
+                    valread = recv(sd, &peek_byte, 1, MSG_PEEK);
+                    
                     if (valread > 0) {
+                        unsigned char first_byte = (unsigned char)peek_byte;
+
+                        /* 1. DETECTION OF HTTPS (0x16 = TLS Handshake) */
+                        if (first_byte == 0x16) {
+                            if (verbose) log_event("INFO", sd, sub->ip_address, sub->port, "HTTPS metrics probe detected. Upgrading to SSL.");
+                            
+                            int current_sd = sd;
+                            /* 1.Remove from the active customers table so that select() no longer affects it */ 
+                            client_sockets[i] = 0; 
+                            /* 2.IMPORTANT: We are returning the socket to blocking mode for OpenSSL to operate */ 
+                            int flags = fcntl(current_sd, F_GETFL, 0);
+                            fcntl(current_sd, F_SETFL, flags & ~O_NONBLOCK);
+                            /* 3. We clear the structure and call the handler */ 
+                            if (sub->in_buffer) free(sub->in_buffer);
+                            memset(sub, 0, sizeof(Subscriber));
+                            handle_https_metrics_request(current_sd);
+                            continue;
+                        }
+
+                        /* 2. GORGONA CORE PROTOCOLS (Binary/Text) */
+                        char byte; /* Declared and initialized via read() below */
+                        if (read(sd, &byte, 1) <= 0) {
+                            cleanup_subscriber(i);
+                            continue;
+                        }
+
+                        /* 3. DETECTION OF PLAIN HTTP (GET ) */
+                        if (byte == 'G') {
+                            /* If Prometheus/User comes via plain HTTP, send 403 and close */
+                            const char *reject = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nPlease use HTTPS (Port 7777).\r\n";
+                            send(sd, reject, strlen(reject), 0);
+                            cleanup_subscriber(i);
+                            continue;
+                        }
+
+                        /* 4. PROCESS GORGONA PAYLOAD (L1 DATA) */
                         sub->in_buffer[sub->in_pos++] = byte;
-                        unsigned char first_byte = (unsigned char)sub->in_buffer[0];
+                        unsigned char protocol_first_byte = (unsigned char)sub->in_buffer[0];
 
-                        /** 
-                         * PROTOCOL SNIFFER
-                         * Distinguishes between Binary Length Headers and Text-based Commands.
-                         */
-
-                        /* 1. BINARY MODE DETECTION */
-                        /* Since max_message_size is typically < 16MB, the first byte of 
-                           a valid 4-byte big-endian length should be 0x00. 
-                           This effectively rejects TLS (0x16), SSH (0x53), etc. */
-                        if (first_byte < 32 && first_byte != '\n' && first_byte != '\r' && first_byte != '\t') {
+                        /* --- BINARY MODE DETECTION --- */
+                        if (protocol_first_byte < 32 && protocol_first_byte != '\n' && protocol_first_byte != '\r' && protocol_first_byte != '\t') {
                             if (sub->in_pos == 4) {
                                 uint32_t temp_len;
                                 memcpy(&temp_len, sub->in_buffer, 4);
                                 temp_len = ntohl(temp_len);
-                                log_event("DEBUG", sd, sub->ip_address, sub->port, 
-                                          "Binary header detected. Expected length: %u", temp_len);
-                                /* VALIDATION: Check if length is within allowed bounds */
+                                
                                 if (temp_len > max_message_size || temp_len == 0) {
                                     char err_size[256];
-                                    /* Creating a detailed error message */
-                                    int l = snprintf(err_size, sizeof(err_size), 
-                                                     "Error: Message size (%u) exceeds limit (%zu).\n", 
-                                                     temp_len, max_message_size);
+                                    int l = snprintf(err_size, sizeof(err_size), "Error: Message size (%u) exceeds limit.\n", temp_len);
                                     enqueue_message(i, err_size, l);
                                     sub->close_after_send = true; 
-                                    log_event("ERROR", sd, sub->ip_address, sub->port, 
-                                              "Protocol Violation: Declared length %u exceeds max limit %zu. Dropping connection.", 
-                                              temp_len, max_message_size);
-                                    if (sub->in_buffer) free(sub->in_buffer);
-                                    sub->in_buffer = NULL;
-                                    sub->in_pos = 0;
                                     continue; 
                                 }
 
-                                /* Reallocate buffer to match the exact expected binary message size */
                                 sub->expected_msg_len = temp_len;
                                 char *new_binary_buf = malloc(sub->expected_msg_len + 1);
-                                if (!new_binary_buf) {
-                                    log_event("ERROR", sd, sub->ip_address, sub->port, "Allocation failed for payload");
-                                    cleanup_subscriber(i);
-                                    return; 
+                                if (new_binary_buf) {
+                                    free(sub->in_buffer);
+                                    sub->in_buffer = new_binary_buf;
+                                    sub->in_pos = 0;
+                                    sub->read_state = READ_MSG;
                                 }
-
-                                free(sub->in_buffer);
-                                sub->in_buffer = new_binary_buf;
-                                sub->in_pos = 0;
-                                sub->read_state = READ_MSG;
                                 continue;
                             }
                         } 
-                        /* TEXT MODE DETECTION */
-                        else if (first_byte >= 32 || first_byte == '\n' || first_byte == '\r' || first_byte == '\t') {
+                        /* --- TEXT MODE DETECTION --- */
+                        else if (protocol_first_byte >= 32 || protocol_first_byte == '\n' || protocol_first_byte == '\r' || protocol_first_byte == '\t') {
                             if (byte == '\r') {
                                 sub->in_pos--; /* Ignore carriage returns */
                                 continue;
@@ -599,14 +613,9 @@ void run_server(int server_fd) {
                                 if (strlen(sub->in_buffer) > 0) {
                                     log_event("DEBUG", sd, sub->ip_address, sub->port, "Text command received: %s", sub->in_buffer);
 
-                                    /* COMMAND: help - Anonymous command list (no version disclosure) */
+                                    /* Command Handlers (info, help, status...) */
                                     if (strcmp(sub->in_buffer, "help") == 0) {
-                                        char h_msg[] = "--- Gorgona Node Help ---\n"
-                                                       "Commands available:\n"
-                                                       "  help           - Show this list\n"
-                                                       "  info           - Show node uptime\n"
-                                                       "  status <psk>   - Show detailed node metrics (requires authentication)\n"
-                                                       "-------------------------\n";
+                                        const char *h_msg = "--- Gorgona Node Help ---\nCommands: help, info, status <psk>\n";
                                         enqueue_text_only(i, h_msg, strlen(h_msg));
                                         sub->close_after_send = true;
                                     } 
@@ -683,7 +692,7 @@ void run_server(int server_fd) {
                                                 }
                                             }
 
-                                            /* 4. Форматирование временных меток (Cluster Pulse Time) */
+                                            /* 4. Formatting of Time Stamps (Cluster Pulse Time) */
                                             uint64_t current_max_id = get_max_alert_id();
                                             char pulse_time_str[32] = "N/A";
                                             char oldest_time_str[32] = "N/A";
