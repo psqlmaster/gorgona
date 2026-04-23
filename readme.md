@@ -801,53 +801,6 @@ The dashboard provides insights into:
 
 ---
 
-### 5. Add "Monitoring & Observability" Section
-(Insert this before the "Future Plans" section)
-
-#### Monitoring & Observability
-
-`gorgona` features an integrated metrics exporter compatible with **Prometheus**. This allows for real-time tracking of the P2P network state, node load, and message distribution intensity.
-
-**Key Metrics Tracked:**
-- **Active Alerts**: Total count of live and locked messages.
-- **P2P Synchronization**: MaxID tracking across the cluster to ensure data consistency.
-- **Node Health (Gorgona Score)**: Real-time RTT, throughput, and penalty status for all peers.
-- **Resource Usage**: Memory-mapped storage size and disk waste (vacuum status).
-
-##### Secure Access to Metrics
-The metrics endpoint operates over HTTPS. Before starting the server, you must generate the required certificates:
-```bash
-bash server/gen_server_certs.sh
-```
-
-Access to metrics is protected by HTTP Basic Auth. Use `gorgona` as the username and your `sync_psk` as the password:
-```bash
-curl -k -u gorgona:BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3 https://64.188.70.158:7777/metrics
-```
-
-##### Grafana Dashboard
-A pre-configured dashboard for cluster visualization is available here:
-[📊 Gorgona Core Metrics Dashboard](http://46.138.247.148:3000/d/ad7rr5j/gorgona-core-metrics?orgId=1&from=now-6h&to=now&timezone=browser&refresh=5m)
-
-The dashboard provides insights into:
-- **Cluster Pulse**: The propagation speed of data between nodes.
-- **Network Topology**: Visual status of "UP", "DEAD", and "PENALIZED" peers.
-- **Throughput Metrics**: Real-time I/O performance of the distributed database.
-
----
-
-### Final Check of the Script Location
-In the **Installation** section, I suggest adding a small sub-block:
-
-#### Server SSL Setup
-To enable the secure management plane and monitoring, generate self-signed certificates:
-```bash
-cd gorgona
-bash server/gen_server_certs.sh
-# This creates server.crt and server.key in the current directory, 
-# which gorgonad uses for the HTTPS metrics endpoint.
-```
-
 #### Future Plans & Evolution
 
 `gorgona` has evolved from a standalone server into a **fully decentralized, distributed system**. The current version features a custom, zero-dependency Active-Active P2P replication engine with mutual state reconciliation and automatic self-healing connections.
