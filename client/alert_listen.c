@@ -221,7 +221,7 @@ void daemon_exec(const char *command, int verbose) {
     }
 }
 
-static void execute_pending_alert(PendingAlert *pa, int verbose, Config *config, int do_execute, int daemon_exec_flag) {
+static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Config *config, int do_execute, int daemon_exec_flag) {
     size_t encrypted_len, encrypted_key_len, iv_len, tag_len;
     unsigned char *encrypted = base64_decode(pa->encrypted_text, &encrypted_len);
     unsigned char *encrypted_key_dec = base64_decode(pa->encrypted_key, &encrypted_key_len);
@@ -314,6 +314,47 @@ cleanup:
     free(tag_dec);
 }
 
+/* 
+ * A helper function that does the same thing as `send_alert`, 
+ * but without opening a new socket or parsing the arguments 
+ */
+static void internal_reply_error(int sock, const char *target_hash, const char *msg, int verbose) {
+    char pub_path[256];
+    snprintf(pub_path, sizeof(pub_path), "/etc/gorgona/%s.pub", target_hash);
+
+    unsigned char *enc = NULL, *enc_key = NULL, *iv = NULL, *tag = NULL;
+    size_t e_len, k_len, i_len, t_len;
+
+    if (encrypt_message(msg, &enc, &e_len, &enc_key, &k_len, &iv, &i_len, &tag, &t_len, pub_path, verbose) != 0) {
+        return;
+    }
+
+    char *e_b64 = base64_encode(enc, e_len);
+    char *k_b64 = base64_encode(enc_key, k_len);
+    char *i_b64 = base64_encode(iv, i_len);
+    char *t_b64 = base64_encode(tag, t_len);
+
+    time_t now = time(NULL);
+    size_t needed = strlen(target_hash) + strlen(e_b64) + strlen(k_b64) + 
+                    strlen(i_b64) + strlen(t_b64) + 128; 
+    char *payload = malloc(needed);
+    if (payload) {
+        int total = snprintf(payload, needed, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+                             target_hash, (long)now, (long)(now + 3600), 
+                             e_b64, k_b64, i_b64, t_b64);
+        
+        if (total > 0) {
+            uint32_t net_len = htonl((uint32_t)total);
+            send(sock, &net_len, 4, MSG_NOSIGNAL);
+            send(sock, payload, (size_t)total, MSG_NOSIGNAL);
+        }
+        free(payload);
+    }
+
+    free(enc); free(enc_key); free(iv); free(tag);
+    free(e_b64); free(k_b64); free(i_b64); free(t_b64);
+}
+
 /**
  * Parses the raw server response and processes incoming alert data.
  * 
@@ -329,7 +370,7 @@ cleanup:
  * @param config Pointer to the configuration containing execution ACLs and scripts.
  * @param daemon_exec_flag If true, commands are executed as background processes.
  */
-void parse_response(const char *response, const char *expected_pubkey_hash_b64, 
+void parse_response(int sock, const char *response, const char *expected_pubkey_hash_b64, 
                     int verbose, int execute, Config *config, int daemon_exec_flag) {
     /* -------------------------------------------------------------------------
      * 1. LAYER 2 DECRYPTION (New Block)
@@ -608,8 +649,38 @@ void parse_response(const char *response, const char *expected_pubkey_hash_b64,
                     daemon_exec(final_cmd, verbose);
                 } else {
                     if (verbose) printf("Execution: Running: %s\n", final_cmd);
+                    
                     int res = system(final_cmd);
-                    if (res != 0 && verbose) fprintf(stderr, "Execution: Process exited with code %d\n", res);
+                    int exit_status = WEXITSTATUS(res);
+
+                    /* 
+                     * 124 - стандартный код timeout. 
+                     * 137 - если таймаут убил процесс через KILL (128 + SIGKILL).
+                     */
+                    if (WIFEXITED(res) && (exit_status == 124 || exit_status == 137)) {
+                        char feedback[512];
+                        int limit = 0;
+
+                        /* Ищем, какой лимит времени был задан в конфиге для этой команды */
+                        for (int j = 0; j < config->exec_count; j++) {
+                            if (strncmp(plaintext, config->exec_commands[j].key, strlen(config->exec_commands[j].key)) == 0) {
+                                limit = config->exec_commands[j].time_limit;
+                                break;
+                            }
+                        }
+
+                        snprintf(feedback, sizeof(feedback), 
+                                 "Error: execution timed out! Limit in config file for this command: %d seconds. Command aborted.", 
+                                 limit);
+                        
+                        fprintf(stderr, "Alert ID %" PRIu64 ": %s\n", id, feedback);
+
+                        /* ОТПРАВКА ЗАШИФРОВАННОГО ОТВЕТА ОБРАТНО ОТПРАВИТЕЛЮ */
+                        internal_reply_error(sock, pubkey_hash_b64, feedback, verbose);
+                    } 
+                    else if (res != 0 && verbose) {
+                        fprintf(stderr, "Execution: Process exited with code %d\n", exit_status);
+                    }
                 }
                 free(final_cmd);
             } else if (verbose) {
@@ -865,7 +936,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                     if ((*prev)->unlock_at <= now && (*prev)->expire_at > now) {
                         PendingAlert *to_exec = *prev;
                         *prev = to_exec->next;
-                        execute_pending_alert(to_exec, verbose, &config, execute, daemon_exec_flag);
+                        execute_pending_alert(sock, to_exec, verbose, &config, execute, daemon_exec_flag);
                         free(to_exec->pubkey_hash_b64); free(to_exec->encrypted_text);
                         free(to_exec->encrypted_key); free(to_exec->iv);
                         free(to_exec->tag); free(to_exec);
@@ -911,7 +982,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 }
                 resp_buffer[resp_len] = '\0';
 
-                parse_response(resp_buffer, current_pubkey_hash, verbose, execute, &config, daemon_exec_flag);
+                parse_response(sock, resp_buffer, current_pubkey_hash, verbose, execute, &config, daemon_exec_flag); 
 
                 if (strncmp(resp_buffer, "ALERT|", 6) == 0) {
                     received_any_message = 1;
