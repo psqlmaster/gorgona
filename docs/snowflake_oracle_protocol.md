@@ -28,7 +28,7 @@ During the mesh bootstrap, nodes perform a decentralized setup.
 4. **Replication:** The doubly-encrypted payload is replicated across all nodes in the mesh (High Availability).
 
 ### Phase II: The Embargo (Storage)
-While $Now < T_{future}$, the payload is mathematically undecryptable. Even if an attacker seizes the recipient's RSA key and the raw database from multiple nodes, the $K_{time}$ does not exist yet. It cannot be derived until the nodes produce their partial signatures.
+While $Now < T_{future}$, the payload is mathematically undecryptable. Even if an attacker seizes the recipients RSA key and the raw database from multiple nodes, the $K_{time}$ does not exist yet. It cannot be derived until the nodes produce their partial signatures.
 
 ### Phase III: Time-Consensus Verification (P2P)
 When a client requests the message at $T_{future}$:
@@ -61,3 +61,4 @@ When a client requests the message at $T_{future}$:
 
 **Summary:**
 The **Snowflake Oracle Protocol** moves Gorgona from a *server-enforced* time-lock to a *mathematically-enforced* time-lock. It ensures that the only way to read a message from the future is for the P2P mesh to reach a collective consensus that the future has indeed arrived.
+Which makes it possible for the data owner to access the data, even if they possess the keys, only once a valid future has been reached, as confirmed by the network’s quorum.
