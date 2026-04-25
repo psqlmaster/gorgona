@@ -811,10 +811,11 @@ The dashboard provides insights into:
 - **Decentralized Sync**: Multi-node synchronization without external databases (Zero external dependencies).
 - **Mutual History Reconciliation**: Automatic "catch-up" logic for nodes returning from offline state.
 - **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
+- **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point. [See p2p mash](docs/roadmap_p2p_mash.md).
+- **Performance-Driven Routing**: Real-time monitoring of **Effective Throughput (Bytes/sec)**. Moving beyond simple Pings to intelligent traffic steering that prioritizes peers based on actual hardware performance (Disk/CPU) and network health.
 
 **Next Frontiers:**
-- **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point. [See roadmap p2p mash](docs/roadmap_p2p_mash.md).
-- **Performance-Driven Routing**: Real-time monitoring of **Effective Throughput (Bytes/sec)**. Moving beyond simple Pings to intelligent traffic steering that prioritizes peers based on actual hardware performance (Disk/CPU) and network health.
+- **Snowflake Oracle Protocol**: Implementing pairing-based threshold cryptography (BLS) to ensure time-locked payloads remain mathematically undecryptable until a verifiable P2P consensus of $K$-of-$N$ nodes reconstructs the decryption key upon reaching a target Snowflake ID. [White Paper: The Snowflake Oracle Protocol](docs/snowflake_oracle_protocol.md)
 - **Symmetric Sidecar Mesh**: Achieving ultimate resilience by deploying Gorgonad on every node as a local proxy. [See prom_push roadmap](plugins/prom_push/readme.md).
 - **High-Concurrency Engine**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support thousands of simultaneous P2P connections per node with zero overhead.
 - **Consensus Hardening**: Exploring lightweight **Raft** or **Paxos** implementations for atomic cluster-wide configuration changes and state synchronization.
