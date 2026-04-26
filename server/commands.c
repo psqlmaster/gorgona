@@ -12,8 +12,8 @@
 #include <sys/time.h> 
 #include "gorgona_utils.h"
 #include "commands.h"
-#include "snowflake.h"
 #include "admin_mesh.h"
+#include "alert_db.h"
 
 /* Helpers for command processing */
 
@@ -80,22 +80,22 @@ static void process_send(int i, char *buffer) {
                        base64_encrypted_key, base64_iv, base64_tag, sd, 0, 0); 
 
     if (result == 0) {
-        char *success_msg = "Alert added successfully";
-        enqueue_message(i, success_msg, strlen(success_msg));
-        
         Recipient *rec = find_recipient(pubkey_hash);
-        if (rec) {
+        if (rec && rec->count > 0) {
             Alert *new_a = &rec->alerts[rec->count - 1];
-            notify_subscribers(pubkey_hash, new_a);
+            uint64_t assigned_id = new_a->id;
+
+            /* Create a detailed message with the ID */
+            char success_msg[128];
+            int s_len = snprintf(success_msg, sizeof(success_msg), 
+                                 "Alert ID: %" PRIu64 " added successfully", assigned_id);
             
-            /* INSTANT DATA TRANSMISSION */
+            enqueue_message(i, success_msg, (size_t)s_len);
+            
+            notify_subscribers(pubkey_hash, new_a);
             broadcast_replication(pubkey_hash, new_a, sd);
 
-            /* INSTANT NOTIFICATION (Anti-Entropy Push) 
-             * We're sending a small MGMT package with our new MaxID 
-             * Even if the node is slow and we skipped the BROADCAST above,  
-             * This short message will prompt him to sync whenever he can. 
-             */
+            /* INSTANT NOTIFICATION (Anti-Entropy Push) */
             uint64_t my_new_max = get_max_alert_id();
             char nudge[64];
             snprintf(nudge, sizeof(nudge), "MAXID_NUDGE|%" PRIu64, my_new_max);
@@ -104,11 +104,14 @@ static void process_send(int i, char *buffer) {
                 if (client_sockets[p] > 0 && 
                     subscribers[p].type == SUB_TYPE_PEER && 
                     subscribers[p].auth_state == AUTH_OK &&
-                    client_sockets[p] != sd) { // Не шлем тому, кто прислал
-                    
+                    client_sockets[p] != sd) {
                     send_mgmt_command(p, nudge);
                 }
             }
+        } else {
+            /* A fallback option if the record cannot be found (which shouldn't happen) */
+            char *fallback_msg = "Alert added successfully";
+            enqueue_message(i, fallback_msg, strlen(fallback_msg));
         }
     } else if (result == -1) {
         char *err = "Error: Stale alert (unlock_at time is too old)";
@@ -550,7 +553,7 @@ static void process_mgmt_frame(int sub_index, char *frame) {
             uint64_t my_local_max = get_max_alert_id();
 
             if (remote_max > my_local_max) {
-                /* Ого! У соседа есть что-то новое. Не ждем интервала, просим SYNC сейчас! */
+                /* Our neighbor has something new. Let's not wait for the interval—let's ask SYNC right now! */
                 char sync_req[64];
                 snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_local_max);
                 enqueue_message(sub_index, sync_req, strlen(sync_req));
@@ -577,6 +580,168 @@ static void process_mgmt_frame(int sub_index, char *frame) {
     if (payload) {
         free(payload);
     } 
+}
+
+/**
+ * Processing the initial cancellation request from the client.
+ * Format: REVOKE|ID|HASH_B64|PUBKEY_B64|SIG_B64
+ */
+static void process_revoke(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    char *rest = strdup(buffer + 7); // Пропускаем "REVOKE|"
+    if (!rest) return;
+
+    char *id_str = strtok(rest, "|");
+    char *hash_b64 = strtok(NULL, "|");
+    char *pubkey_b64 = strtok(NULL, "|");
+    char *sig_b64 = strtok(NULL, "|");
+
+    if (!id_str || !hash_b64 || !pubkey_b64 || !sig_b64) {
+        enqueue_message(i, "Error: Incomplete REVOKE data", 28);
+        free(rest);
+        return;
+    }
+
+    uint64_t alert_id = strtoull(id_str, NULL, 10);
+    
+    /* Ownership verification: The hash of the submitted key must match the target hash */
+    size_t pub_len;
+    unsigned char *pub_raw = base64_decode(pubkey_b64, &pub_len);
+    if (!pub_raw) {
+        enqueue_message(i, "Error: Invalid PubKey encoding", 28);
+        free(rest);
+        return;
+    }
+    
+    unsigned char calculated_hash[PUBKEY_HASH_LEN];
+    compute_raw_pubkey_hash(pub_raw, pub_len, calculated_hash);
+    char *calc_hash_b64 = base64_encode(calculated_hash, PUBKEY_HASH_LEN);
+
+    if (strcmp(calc_hash_b64, hash_b64) != 0) {
+        enqueue_message(i, "Error: Key ownership mismatch", 28);
+        free(pub_raw); free(calc_hash_b64); free(rest);
+        return;
+    }
+
+    /* Cryptographic verification of a message ID signature */
+    if (verify_id_signature(alert_id, pub_raw, pub_len, sig_b64) != 0) {
+        enqueue_message(i, "Error: Invalid signature", 23);
+        free(pub_raw); free(calc_hash_b64); free(rest);
+        return;
+    }
+
+    /* Deactivation in the local database */
+    Recipient *rec = find_recipient(calculated_hash);
+    int res = alert_db_revoke_by_id(rec, alert_id);
+
+    if (res == 0) {
+        enqueue_message(i, "OK: Alert revoked", 16);
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Alert %" PRIu64 " revoked by owner", alert_id);
+        
+        /* P2P Replication of Cancellations to Other Nodes */
+        size_t push_max = strlen(pubkey_b64) + strlen(sig_b64) + 256;
+        char *push_msg = malloc(push_max);
+        if (push_msg) {
+            int p_len = snprintf(push_msg, push_max, "REVOKE_PUSH|%" PRIu64 "|%s|%s|%s", 
+                                 alert_id, hash_b64, pubkey_b64, sig_b64);
+            
+            for (int p = 0; p < max_clients; p++) {
+                if (client_sockets[p] > 0 && subscribers[p].type == SUB_TYPE_PEER && 
+                    subscribers[p].auth_state == AUTH_OK && client_sockets[p] != sub->sock) {
+                    enqueue_message(p, push_msg, (size_t)p_len);
+                }
+            }
+            free(push_msg);
+        }
+        
+        /* Notification to local subscribers (customers) */
+        char notify_cmd[64];
+        int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, alert_id);
+        for (int s = 0; s < max_clients; s++) {
+            if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
+                if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                    enqueue_message(s, notify_cmd, (size_t)n_len);
+                }
+            }
+        }
+    } else {
+        enqueue_message(i, "Error: Alert not found or already inactive", 43);
+    }
+
+    free(pub_raw); 
+    free(calc_hash_b64); 
+    free(rest);
+}
+
+/**
+ * Processing a replicated rollback command from another node (P2P).
+ * Format: REVOKE_PUSH|ID|HASH_B64|PUBKEY_B64|SIG_B64
+ */
+static void process_revoke_push(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    
+    /* Parsing data (we use a copy, since `strtok` modifies the string) */
+    char *rest = strdup(buffer + 12); /* Skip "REVOKE_PUSH|" */
+    if (!rest) return;
+
+    char *id_str      = strtok(rest, "|");
+    char *hash_b64    = strtok(NULL, "|");
+    char *pubkey_b64  = strtok(NULL, "|");
+    char *sig_b64     = strtok(NULL, "|");
+
+    if (!id_str || !hash_b64 || !pubkey_b64 || !sig_b64) {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "P2P: Received truncated REVOKE_PUSH packet");
+        free(rest);
+        return;
+    }
+
+    uint64_t alert_id = strtoull(id_str, NULL, 10);
+
+    /* Cryptographic verification before deletion */
+    size_t pub_len;
+    unsigned char *pub_raw = base64_decode(pubkey_b64, &pub_len);
+    if (!pub_raw) {
+        free(rest);
+        return;
+    }
+
+    /* Verifying the signature: Did the key owner actually initiate the revocation? */
+    if (verify_id_signature(alert_id, pub_raw, pub_len, sig_b64) != 0) {
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
+                  "P2P: Revocation signature check failed for ID %" PRIu64, alert_id);
+        free(pub_raw);
+        free(rest);
+        return;
+    }
+
+    /* Checking if the key matches the hash */
+    unsigned char calculated_hash[PUBKEY_HASH_LEN];
+    compute_raw_pubkey_hash(pub_raw, pub_len, calculated_hash);
+    
+    /* Deletion from the local database */
+    Recipient *rec = find_recipient(calculated_hash);
+    int res = alert_db_revoke_by_id(rec, alert_id);
+
+    if (res == 0) {
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                  "P2P: Alert %" PRIu64 " revoked via mesh sync", alert_id);
+
+        /* Notifying local clients (those that are ‘listening’) */
+        char notify_cmd[64];
+        int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, alert_id);
+
+        for (int s = 0; s < max_clients; s++) {
+            if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
+                /* Send a notification if the client is listening on this hash or is listening on all keys */
+                if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                    enqueue_message(s, notify_cmd, (size_t)n_len);
+                }
+            }
+        }
+    }
+
+    free(pub_raw);
+    free(rest);
 }
 
 /**
@@ -665,6 +830,12 @@ void handle_command(int sub_index, char *buffer) {
     if (strncmp(buffer, "SEND|", 5) == 0) {
         process_send(sub_index, buffer);
     } 
+    else if (strncmp(buffer, "REVOKE|", 7) == 0) { 
+        process_revoke(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "REVOKE_PUSH|", 12) == 0) {
+        process_revoke_push(sub_index, buffer);
+    }
     else if (strncmp(buffer, "REPL|", 5) == 0) {
         process_repl(sub_index, buffer);
     }
@@ -700,3 +871,4 @@ void handle_command(int sub_index, char *buffer) {
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command: %.64s", buffer);
     }
 }
+

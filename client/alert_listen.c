@@ -356,6 +356,33 @@ static void internal_reply_error(int sock, const char *target_hash, const char *
 }
 
 /**
+ * Removes the alert from the local queue (client memory).
+ * Called when the server sends a REVOKE command.
+ */
+void remove_pending_alert(uint64_t id, int verbose) { // Исправлено: uint64_t
+    PendingAlert **prev = &pending_alerts;
+    while (*prev) {
+        if ((*prev)->id == id) {
+            PendingAlert *to_delete = *prev;
+            *prev = to_delete->next;
+            
+            if (verbose) {
+                printf("Revocation: Alert ID %" PRIu64 " removed from local pending queue.\n", id); // Исправлено: PRIu64
+            }
+            
+            free(to_delete->pubkey_hash_b64); // Исправлено: b64
+            free(to_delete->encrypted_text);
+            free(to_delete->encrypted_key);
+            free(to_delete->iv);
+            free(to_delete->tag);
+            free(to_delete);
+            return;
+        }
+        prev = &(*prev)->next;
+    }
+}
+
+/**
  * Parses the raw server response and processes incoming alert data.
  * 
  * This function acts as the primary protocol handler for the client. It handles 
@@ -437,6 +464,15 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         return;
     }
 
+
+    /* Cancellation Processing */ 
+    if (strncmp(response, "REVOKE|", 7) == 0) {
+        uint64_t revoke_id = strtoull(response + 7, NULL, 10);
+        if (revoke_id > 0) {
+            remove_pending_alert(revoke_id, verbose);
+        }
+        return;
+    }
     /* -------------------------------------------------------------------------
      * 3. STATUS & ERROR HANDLING
      * -------------------------------------------------------------------------
@@ -949,7 +985,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 int activity = select(sock + 1, &readfds, NULL, NULL, &timeout);
                 if (activity < 0) { if (errno == EINTR) continue; connection_ok = 0; break; }
                 if (activity == 0) {
-                    /* Для разовых режимов выходим по таймауту тишины */
+                    /* For one-time modes, we exit after a silence timeout */
                     if (!should_reconnect) break;
                     continue;
                 }
@@ -959,12 +995,12 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 ssize_t valread = recv(sock, &resp_len_net, 4, MSG_WAITALL);
                 if (valread <= 0) {
                     if (valread == 0) {
-                        /* Сервер просто закрыл сокет - для LAST/SINGLE это НОРМАЛЬНО */
+                        /* The server simply closed the socket—this is NORMAL for LAST/SINGLE */
                         if (strcmp(mode, "last") != 0 && strcmp(mode, "single") != 0) {
                             peer_manager_mark_bad(current_ip);
                         }
                     } else {
-                        /* Это реальная ошибка сокета */
+                        /* This is a real socket error */
                         peer_manager_mark_bad(current_ip);
                     }
                     connection_ok = 0; 
@@ -1002,7 +1038,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 printf("Debug: No messages for key %s\n", current_pubkey_hash ? current_pubkey_hash : "NULL");
             }
 
-            /* Если режим не постоянный, и это был последний ключ - выходим из функции */
+            /* If the mode is not permanent and this was the last key, exit the function */
             if (!should_reconnect && (key_idx == (key_count > 0 ? key_count - 1 : 0))) {
                 if (key_hashes) free_key_hashes(key_hashes, key_count);
                 mesh_save_peers_cache();
@@ -1010,7 +1046,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             }
         }
 
-        /* --- 4. BACKOFF & RECOVERY (только для live/new) --- */
+        /* --- 4. BACKOFF & RECOVERY (for live/new only) --- */
         backoff: 
         if (key_hashes) { free_key_hashes(key_hashes, key_count); key_hashes = NULL; key_count = 0; }
         if (!should_reconnect) return 0;
@@ -1028,3 +1064,5 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
     return 0;
 }
+
+

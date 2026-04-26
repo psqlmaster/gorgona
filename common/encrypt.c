@@ -607,3 +607,129 @@ unsigned char *base64_decode(const char *data, size_t *out_len) {
     BIO_free_all(bio);
     return out;
 }
+
+/**
+ * Creates a digital signature for the message ID. 
+ * Used to verify revocation requests. 
+ */
+int sign_message_id(uint64_t id, const char *priv_key_path, char *out_b64, size_t out_len, int verbose) {
+    int ret = -1;
+    EVP_PKEY *privkey = NULL;
+    EVP_MD_CTX *ctx = NULL;
+    unsigned char *sig = NULL;
+    size_t sig_len = 0;
+    FILE *fp = fopen(priv_key_path, "rb");
+
+    if (!fp) {
+        if (verbose) perror("fopen private key");
+        return -1;
+    }
+
+    /* Reading the private key */
+    privkey = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
+    fclose(fp);
+
+    if (!privkey) {
+        if (verbose) fprintf(stderr, "Error: Could not read private key from %s\n", priv_key_path);
+        return -1;
+    }
+
+    /* Preparing data for signing (converting uint64_t to a string for stability) */
+    char id_str[32];
+    int data_len = snprintf(id_str, sizeof(id_str), "%" PRIu64, id);
+
+    /* Creating an RSA-SHA256 signature context */
+    ctx = EVP_MD_CTX_new();
+    if (!ctx) goto cleanup;
+
+    if (EVP_SignInit(ctx, EVP_sha256()) <= 0) goto cleanup;
+    if (EVP_SignUpdate(ctx, id_str, data_len) <= 0) goto cleanup;
+
+    /* Set the signature size */
+    sig_len = EVP_PKEY_size(privkey);
+    sig = malloc(sig_len);
+    if (!sig) goto cleanup;
+
+    /* Finalizing the signature */
+    if (EVP_SignFinal(ctx, sig, (unsigned int *)&sig_len, privkey) <= 0) {
+        if (verbose) ERR_print_errors_fp(stderr);
+        goto cleanup;
+    }
+
+    /* Encode the result in Base64 */
+    char *b64_res = base64_encode(sig, sig_len);
+    if (b64_res) {
+        strncpy(out_b64, b64_res, out_len - 1);
+        out_b64[out_len - 1] = '\0';
+        free(b64_res);
+        ret = 0; /* Success */
+    }
+
+cleanup:
+    if (ctx) EVP_MD_CTX_free(ctx);
+    if (privkey) EVP_PKEY_free(privkey);
+    if (sig) free(sig);
+    return ret;
+}
+
+/**
+ * Utility function: calculates the hash of a PEM key buffer.
+ * The server needs this to verify that the submitted public key matches the hash in the request.
+ */
+int compute_raw_pubkey_hash(unsigned char *pub_raw, size_t pub_len, unsigned char *out_hash) {
+    BIO *bio = BIO_new_mem_buf(pub_raw, pub_len);
+    EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+
+    if (!pkey) return -1;
+
+    size_t hash_len;
+    unsigned char *hash = compute_pubkey_hash(pkey, &hash_len, 0);
+    if (hash) {
+        memcpy(out_hash, hash, PUBKEY_HASH_LEN);
+        free(hash);
+        EVP_PKEY_free(pkey);
+        return 0;
+    }
+
+    EVP_PKEY_free(pkey);
+    return -1;
+}
+
+/**
+ * Server-side signature verification. 
+ * Verifies that the sig_b64 signature was created for the string “id” by the owner of the pub_raw key.
+ */
+int verify_id_signature(uint64_t id, unsigned char *pub_raw, size_t pub_len, const char *sig_b64) {
+    size_t sig_len;
+    unsigned char *sig_raw = base64_decode(sig_b64, &sig_len);
+    if (!sig_raw) return -1;
+
+    BIO *bio = BIO_new_mem_buf(pub_raw, pub_len);
+    EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+
+    if (!pkey) {
+        free(sig_raw);
+        return -1;
+    }
+
+    char id_str[32];
+    int data_len = snprintf(id_str, sizeof(id_str), "%" PRIu64, id);
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    int res = -1;
+
+    if (EVP_DigestVerifyInit(ctx, NULL, EVP_sha256(), NULL, pkey) > 0) {
+        if (EVP_DigestVerifyUpdate(ctx, id_str, data_len) > 0) {
+            if (EVP_DigestVerifyFinal(ctx, sig_raw, sig_len) == 1) {
+                res = 0; /* Success */
+            }
+        }
+    }
+
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    free(sig_raw);
+    return res;
+}

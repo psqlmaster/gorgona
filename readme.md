@@ -24,6 +24,7 @@
   - [Client Configuration](#client-configuration)
   - [Server Configuration](#server-configuration)
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
+- [Advanced Use Case: The Dead Man's Switch (DMS)](#Advanced-Use-Case:-The-Dead-Man's-Switch-(DMS))
 - [Monitoring & Observability](#monitoring--observability)
 - [Future Plans & Evolution](#future-plans--evolution)
 - [Testing](#testing) <a href="https://youtu.be/3JodTvfr88c"><img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" alt="YouTube Demo ▶" height="18" style="vertical-align:middle;"></a>
@@ -55,6 +56,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Hybrid Protocol Sniffer**: A versatile engine that detects and handles binary length-prefixed packets (for high-speed data) and plain-text commands (for interactive diagnostics and health checks).
 - **Flexible & Efficient Storage**: High-speed In-Memory mode or `mmap`-backed disk persistence. Features automatic ring-buffer management and "Vacuum" auto-compaction to keep the database lean and fast.
 - **Fast & Lightweight**: Zero-dependency implementation in pure C99/C11 with OpenSSL. Engineered for high concurrency, low latency, and a minimal resource footprint in critical infrastructure.
+- **Authorized Message Revocation**: Scheduled tasks can be cancelled before they unlock. The revocation process uses RSA digital signatures to prove ownership to the mesh nodes. Since servers are "blind carriers", only the holder of the private key can authorized the deletion of a message across the entire P2P network.
 
 #### Advantages
 
@@ -340,6 +342,16 @@ gorgona listen <mode> [<count>] [pubkey_hash_b64]
 
 If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `last`).
 
+#### Revoke (Cancel) Message
+
+```bash
+gorgona revoke <alert_id> <pubkey_hash_b64>
+```
+**Cancels a previously sent time-locked message.**
+- The client signs the alert_id using the private key associated with the pubkey_hash_b64.
+- The server verifies the signature and, if valid, deactivates the message in its database and propagates a REVOKE_PUSH command to all other nodes in the mesh.
+- Any active listeners will instantly remove the task from their pending execution queue.
+
 **Examples**:
 
 ```bash
@@ -363,6 +375,11 @@ gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+
 # After ~10s the listener without -e prints: "Unlocked pending message ID=..." and the decrypted text
 gorgona -ed listen new RWTPQzuhzBw=     # Listens for new messages and executes them as background daemons
 gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background with logging command output to a central log
+# 1. Send a command to reboot the server in 1 hour
+# Output will provide the Alert ID, e.g., 170112816685056
+gorgona send "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+2 days' '+%Y-%m-%d %H:%M:%S')" "sudo reboot" "RWTPQzuhzBw=.pub"
+# 2. If the maintenance was successful and reboot is no longer needed, cancel it:
+gorgona revoke 170112816685056 RWTPQzuhzBw=
 ```
 
 - You can check server status from any device using standard telnet/nc
@@ -609,6 +626,8 @@ graph TD
     G -->|AUTH / SYNC| REPL_LOGIC["P2P Reconciliation"]
     G -->|SEND / REPL| H{Security & Anti-Replay}
     G -->|LISTEN / SUBSCRIBE| I["Filter & Fetch Alerts"]
+    G -->|REVOKE| REV["Verify Signature & Deactivate"]
+        REV -->|Propagate| FORWARD
 
     H -->|Valid| K["Add to DB & Notify Subscribers"]
     K -->|If new local| FORWARD["Broadcast to Peers"]
@@ -750,25 +769,59 @@ graph TD
     CL_SMART --> CL_AUTH["L2 Handshake"]
     CL_AUTH --> CL_PEX["Receive & Cache Topology"]
     
-    RECV["Receive Alert"] --> IDEM{ID in history.log?}
-    IDEM -->|Yes| DROP["Discard Duplicate"]
-    IDEM -->|No| DECRYPT["Decrypt & Record ID"]
-    DECRYPT --> EXEC["Run Command / Display"]
-    
     CL_LEGACY --> RECV
     CL_PEX --> RECV
+
+    RECV["Receive Packet from Mesh"] --> CMD_TYPE{Is ALERT or REVOKE?}
+
+    %% Revocation Flow
+    CMD_TYPE -->|REVOKE| REV_PROC["Scan Memory Queue"]
+    REV_PROC --> REV_DONE["Remove Task from RAM"]
+
+    %% Alert Flow
+    CMD_TYPE -->|ALERT| IDEM{ID in history.log?}
+    IDEM -->|Yes| DROP["Discard Duplicate"]
+    IDEM -->|No| TL_CHECK{Is Time-Locked?}
+
+    TL_CHECK -->|Yes| PENDING[("RAM Pending Queue")]
+    TL_CHECK -->|No| DECRYPT["Decrypt & Record ID"]
+
+    DECRYPT --> EXEC["Run Command / Display"]
+    PENDING -.->|Timer: unlock_at| DECRYPT
 
     %% Styles
     classDef startEnd fill:#2b5b84,stroke:#1a3f5c,stroke-width:2px,color:#fff,font-weight:bold
     classDef process fill:#4a90c4,stroke:#2c5a7a,stroke-width:2px,color:#fff
     classDef decision fill:#e67e22,stroke:#b45f1b,stroke-width:2px,color:#fff
+    classDef storage fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff
 
     class CL_START startEnd
-    class CL_LEGACY,CL_SMART,CL_AUTH,CL_PEX,RECV,DROP,DECRYPT,EXEC process
-    class CL_CONF,IDEM decision
+    class CL_LEGACY,CL_SMART,CL_AUTH,CL_PEX,RECV,REV_PROC,REV_DONE,DROP,DECRYPT,EXEC process
+    class CL_CONF,IDEM,CMD_TYPE,TL_CHECK decision
+    class PENDING storage
 ```
 ---
 
+#### Advanced Use Case: The Dead Man's Switch (DMS)
+
+Gorgona’s combination of **Time-Locking**, **P2P replication**, and **Revocation** allows you to build a resilient "Dead Man's Switch" for infrastructure and personal security.
+
+##### Scenario: Infrastructure "Self-Healing" Insurance
+Imagine a critical service where, if the management console or the administrator becomes unavailable (e.g., due to a network partition, kidnapping, or total system failure), an emergency script must be executed.
+
+1.  **Arming the Switch**: A cron job on your secure admin node sends a time-locked execution command to the Gorgona mesh every hour with a lock time of `Now + 4 hours`.
+    ```bash
+    # Task: Restore from backup if not cancelled
+    gorgona send "$(date -u -d '+4 hours' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 days' '+%Y-%m-%d %H:%M:%S')" "sysadmin restore_emergency" "key.pub"
+    ```
+2.  **The Heartbeat**: Every hour, the cron job also sends a `revoke` command for the *previous* Alert ID.
+3.  **The Drop**: If the admin node goes offline, the `revoke` command is never sent. 
+4.  **Autonomous Execution**: After 4 hours, the Gorgona mesh (which has replicated the task across all nodes) reaches the `unlock_at` time. The target servers, listening via `gorgona -e listen lock`, receive and execute the emergency script simultaneously.
+
+**Why this is unique**: 
+Unlike centralized DMS services, Gorgona is **mathematically honest**. No single server admin can "peek" at your emergency script or prevent its execution once it's in the mesh, unless they have your private key to sign a revocation.
+
+---
 #### Monitoring & Observability
 
 `gorgona` features an integrated metrics exporter compatible with **Prometheus**. This allows for real-time tracking of the P2P network state, node load, and message distribution intensity.
@@ -813,6 +866,7 @@ The dashboard provides insights into:
 - **Idempotent Data Flow**: Collision-free alert propagation using Snowflake IDs.
 - **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point. [See p2p mash](docs/roadmap_p2p_mash.md).
 - **Performance-Driven Routing**: Real-time monitoring of **Effective Throughput (Bytes/sec)**. Moving beyond simple Pings to intelligent traffic steering that prioritizes peers based on actual hardware performance (Disk/CPU) and network health.
+- **Authorized Revocation**: Implemented RSA-signed cancellation of scheduled tasks with global mesh propagation (Tombstones logic).
 
 **Next Frontiers:**
 - **Snowflake Oracle Protocol**: Implementing pairing-based threshold cryptography (BLS) to ensure time-locked payloads remain mathematically undecryptable until a verifiable P2P consensus of $K$-of-$N$ nodes reconstructs the decryption key upon reaching a target Snowflake ID. [White Paper: The Snowflake Oracle Protocol](docs/snowflake_oracle_protocol.md)

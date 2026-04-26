@@ -107,6 +107,20 @@ static int ensure_mmap_capacity(Recipient *rec, size_t additional_size) {
     return 0;
 }
 
+int alert_db_revoke_by_id(Recipient *rec, uint64_t alert_id) {
+    for (int i = 0; i < rec->count; i++) {
+        if (rec->alerts[i].id == alert_id) {
+            if (rec->alerts[i].active) {
+                alert_db_deactivate_alert(&rec->alerts[i]);
+                rec->waste_count++;
+                return 0;
+            }
+            return 1;
+        }
+    }
+    return -1;
+}
+
 void alert_db_deactivate_alert(Alert *alert) {
     alert->active = 0;
     if (alert->active_ptr) {

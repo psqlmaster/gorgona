@@ -276,3 +276,80 @@ cleanup_all:
     free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
     return 0;
 }
+
+/**
+ * Function to recall (cancel) a previously sent alert.
+ * Command format: gorgona revoke <id> <pubkey_hash_b64>
+ */
+int send_revocation(int argc, char *argv[], int verbose_flag) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: revoke <alert_id> <pubkey_hash_b64>\n");
+        return 1;
+    }
+
+    uint64_t alert_id = strtoull(argv[1], NULL, 10);
+    const char *pubkey_hash_b64 = argv[2];
+
+    /* Download and encrypt the public key (the server needs it to verify the signature) */
+    char pub_path[256];
+    snprintf(pub_path, sizeof(pub_path), "/etc/gorgona/%s.pub", pubkey_hash_b64);
+    
+    FILE *f_pub = fopen(pub_path, "rb");
+    if (!f_pub) {
+        fprintf(stderr, "Error: Public key file not found: %s\n", pub_path);
+        return 1;
+    }
+    fseek(f_pub, 0, SEEK_END);
+    long pub_fsize = ftell(f_pub);
+    fseek(f_pub, 0, SEEK_SET);
+    unsigned char *pub_content = malloc(pub_fsize);
+    fread(pub_content, 1, pub_fsize, f_pub);
+    fclose(f_pub);
+
+    char *pubkey_b64 = base64_encode(pub_content, pub_fsize);
+    free(pub_content);
+
+    /* Sign the ID with the private key */
+    char priv_path[256];
+    snprintf(priv_path, sizeof(priv_path), "/etc/gorgona/%s.key", pubkey_hash_b64);
+    char sig_b64[512] = {0};
+    if (sign_message_id(alert_id, priv_path, sig_b64, sizeof(sig_b64), verbose_flag) != 0) {
+        fprintf(stderr, "Error: Failed to sign revocation request.\n");
+        free(pubkey_b64);
+        return 1;
+    }
+
+    /* Network initialization */
+    Config config;
+    read_config(&config, verbose_flag);
+    peer_manager_load_cache(&config);
+    int sock = peer_manager_get_best_connection();
+    if (sock < 0) { free(pubkey_b64); return 1; }
+
+    /* We are forming a complete team (4 fields after REVOKE|) */
+    /* Format: REVOKE|ID|HASH|PUBKEY_B64|SIG_B64 */
+    size_t cmd_max = strlen(pubkey_hash_b64) + strlen(pubkey_b64) + strlen(sig_b64) + 128;
+    char *cmd = malloc(cmd_max);
+    int cmd_len = snprintf(cmd, cmd_max, "REVOKE|%" PRIu64 "|%s|%s|%s", 
+                           alert_id, pubkey_hash_b64, pubkey_b64, sig_b64);
+
+    uint32_t net_len = htonl((uint32_t)cmd_len);
+    send(sock, &net_len, 4, 0);
+    send(sock, cmd, cmd_len, 0);
+
+    /* Server response */
+    uint32_t r_len_n;
+    if (read(sock, &r_len_n, 4) == 4) {
+        uint32_t r_len = ntohl(r_len_n);
+        char *resp = malloc(r_len + 1);
+        read(sock, resp, r_len);
+        resp[r_len] = '\0';
+        printf("Server Result: %s\n", resp);
+        free(resp);
+    }
+
+    close(sock);
+    free(pubkey_b64);
+    free(cmd);
+    return 0;
+}

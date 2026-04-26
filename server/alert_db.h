@@ -42,4 +42,6 @@ int alert_db_sync(Recipient *rec);
 
 void alert_db_close_all(void);
 
+int alert_db_revoke_by_id(Recipient *rec, uint64_t id);
+
 #endif
