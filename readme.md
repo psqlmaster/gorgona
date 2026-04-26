@@ -24,7 +24,7 @@
   - [Client Configuration](#client-configuration)
   - [Server Configuration](#server-configuration)
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
-- [Advanced Use Case: The Dead Man's Switch (DMS)](#Advanced-Use-Case:-The-Dead-Man's-Switch-(DMS))
+- [Advanced Use Case: The Dead Man's Switch (DMS)](#advanced-use-case-the-dead-mans-switch-dms)
 - [Monitoring & Observability](#monitoring--observability)
 - [Future Plans & Evolution](#future-plans--evolution)
 - [Testing](#testing) <a href="https://youtu.be/3JodTvfr88c"><img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" alt="YouTube Demo ▶" height="18" style="vertical-align:middle;"></a>
