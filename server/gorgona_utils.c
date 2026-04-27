@@ -626,18 +626,10 @@ void add_to_repl_ring(uint64_t id, const unsigned char *hash) {
 }
 
 /**
- * Broadcasts a new alert to all authorized peers using Intelligent Routing.
- * 
- * Logic Highlights:
- * 1. IP-level exclusion: Prevents sending data back to the sender's IP address.
- * 2. IP-level de-duplication: Sends only one packet per physical IP even if multiple sockets exist.
- * 3. Adaptive Trust Routing: 
- *    - SEED nodes (from config) ALWAYS receive data (backbone priority).
- *    - New nodes (last_success == 0) ALWAYS receive data (probation period).
- *    - PEX nodes with Score < 0.05 are suppressed to protect cluster performance.
+ * Broadcasts a new alert to all authorized peers.
+ * Now includes the 'active' status to propagate revocations (tombstones).
  */
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd) {
-    /* 1. Resource Preparation: Encode binary fields to Base64 for network transport */
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     char *bt     = base64_encode(alert->text, alert->text_len);
     char *bk     = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
@@ -646,11 +638,9 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
 
     if (!ph_b64 || !bt || !bk || !bi || !bg) {
         free(ph_b64); free(bt); free(bk); free(bi); free(bg);
-        log_event("ERROR", -1, NULL, 0, "Broadcast aborted: Base64 allocation failure");
         return;
     }
 
-    /* 2. Message Construction */
     size_t msg_capacity = max_message_size + 2048; 
     char *repl_msg = malloc(msg_capacity);
     if (!repl_msg) {
@@ -658,17 +648,16 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
         return;
     }
 
-    int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%s|%s|%s|%s|%s",
+    /* Protocol Update: Added |%d| for alert->active status */
+    int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%s|%s|%s|%s|%s",
                        alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
-                       ph_b64, bt, bk, bi, bg);
+                       alert->active, ph_b64, bt, bk, bi, bg);
 
     if (len > 0) {
-        /* Array to track physical IPs that already received the alert in this cycle */
         int sent_to_ips_count = 0;
         char sent_to_ips[MAX_PEERS * 4][INET_ADDRSTRLEN]; 
         memset(sent_to_ips, 0, sizeof(sent_to_ips));
 
-        /* Identify the IP of the peer that sent us this alert (if any) */
         char sender_ip[INET_ADDRSTRLEN] = "";
         if (exclude_fd > 0) {
             for (int k = 0; k < max_clients; k++) {
@@ -679,72 +668,26 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
             }
         }
 
-        /* 3. Selective Dissemination Loop */
         for (int i = 0; i < max_clients; i++) {
-            if (client_sockets[i] > 0 && 
-                subscribers[i].type == SUB_TYPE_PEER && 
-                subscribers[i].auth_state == AUTH_OK) {
-                
-                /* EXCLUSION: Don't send back to the originating IP address */
-                if (strcmp(subscribers[i].ip_address, sender_ip) == 0) {
-                    continue;
-                }
+            if (client_sockets[i] > 0 && subscribers[i].type == SUB_TYPE_PEER && subscribers[i].auth_state == AUTH_OK) {
+                if (strcmp(subscribers[i].ip_address, sender_ip) == 0) continue;
 
-                /* DE-DUPLICATION: Ensure only one message is sent per IP */
                 bool already_sent_to_ip = false;
                 for (int j = 0; j < sent_to_ips_count; j++) {
                     if (strcmp(sent_to_ips[j], subscribers[i].ip_address) == 0) {
-                        already_sent_to_ip = true;
-                        break;
+                        already_sent_to_ip = true; break;
                     }
                 }
                 if (already_sent_to_ip) continue;
 
-                /**
-                 * 4. INTELLIGENT ROUTING & ADAPTIVE TRUST
-                 * Check the mesh table for this peer's quality score.
-                 */
-                bool performant = true;
-                for (int n = 0; n < cluster_node_count; n++) {
-                    if (strcmp(cluster_nodes[n].ip, subscribers[i].ip_address) == 0) {
-                        /* 
-                         * TRUST EXCEPTIONS:
-                         * - SEED nodes are trusted infrastructure (never skipped).
-                         * - New nodes with no history (last_success == 0) get the data immediately.
-                         */
-                        if (!cluster_nodes[n].is_seed && cluster_nodes[n].metrics.last_success > 0) {
-                            /* FILTER: Suppress push only for dynamic PEX nodes that are proven slow */
-                            if (cluster_nodes[n].metrics.gorgona_score < 0.05) {
-                                performant = false;
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                if (performant) {
-                    enqueue_message(i, repl_msg, (size_t)len);
-                    
-                    /* Log IP into the processed list for this cycle */
-                    if (sent_to_ips_count < (MAX_PEERS * 4)) {
-                        strncpy(sent_to_ips[sent_to_ips_count++], subscribers[i].ip_address, INET_ADDRSTRLEN - 1);
-                    }
-                } else {
-                    if (verbose) {
-                        log_event("DEBUG", client_sockets[i], subscribers[i].ip_address, subscribers[i].port, 
-                                  "Suppressed REPL (Toxic PEX node). Waiting for Nudge/Sync.");
-                    }
+                enqueue_message(i, repl_msg, (size_t)len);
+                if (sent_to_ips_count < (MAX_PEERS * 4)) {
+                    strncpy(sent_to_ips[sent_to_ips_count++], subscribers[i].ip_address, INET_ADDRSTRLEN - 1);
                 }
             }
         }
-        
-        if (verbose && sent_to_ips_count > 0) {
-            log_event("DEBUG", -1, NULL, 0, "Broadcast Optimized: Alert %" PRIu64 " pushed to %d unique nodes", 
-                      alert->id, sent_to_ips_count);
-        }
     }
 
-    /* 5. Cleanup Resources */
     free(repl_msg);
     free(ph_b64); free(bt); free(bk); free(bi); free(bg);
 }
@@ -765,16 +708,15 @@ uint64_t get_max_alert_id() {
     return max_id;
 }
 
-/*
- * Sends a specific alert to a specific peer.
- * (Move the logic from `broadcast_replication` to a separate function)
+/* 
+ * Sends a specific alert to a specific peer including its active status.
  */
 void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert) {
     char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
-    char *bt = base64_encode(alert->text, alert->text_len);
-    char *bk = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
-    char *bi = base64_encode(alert->iv, alert->iv_len);
-    char *bg = base64_encode(alert->tag, GCM_TAG_LEN);
+    char *bt     = base64_encode(alert->text, alert->text_len);
+    char *bk     = base64_encode(alert->encrypted_key, alert->encrypted_key_len);
+    char *bi     = base64_encode(alert->iv, alert->iv_len);
+    char *bg     = base64_encode(alert->tag, GCM_TAG_LEN);
 
     if (!ph_b64 || !bt || !bk || !bi || !bg) {
         free(ph_b64); free(bt); free(bk); free(bi); free(bg);
@@ -784,9 +726,10 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
     size_t msg_capacity = max_message_size + 2048;
     char *repl_msg = malloc(msg_capacity);
     if (repl_msg) {
-        int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%s|%s|%s|%s|%s",
+        /* Protocol Update: Added |%d| for alert->active status after expire_at */
+        int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%s|%s|%s|%s|%s",
                            alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
-                           ph_b64, bt, bk, bi, bg);
+                           alert->active, ph_b64, bt, bk, bi, bg);
         if (len > 0) {
             enqueue_message(sub_index, repl_msg, (size_t)len);
         }

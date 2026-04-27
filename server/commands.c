@@ -303,123 +303,100 @@ static void process_auth(int i, char *buffer) {
 
 /**
  * Handles the "REPL|" command for alert replication between peers.
- * Also measures throughput to calculate peer performance scores.
- * 
- * Note: Features "Anti-Entropy Storm Protection" to distinguish between 
- * real-time events and historical state transfers.
+ * Now parses the 'active' status and applies it to the local DB.
  */
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
     gettimeofday(&start_tv, NULL);
 
     Subscriber *sub = &subscribers[i];
-    
-    /* Security: Ensure the peer is authorized to replicate data */
     if (sub->auth_state != AUTH_OK) return;
 
     size_t raw_len = strlen(buffer);
-    char *rest = strdup(buffer + 5); /* Skip "REPL|" */
+    char *rest = strdup(buffer + 5); 
     if (!rest) return;
 
-    /* Parse REPL parameters from the protocol frame */
     char *id_str      = strtok(rest, "|");
     char *create_str  = strtok(NULL, "|");
     char *unlock_str  = strtok(NULL, "|");
     char *expire_str  = strtok(NULL, "|");
+    char *active_str  = strtok(NULL, "|"); 
     char *hash_b64    = strtok(NULL, "|");
     char *text_b64    = strtok(NULL, "|");
     char *key_b64     = strtok(NULL, "|");
     char *iv_b64      = strtok(NULL, "|");
     char *tag_b64     = strtok(NULL, "|");
 
-    /* Validation: Ensure the mandatory GCM authentication tag is present */
     if (tag_b64) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
         time_t u_at = (time_t)atol(unlock_str);
         time_t e_at = (time_t)atol(expire_str);
+        int is_active = atoi(active_str);
 
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
 
-        /* Validate recipient hash length before proceeding */
         if (ph && h_len == PUBKEY_HASH_LEN) {
-            
-            /* Attempt to add the replicated alert to the local database */
             int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
                                 sub->sock, original_id, c_at);
             
-            if (res == 0) {
-                /* --- PERFORMANCE TRACKING --- */
-                gettimeofday(&end_tv, NULL);
-                double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
-                               (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
-                
-                /* Update mesh metrics with recent throughput data */
-                mesh_update_speed(sub->ip_address, raw_len, delta);
-
+            if (res == 0 || res == 1) {
+                /* If alert was added or already exists, ensure the 'active' status matches the mesh */
                 Recipient *rec = find_recipient(ph);
                 if (rec) {
-                    Alert *new_a = &rec->alerts[rec->count - 1];
-                    
-                    /* Notify any local clients subscribed to this key */
-                    notify_subscribers(ph, new_a);
-                    
-                    /**
-                     * --- GOSSIP SUPPRESSION LOGIC ---
-                     * To prevent infinite loops and "synchronization storms" in segmented networks,
-                     * we only broadcast alerts that are considered "Fresh" (real-time events).
-                     * 
-                     * If the alert's creation time is older than the STALE_THRESHOLD, it is 
-                     * treated as a historical sync (State Transfer) and will NOT be re-broadcast.
-                     */
-                    time_t now = time(NULL);
-                    if ((now - c_at) < STALE_THRESHOLD_SEC) {
-                        /* Active real-time event: propagate to the rest of the cluster */
-                        broadcast_replication(ph, new_a, sub->sock);
-                    } else {
-                        /* Historical sync: silent ingestion only to protect network bandwidth */
-                        if (verbose) {
-                            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                                      "Suppressed gossip for historical ID %" PRIu64 " (Catch-up sync)", 
-                                      original_id);
+                    for (int j = 0; j < rec->count; j++) {
+                        if (rec->alerts[j].id == original_id) {
+                            /* If mesh says it's inactive but we have it as active -> Kill it */
+                            if (!is_active && rec->alerts[j].active) {
+                                alert_db_deactivate_alert(&rec->alerts[j]);
+                                rec->waste_count++;
+                            }
+                            break;
                         }
+                    }
+                }
+                
+                if (res == 0) {
+                    gettimeofday(&end_tv, NULL);
+                    double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
+                                   (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
+                    mesh_update_speed(sub->ip_address, raw_len, delta);
+
+                    /* Gossip only fresh active events */
+                    time_t now = time(NULL);
+                    if (is_active && (now - c_at) < STALE_THRESHOLD_SEC) {
+                        Recipient *rec_ptr = find_recipient(ph);
+                        if (rec_ptr) notify_subscribers(ph, &rec_ptr->alerts[rec_ptr->count - 1]);
+                        broadcast_replication(ph, &rec_ptr->alerts[rec_ptr->count - 1], sub->sock);
                     }
                 }
             }
             free(ph);
         }
     }
-    
-    /* Clean up the temporary buffer copy */
     free(rest);
 }
 
 /**
  * Handles the "SYNC|last_id" command.
- * IMPROVED: Only transfers ACTIVE alerts to minimize network waste.
+ * Updated to transfer both active and inactive alerts to ensure MaxID consistency.
  */
 static void process_sync(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    
-    if (sub->auth_state != AUTH_OK) {
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unauthorized sync request ignored");
-        return;
-    }
+    if (sub->auth_state != AUTH_OK) return;
 
     uint64_t last_id = strtoull(buffer + 5, NULL, 10);
     int count = 0;
 
-    /* Iterate through all recipients managed by this node */
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         for (int a = 0; a < rec->count; a++) {
             /* 
-             * CRITICAL FIX: Only send alerts that are:
-             * 1. Newer than the requested ID.
-             * 2. Actually ACTIVE (not expired or deactivated).
+             * CRITICAL: We send ALL alerts with ID > last_id, regardless of 'active' status.
+             * This ensures the peer's MaxID moves forward even if messages were revoked.
              */
-            if (rec->alerts[a].id > last_id && rec->alerts[a].active) {
+            if (rec->alerts[a].id > last_id) {
                 send_alert_to_peer(i, rec->hash, &rec->alerts[a]);
                 count++;
             }
@@ -427,7 +404,7 @@ static void process_sync(int i, char *buffer) {
     }
 
     log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-              "Sync completed: %d active alerts transferred to peer (ID > %" PRIu64 ")", 
+              "Sync completed: %d alerts transferred to peer (ID > %" PRIu64 ")", 
               count, last_id);
 }
 
