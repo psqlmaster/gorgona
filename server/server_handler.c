@@ -206,7 +206,7 @@ void process_out(int sub_index, int sd) {
 
     /* Handle graceful shutdown after sending requested info (like 'info' or 'version') */
     if (subscribers[sub_index].out_head == NULL && subscribers[sub_index].close_after_send) {
-        log_event("INFO", sd, sub->ip_address, sub->port, "Closing connection");
+        log_event("INFO", sd, sub->ip_address, sub->port, "Session finished");
         close(sd);
         client_sockets[sub_index] = 0;
         sub->sock = 0;
@@ -577,7 +577,7 @@ void run_server(int server_fd) {
                         /* --- BINARY MODE DETECTION --- */
                         if (protocol_first_byte < 32 && protocol_first_byte != '\n' && protocol_first_byte != '\r' && protocol_first_byte != '\t') {
                             if (sub->in_pos == 1 && sub->auth_state == AUTH_NONE) { 
-                                log_event("INFO", sd, sub->ip_address, sub->port, "Client identified: Gorgona Binary Protocol");
+                                log_event("DEBUG", sd, sub->ip_address, sub->port, "Client identified: Gorgona Binary Protocol");
                                 sub->auth_state = 99; 
                             }
                             if (sub->in_pos == 4) {

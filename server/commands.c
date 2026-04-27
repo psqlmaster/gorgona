@@ -283,10 +283,10 @@ static void process_auth(int i, char *buffer) {
         /* Успех */
         if (peer_max_alerts == 0) {
             sub->type = SUB_TYPE_CLIENT;
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Client authenticated via PSK");
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Binary Client]"); 
         } else {
             sub->type = SUB_TYPE_PEER;
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Peer authenticated (Capacity: %d)", max_alerts);
+            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Mesh Peer]"); 
         }
         
         sub->auth_state = AUTH_OK;
