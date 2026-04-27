@@ -364,11 +364,13 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
 
     /* --- DETERMINISTIC HOUSEKEEPING --- 
-     * Clean up expired and overflow records using the logical cluster time.
-     * This ensures all nodes perform the cleanup simultaneously in logical time. */
+     * 1. Clean up expired records first.
+     * 2. If the count still exceeds max_alerts, aggressively remove oldest IDs 
+     *    until there is room for the new record. Using 'while' instead of 'if' 
+     *    fixes overflows caused by database loading or rapid P2P sync. */
     clean_expired_alerts_logic(rec, cluster_now);
     
-    if (rec->count >= max_alerts) {
+    while (rec->count >= max_alerts && rec->count > 0) {
         remove_oldest_alert(rec);
     }
 
@@ -763,8 +765,13 @@ void run_global_maintenance(void) {
     for (int i = 0; i < recipient_count; ) {
         Recipient *rec = &recipients[i];
         
-        /* Используем логическое время (синхронно на всех нодах) */
+        /* 1. Purge expired alerts based on cluster logical time */
         clean_expired_alerts_logic(rec, cluster_now);
+
+        /* 2. Enforce hard limit on alert count per key */
+        while (rec->count > max_alerts && rec->count > 0) {
+            remove_oldest_alert(rec);
+        }
 
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
         if (rec->count == 0 || rec->waste_count >= waste_limit) {
@@ -779,7 +786,7 @@ void run_global_maintenance(void) {
     /* --- LAYER 2: Administrative Mesh Maintenance --- */
     static time_t last_mesh_task = 0;
 
-    /* Используем системное 'now', так как это касается работы сокетов */
+    /* We use the system ‘now’ function, since this involves working with sockets */
     if (now - last_mesh_task >= sync_interval) { 
         last_mesh_task = now;
         
