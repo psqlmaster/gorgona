@@ -22,8 +22,6 @@
 #include <strings.h> 
 #include <sys/time.h>
 
-//#define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
-
 FILE *log_file = NULL;
 Recipient *recipients = NULL;
 int recipient_count = 0;
