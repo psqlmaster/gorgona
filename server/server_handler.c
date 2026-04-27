@@ -488,7 +488,7 @@ void run_server(int server_fd) {
                     subscribers[i].pubkey_hash[0] = '\0';
                     subscribers[i].close_after_send = false;
 
-                    log_event("INFO", new_socket, subscribers[i].ip_address, subscribers[i].port, "New connection");
+                    log_event("DEBUG", new_socket, subscribers[i].ip_address, subscribers[i].port, "New connection");
                     break;
                 }
             }
@@ -576,6 +576,9 @@ void run_server(int server_fd) {
 
                         /* --- BINARY MODE DETECTION --- */
                         if (protocol_first_byte < 32 && protocol_first_byte != '\n' && protocol_first_byte != '\r' && protocol_first_byte != '\t') {
+                            if (sub->in_pos == 1) {
+                                log_event("INFO", sd, sub->ip_address, sub->port, "Client identified: Gorgona Binary Protocol");
+                            }
                             if (sub->in_pos == 4) {
                                 uint32_t temp_len;
                                 memcpy(&temp_len, sub->in_buffer, 4);
@@ -602,6 +605,9 @@ void run_server(int server_fd) {
                         } 
                         /* --- TEXT MODE DETECTION --- */
                         else if (protocol_first_byte >= 32 || protocol_first_byte == '\n' || protocol_first_byte == '\r' || protocol_first_byte == '\t') {
+                            if (sub->in_pos == 1 && byte != 'G') {
+                                log_event("INFO", sd, sub->ip_address, sub->port, "Client identified: Gorgona Text/Interactive");
+                            }
                             if (byte == '\r') {
                                 sub->in_pos--; /* Ignore carriage returns */
                                 continue;
