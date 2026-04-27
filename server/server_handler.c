@@ -576,8 +576,9 @@ void run_server(int server_fd) {
 
                         /* --- BINARY MODE DETECTION --- */
                         if (protocol_first_byte < 32 && protocol_first_byte != '\n' && protocol_first_byte != '\r' && protocol_first_byte != '\t') {
-                            if (sub->in_pos == 1) {
+                            if (sub->in_pos == 1 && sub->auth_state == AUTH_NONE) { 
                                 log_event("INFO", sd, sub->ip_address, sub->port, "Client identified: Gorgona Binary Protocol");
+                                sub->auth_state = 99; 
                             }
                             if (sub->in_pos == 4) {
                                 uint32_t temp_len;
@@ -605,8 +606,9 @@ void run_server(int server_fd) {
                         } 
                         /* --- TEXT MODE DETECTION --- */
                         else if (protocol_first_byte >= 32 || protocol_first_byte == '\n' || protocol_first_byte == '\r' || protocol_first_byte == '\t') {
-                            if (sub->in_pos == 1 && byte != 'G') {
+                            if (sub->in_pos == 1 && sub->auth_state == AUTH_NONE && byte != 'G') { 
                                 log_event("INFO", sd, sub->ip_address, sub->port, "Client identified: Gorgona Text/Interactive");
+                                sub->auth_state = 99;
                             }
                             if (byte == '\r') {
                                 sub->in_pos--; /* Ignore carriage returns */
