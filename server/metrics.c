@@ -175,7 +175,7 @@ void handle_https_metrics_request(int client_sd) {
     int accept_res = SSL_accept(ssl);
     if (accept_res <= 0) {
         int err = SSL_get_error(ssl, accept_res);
-        log_event("WARN", -1, NULL, 0, "Metrics: SSL Handshake failed (Error Code: %d)", err);
+        log_event("DEBUG", -1, NULL, 0, "Metrics: SSL Handshake failed (Error Code: %d)", err);
         if (verbose) ERR_print_errors_fp(stderr);
     } else {
         /* Reading an HTTP Request */

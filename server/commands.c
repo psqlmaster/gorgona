@@ -489,16 +489,28 @@ static void process_mgmt_frame(int sub_index, char *frame) {
         }
 
         /* [ANTI-ENTROPY CORE] 
-         * Trigger SYNC if the peer has more alerts than we do.
+         * Trigger SYNC if the peer has more alerts than we do OR if this is a fresh connection.
          */
         uint64_t my_max_id = get_max_alert_id();
-        if (remote_max_id > my_max_id && sub->auth_state == AUTH_OK) {
+        
+        /* State 99 means 'Identified but awaiting first proof of PSK' 
+           If decryption succeeded, the PSK is valid. Graduation time! */
+        bool is_fresh_connection = (sub->auth_state == 99);
+
+        if (is_fresh_connection || (remote_max_id > my_max_id)) {
+            /* If this is the first MGMT frame after handshake, transition to AUTH_OK */
+            if (is_fresh_connection) {
+                sub->auth_state = AUTH_OK;
+                log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Mesh Peer via L2]");
+            }
+
             char sync_req[64];
             int s_len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max_id);
             enqueue_message(sub_index, sync_req, (size_t)s_len);
             
             log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                      "Anti-Entropy: Detected newer data on peer (Remote: %" PRIu64 "). Sync triggered.", remote_max_id);
+                      "Anti-Entropy: %s sync triggered (Remote: %" PRIu64 ", Local: %" PRIu64 ")", 
+                      is_fresh_connection ? "Initial" : "Delta", remote_max_id, my_max_id);
         }
 
         /* [MESH TOPOLOGY UPDATE] */
@@ -510,7 +522,6 @@ static void process_mgmt_frame(int sub_index, char *frame) {
                     cluster_nodes[n].port = reported_port;
                 }
                 cluster_nodes[n].last_seen = time(NULL);
-                /* If we received an encrypted frame, the peer is authenticated */
                 cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
                 break;
             }
@@ -543,7 +554,6 @@ static void process_mgmt_frame(int sub_index, char *frame) {
             mesh_update_rtt(sub->ip_address, (double)(now_ms - ts));
         }
         else if (cmd && strcmp(cmd, "PEX_LIST") == 0) {
-            /* Shift payload to skip "PEX_LIST|PORT|" and get to the peer list */
             char *list_start = strchr((char*)plain + 9, '|');
             if (list_start) mesh_discover_nodes(list_start + 1, sub->ip_address);
         }
@@ -553,7 +563,6 @@ static void process_mgmt_frame(int sub_index, char *frame) {
             uint64_t my_local_max = get_max_alert_id();
 
             if (remote_max > my_local_max) {
-                /* Our neighbor has something new. Let's not wait for the interval—let's ask SYNC right now! */
                 char sync_req[64];
                 snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_local_max);
                 enqueue_message(sub_index, sync_req, strlen(sync_req));
@@ -571,15 +580,9 @@ static void process_mgmt_frame(int sub_index, char *frame) {
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "L2: Management Frame decryption failed");
     }
     
-    if (iv) {
-        free(iv);
-    }
-    if (tag) {
-        free(tag);
-    }
-    if (payload) {
-        free(payload);
-    } 
+    if (iv) free(iv);
+    if (tag) free(tag);
+    if (payload) free(payload);
 }
 
 /**
