@@ -260,24 +260,32 @@ void remove_oldest_alert(Recipient *rec) {
  * replicated alerts (from peers via REPL/SYNC).
  * 
  * Logic flow:
- * 1. Layer 1 Anti-Replay: Staleness check (skipped for replication).
- * 2. Layer 2 Anti-Replay: Content-based and ID-based deduplication (including inactive records).
- * 3. Gossip Suppression: Prevents circular replication loops.
- * 4. Sliding Window: Protects against historical data displacing current alerts.
- * 5. Housekeeping & Persistence: Memory cleanup and disk mmap sync.
+ * 1. Time Synchronization: Derives cluster-wide logical time from the Snowflake pulse.
+ * 2. Layer 1 Anti-Replay: Staleness check against the cluster pulse (skipped for replication).
+ * 3. Layer 2 Anti-Replay: Content-based and ID-based deduplication (scans even inactive records).
+ * 4. Sliding Window: Protects current alerts by rejecting historical data that exceeds the window.
+ * 5. Housekeeping: Synchronous cleanup using logical time to prevent P2P data drift.
+ * 6. Persistence: Saves to mmap-backed storage.
  * 
- * @return 0 on success (new), 1 if duplicate (suppressed), -1 if stale, -2 if replay attack, -3 on error.
+ * @return 0 on success, 1 if duplicate, -1 if stale, -2 if replay attack, -3 on error.
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
                int client_fd, uint64_t forced_id, time_t forced_create_at) {
     
-    /* 1. Recipient Management: Find or create the recipient record */
+    /* 1. Recipient Management: Find or create the recipient record in memory */
     Recipient *rec = find_recipient(pubkey_hash);
     if (!rec) rec = add_recipient(pubkey_hash);
     if (!rec) return -3;
 
-    /* 2. Metadata: Identify sender context for logging purposes */
+    /* 2. Logical Time Derivation:
+     * To prevent P2P drift caused by local clock skew, we use the highest 
+     * known Snowflake ID as the 'Cluster Pulse'. This ensures all nodes 
+     * reach the same consensus on expiration and windowing. */
+    uint64_t current_max = get_max_alert_id();
+    time_t cluster_now = (current_max > 0) ? snowflake_to_timestamp(current_max) : time(NULL);
+
+    /* 3. Metadata: Identify sender context for logging purposes */
     const char *client_ip = NULL;
     int client_port = 0;
     for (int i = 0; i < max_clients; i++) {
@@ -288,37 +296,35 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    time_t now = time(NULL);
-
     /* --- ANTI-REPLAY LAYER 1: Staleness Check --- 
-       Prevents processing of old captured traffic.
-       Crucial: Skip this check for replication (forced_id > 0) to allow historical sync. */
-    if (forced_id == 0 && unlock_at < (now - STALE_THRESHOLD_SEC)) {
+     * Rejects new alerts that are significantly behind the current cluster pulse.
+     * Crucial: Skip this for replication (forced_id > 0) to allow node catch-up. */
+    if (forced_id == 0 && unlock_at < (cluster_now - STALE_THRESHOLD_SEC)) {
         log_event("WARN", client_fd, client_ip, client_port, 
-                  "Rejected stale alert (unlock_at is %ld seconds behind)", (long)(now - unlock_at));
+                  "Rejected stale alert (unlock_at is %ld seconds behind cluster pulse)", 
+                  (long)(cluster_now - unlock_at));
         return -1;
     }
 
-    /* 3. Pre-check: Decode the primary payload for deduplication */
+    /* 4. Pre-check: Decode the primary payload for deduplication */
     size_t new_text_len;
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
     if (!decoded_text) return -3;
 
-    /* --- ANTI-REPLAY LAYER 2: Full-Record Idempotency & Gossip Suppression --- 
-     * We verify the incoming alert against the entire dataset managed by this recipient.
-     * Crucial: We scan ALL records (rec->count), including those marked as inactive (active=0)
-     * but not yet physically removed by a vacuum (alert_db_sync). This prevents 
-     * "zombie" alerts from being re-accepted and triggering a gossip loop.
+    /* --- ANTI-REPLAY LAYER 2: Full-Record Idempotency --- 
+     * We verify the alert against the entire dataset, including inactive (active=0) 
+     * tombstone records. This prevents "zombie" alerts from being re-accepted 
+     * after revocation or expiration, stopping circular gossip loops.
      */
     for (int j = 0; j < rec->count; j++) {
-        /* A. Identity Check: Compare Snowflake IDs for P2P consistency. */
+        /* A. Identity Check: Ensure Snowflake IDs are globally unique. */
         if (forced_id > 0 && rec->alerts[j].id == forced_id) {
             free(decoded_text);
-            return 1; /* Duplicate found: stop gossip relay */
+            return 1; /* Duplicate ID: stop replication relay */
         }
 
-        /* B. Content-Based Deduplication: Compare raw binary payloads.
-         * If the content matches exactly, it's a duplicate even if the ID is different. */
+        /* B. Content-Based Check: Compare raw binary payloads.
+         * Identical ciphertext implies a replay attack or redundant transmission. */
         if (rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
                 free(decoded_text);
@@ -326,28 +332,28 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
                 
                 log_event("WARN", client_fd, client_ip, client_port, 
                           "Replay attack detected: Duplicate binary payload found.");
-                return -2; /* Replay attack from client */
+                return -2;
             }
         }
     }
 
-    /* --- SLIDING WINDOW BOUNDARY PROTECTION --- 
-     * If at capacity, we reject replicated alerts that are chronologically 
-     * older than our current oldest ACTIVE alert. This prevents loops where 
-     * old data pushes out new data in an infinite cycle.
+    /* --- SLIDING WINDOW PROTECTION --- 
+     * If the recipient's buffer is at capacity, we reject incoming data that is 
+     * chronologically older than our current oldest ACTIVE alert. This prevents 
+     * historical syncs from displacing recent, high-priority tasks.
      */
     if (forced_id > 0 && rec->count >= max_alerts) {
-        uint64_t current_min_active_id = 0xFFFFFFFFFFFFFFFFULL;
-        bool found_active = false;
+        uint64_t min_active_id = 0xFFFFFFFFFFFFFFFFULL;
+        bool has_active = false;
 
         for (int j = 0; j < rec->count; j++) {
-            if (rec->alerts[j].active && rec->alerts[j].id < current_min_active_id) {
-                current_min_active_id = rec->alerts[j].id;
-                found_active = true;
+            if (rec->alerts[j].active && rec->alerts[j].id < min_active_id) {
+                min_active_id = rec->alerts[j].id;
+                has_active = true;
             }
         }
 
-        if (found_active && forced_id < current_min_active_id) {
+        if (has_active && forced_id < min_active_id) {
             if (verbose) {
                 log_event("DEBUG", client_fd, client_ip, client_port, 
                           "Suppressed out-of-window replication for ID %" PRIu64, forced_id);
@@ -357,15 +363,17 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* --- HOUSEKEEPING --- 
-       Clean up expired and overflow alerts before pointing to the new array slot. */
-    clean_expired_alerts(rec);
+    /* --- DETERMINISTIC HOUSEKEEPING --- 
+     * Clean up expired and overflow records using the logical cluster time.
+     * This ensures all nodes perform the cleanup simultaneously in logical time. */
+    clean_expired_alerts_logic(rec, cluster_now);
+    
     if (rec->count >= max_alerts) {
         remove_oldest_alert(rec);
     }
 
     /* --- INITIALIZATION --- 
-       Prepare the Alert structure at the end of the current array. */
+     * Place the new Alert at the end of the current array. */
     Alert *alert = &rec->alerts[rec->count];
     memset(alert, 0, sizeof(Alert));
     
@@ -374,10 +382,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->encrypted_key = base64_decode(base64_encrypted_key, &alert->encrypted_key_len);
     alert->iv = base64_decode(base64_iv, &alert->iv_len);
     
-    /* Decode and copy GCM Authentication Tag */
-    size_t tag_len_actual;
-    unsigned char *tag_raw = base64_decode(base64_tag, &tag_len_actual);
-    if (tag_raw && tag_len_actual == GCM_TAG_LEN) {
+    /* Securely copy the GCM Authentication Tag */
+    size_t actual_tag_len;
+    unsigned char *tag_raw = base64_decode(base64_tag, &actual_tag_len);
+    if (tag_raw && actual_tag_len == GCM_TAG_LEN) {
         memcpy(alert->tag, tag_raw, GCM_TAG_LEN);
     }
     if (tag_raw) free(tag_raw);
@@ -388,21 +396,22 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         alert->create_at = forced_create_at;
     } else {
         alert->id = generate_snowflake_id();
-        alert->create_at = now;
+        alert->create_at = time(NULL);
     }
 
     alert->unlock_at = unlock_at;
     alert->expire_at = expire_at;
     alert->active = 1;
 
-    /* Record in replication ring so peers can discover this alert */
+    /* Add to the replication ring for peer discovery */
     add_to_repl_ring(alert->id, pubkey_hash);
 
     /* --- PERSISTENCE --- 
-       Save to disk. alert_db_save_alert will handle mmap pointers and free heap data. */
+     * If disk storage is enabled, alert_db_save_alert will handle memory-mapping 
+     * and transition heap-allocated buffers to the mmap region. */
     if (use_disk_db) {
         if (alert_db_save_alert(rec, alert) != 0) {
-            log_event("ERROR", client_fd, client_ip, client_port, "Failed to persist alert via mmap");
+            log_event("ERROR", client_fd, client_ip, client_port, "Persistence failed: mmap I/O error");
         }
     } else {
         alert->is_mmaped = false;
@@ -411,10 +420,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     rec->count++;
     
     log_event("DEBUG", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added [Recipient Hash: %.12s...]", 
+              "Alert %" PRIu64 " added successfully for recipient [%.12s...]", 
               alert->id, base64_text);
 
-    return 0; /* Success */
+    return 0; /* Success: Alert ingested and ready for replication */
 }
 
 
@@ -447,8 +456,9 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                     if (!match_hash) continue;
                     bool send_it = false;
                     int mode = subscribers[j].mode;
-                    time_t now = time(NULL);
-                    bool is_locked = (new_alert->unlock_at > now);
+                    uint64_t m_id = get_max_alert_id();
+                    time_t cluster_time = (m_id > 0) ? snowflake_to_timestamp(m_id) : time(NULL);
+                    bool is_locked = (new_alert->unlock_at > cluster_time); 
                     if (mode == MODE_LIVE || mode == MODE_ALL || mode == MODE_NEW) {
                         send_it = true;
                     } 
