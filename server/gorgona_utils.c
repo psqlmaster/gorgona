@@ -40,6 +40,7 @@ int repl_ring_head = 0;
 PeerConfig remote_peers[MAX_PEERS];
 int remote_peer_count = 0;
 char sync_psk[64] = DEFAULT_SYNC_PSK;
+uint64_t global_max_alert_id = 0;
 
 /**
  * Main logging function.
@@ -419,9 +420,12 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     rec->count++;
     
+    if (alert->id > global_max_alert_id) {
+        global_max_alert_id = alert->id;
+    }
+
     log_event("DEBUG", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added successfully for recipient [%.12s...]", 
-              alert->id, base64_text);
+              "Alert %" PRIu64 " added successfully...", alert->id);
 
     return 0; /* Success: Alert ingested and ready for replication */
 }
@@ -707,15 +711,7 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
  * Returns 0 if the database is empty.
  */
 uint64_t get_max_alert_id() {
-    uint64_t max_id = 0;
-    for (int r = 0; r < recipient_count; r++) {
-        for (int i = 0; i < recipients[r].count; i++) {
-            if (recipients[r].alerts[i].id > max_id) {
-                max_id = recipients[r].alerts[i].id;
-            }
-        }
-    }
-    return max_id;
+    return global_max_alert_id;
 }
 
 /* 

@@ -473,8 +473,25 @@ void run_server(int server_fd) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
+                    
+                    /* Сохраняем IP адрес */
                     inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
-                    subscribers[i].port = ntohs(address.sin_port);
+
+                    /* [PORT AUTO-CORRECTION] 
+                     * Проверяем, есть ли этот IP в таблице меша. Если да — используем 
+                     * логический порт сервиса для чистоты логов, иначе — системный порт.
+                     */
+                    int display_port = ntohs(address.sin_port);
+                    for (int n = 0; n < cluster_node_count; n++) {
+                        if (strcmp(cluster_nodes[n].ip, subscribers[i].ip_address) == 0) {
+                            if (cluster_nodes[n].port > 0) {
+                                display_port = cluster_nodes[n].port;
+                            }
+                            break;
+                        }
+                    }
+                    subscribers[i].port = display_port;
+
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;

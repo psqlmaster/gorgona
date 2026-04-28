@@ -419,3 +419,12 @@ void mesh_load_peers_cache() {
         log_event("INFO", -1, NULL, 0, "Mesh: Bootstrapped from cache (%d nodes as temporary seeds)", loaded);
     }
 }
+
+int mesh_get_logical_port_by_ip(const char *ip) {
+    for (int n = 0; n < cluster_node_count; n++) {
+        if (strcmp(cluster_nodes[n].ip, ip) == 0) {
+            return cluster_nodes[n].port;
+        }
+    }
+    return 0;
+}

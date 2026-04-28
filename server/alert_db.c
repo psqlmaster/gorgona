@@ -18,6 +18,7 @@
 
 extern int verbose;
 extern int max_alerts;
+extern uint64_t global_max_alert_id; 
 
 /* A helper function for synchronizing mmap with memory pages */
 static int safe_msync(void *addr, size_t len, int flags) {
@@ -203,7 +204,7 @@ int alert_db_load_recipients(void) {
                 unsigned char *p = base + offset;
                 uint64_t id; memcpy(&id, p, 8);
                 if (id == 0) break; 
-
+                if (id > global_max_alert_id) global_max_alert_id = id;
                 if (rec->count >= rec->capacity) {
                     rec->capacity += 128;
                     rec->alerts = realloc(rec->alerts, rec->capacity * sizeof(Alert));
