@@ -845,9 +845,9 @@ curl -k -u gorgona:BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3 https://64.188.70.15
 
 ##### Grafana Dashboard
 A pre-configured dashboard for cluster visualization is available here:
-[📊 Gorgona Core Cluster Metrics Dashboard](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics)
-
 [![Grafana Dashboard](docs/grafana.png)](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics)
+
+[📊 Gorgona Core Cluster Metrics Dashboard](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics)
 
 The dashboard provides insights into:
 - **Cluster Pulse**: The propagation speed of data between nodes.
