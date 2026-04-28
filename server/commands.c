@@ -245,17 +245,18 @@ static void process_subscribe(int i, char *buffer) {
     free(rest);
 }
 
-/*
- * Command processing AUTH|psk
- * Called on the server side when a PIR client connects to it
+/**
+ * Processes the AUTH|psk handshake command.
+ * Called when a remote entity (Client or Peer) attempts to join the Mesh.
  */
 static void process_auth(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    char *copy = strdup(buffer + 5); 
+    char *copy = strdup(buffer + 5); /* Skip "AUTH|" */
     if (!copy) return;
 
     char *psk = strtok(copy, "|");
     char *max_alerts_str = strtok(NULL, "|");
+    char *port_str = strtok(NULL, "|"); /* Optional logical service port */
 
     if (!psk || !max_alerts_str) {
         cleanup_subscriber(i);
@@ -265,14 +266,16 @@ static void process_auth(int i, char *buffer) {
 
     int peer_max_alerts = atoi(max_alerts_str);
 
-    /* 1. Проверка пароля */
+    /* 1. PSK Verification (Management Plane Security) */
     if (strcmp(psk, sync_psk) != 0) {
-        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Auth failed: Wrong PSK");
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Auth failed: Invalid PSK");
         enqueue_message(i, "Error: Wrong PSK", 15);
         sub->close_after_send = true;
     } 
-    /* 2. Проверка лимита базы (max_alerts) */
-    /* ИЗМЕНЕНИЕ: Если пришел 0 — это КЛИЕНТ. Если > 0 — это ПИР. */
+    /* 2. Capacity Check (Cluster Consistency) 
+     * Convention: peer_max_alerts == 0 means a STANDARD CLIENT.
+     * Convention: peer_max_alerts > 0 means a MESH PEER (Server).
+     */
     else if (peer_max_alerts > 0 && peer_max_alerts != max_alerts) {
         log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
                   "Cluster capacity mismatch! Peer: %d, Local: %d", peer_max_alerts, max_alerts);
@@ -280,23 +283,32 @@ static void process_auth(int i, char *buffer) {
         sub->close_after_send = true;
     } 
     else {
-        /* Успех */
+        /* Authentication Success */
         if (peer_max_alerts == 0) {
             sub->type = SUB_TYPE_CLIENT;
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Binary Client]"); 
         } else {
             sub->type = SUB_TYPE_PEER;
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Mesh Peer]"); 
+            /* If the peer provided its listening port, update it for cleaner logs */
+            if (port_str) {
+                int remote_service_port = atoi(port_str);
+                if (remote_service_port > 0 && remote_service_port < 65535) {
+                    sub->port = remote_service_port;
+                }
+            }
         }
         
         sub->auth_state = AUTH_OK;
         
+        /* Consolidated Log: Format [IP:7777] instead of random ephemeral ports */
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [%s]", 
+                  (sub->type == SUB_TYPE_PEER) ? "Mesh Peer" : "Binary Client");
+        
         char resp[64];
         int r_len = snprintf(resp, sizeof(resp), "AUTH_SUCCESS|%d", max_alerts);
-        enqueue_message(i, resp, r_len);
+        enqueue_message(i, resp, (size_t)r_len);
 
-        /* Если это ПИР (сервер), он запросит SYNC сам. 
-           Если это КЛИЕНТ, мы просто подтвердили вход. */
+        /* Note: Peers will automatically initiate a SYNC request after receiving AUTH_SUCCESS. 
+           Standard clients will simply remain connected to receive real-time updates. */
     }
     free(copy);
 }
@@ -465,17 +477,11 @@ static void process_mgmt_frame(int sub_index, char *frame) {
             }
         }
 
-        /* [ANTI-ENTROPY CORE] 
-         * Trigger SYNC if the peer has more alerts than we do OR if this is a fresh connection.
-         */
+        /* [ANTI-ENTROPY CORE] */
         uint64_t my_max_id = get_max_alert_id();
-        
-        /* State 99 means 'Identified but awaiting first proof of PSK' 
-           If decryption succeeded, the PSK is valid. Graduation time! */
         bool is_fresh_connection = (sub->auth_state == 99);
 
         if (is_fresh_connection || (remote_max_id > my_max_id)) {
-            /* If this is the first MGMT frame after handshake, transition to AUTH_OK */
             if (is_fresh_connection) {
                 sub->auth_state = AUTH_OK;
                 log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Mesh Peer via L2]");
@@ -497,6 +503,8 @@ static void process_mgmt_frame(int sub_index, char *frame) {
                 exists = true;
                 if (reported_port > 0 && reported_port < 65535) {
                     cluster_nodes[n].port = reported_port;
+                    /* SYNC PORT IN SUBSCRIBER STRUCT FOR CLEAN LOGS */
+                    sub->port = reported_port; 
                 }
                 cluster_nodes[n].last_seen = time(NULL);
                 cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
@@ -510,6 +518,10 @@ static void process_mgmt_frame(int sub_index, char *frame) {
             memset(n, 0, sizeof(MeshNode));
             strncpy(n->ip, sub->ip_address, INET_ADDRSTRLEN - 1);
             n->port = (reported_port > 0) ? reported_port : sub->port;
+            
+            /* SYNC PORT IN SUBSCRIBER STRUCT FOR CLEAN LOGS */
+            if (reported_port > 0) sub->port = reported_port;
+
             n->discovered_at = time(NULL);
             n->last_seen = time(NULL);
             n->status = PEER_STATUS_AUTHENTICATED;
@@ -520,7 +532,6 @@ static void process_mgmt_frame(int sub_index, char *frame) {
         if (cmd && strcmp(cmd, "PING") == 0) {
             char pong[128];
             extern int port;
-            /* Reply with PONG | TS | PORT | MY_MAX_ID */
             snprintf(pong, sizeof(pong), "PONG|%s|%d|%" PRIu64, val1 ? val1 : "0", port, my_max_id);
             send_mgmt_command(sub_index, pong);
         }

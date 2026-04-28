@@ -368,9 +368,10 @@ void try_connect_peers() {
                 }
 
                 /* 9. Send Handshake: L1 PSK Authentication */
+                extern int port; 
                 char auth_msg[256];
-                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d", 
-                                        sync_psk, max_alerts);
+                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d", 
+                            sync_psk, max_alerts, port); 
                 
                 enqueue_message(i, auth_msg, (size_t)auth_len);
 

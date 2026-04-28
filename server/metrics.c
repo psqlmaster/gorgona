@@ -161,6 +161,7 @@ static bool validate_auth(const char *request) {
 
 /**
  * Handshakes and responds to a Prometheus HTTP/TLS probe.
+ * Now extracts peer metadata to provide detailed logging for security audits.
  */
 void handle_https_metrics_request(int client_sd) {
     if (!metrics_ssl_ctx) {
@@ -168,23 +169,36 @@ void handle_https_metrics_request(int client_sd) {
         return;
     }
 
+    /* Extract client metadata for logging */
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    char client_ip[INET_ADDRSTRLEN] = "unknown";
+    int client_port = 0;
+
+    if (getpeername(client_sd, (struct sockaddr *)&addr, &addr_len) == 0) {
+        inet_ntop(AF_INET, &addr.sin_addr, client_ip, sizeof(client_ip));
+        client_port = ntohs(addr.sin_port);
+    }
+
     SSL *ssl = SSL_new(metrics_ssl_ctx);
     SSL_set_fd(ssl, client_sd);
 
-    /* Perform the SSL handshake (now in blocking mode) */
+    /* Perform the SSL handshake (now in blocking mode within the child process) */
     int accept_res = SSL_accept(ssl);
     if (accept_res <= 0) {
         int err = SSL_get_error(ssl, accept_res);
-        log_event("DEBUG", -1, NULL, 0, "Metrics: SSL Handshake failed (Error Code: %d)", err);
+        /* Log handshake failures at DEBUG level to avoid log bloating from probes */
+        log_event("DEBUG", client_sd, client_ip, client_port, "Metrics: SSL Handshake failed (Error Code: %d)", err);
         if (verbose) ERR_print_errors_fp(stderr);
     } else {
-        /* Reading an HTTP Request */
-        char rx_buf[4096]; /* Let's increase the buffer for long titles */
+        /* Reading the HTTP Request */
+        char rx_buf[4096]; 
         int bytes = SSL_read(ssl, rx_buf, sizeof(rx_buf) - 1);
         
         if (bytes > 0) {
             rx_buf[bytes] = '\0';
             
+            /* Verify Basic Auth against the cluster sync_psk */
             if (validate_auth(rx_buf)) {
                 char body[8192];
                 int body_len = build_prometheus_payload(body, sizeof(body));
@@ -199,16 +213,19 @@ void handle_https_metrics_request(int client_sd) {
                 SSL_write(ssl, header, h_len);
                 SSL_write(ssl, body, body_len);
             } else {
+                /* Log unauthorized access attempts with the specific source IP and port */
+                log_event("WARN", client_sd, client_ip, client_port, "Metrics: Unauthorized access attempt (Invalid PSK)");
+
                 const char *denied = "HTTP/1.1 401 Unauthorized\r\n"
                                      "WWW-Authenticate: Basic realm=\"Gorgona Metrics\"\r\n"
                                      "Content-Length: 0\r\n"
                                      "Connection: close\r\n\r\n";
                 SSL_write(ssl, denied, (int)strlen(denied));
-                log_event("WARN", -1, NULL, 0, "Metrics: Unauthorized access attempt (Invalid PSK)");
             }
         }
     }
 
+    /* Graceful SSL shutdown and resource cleanup */
     SSL_set_shutdown(ssl, SSL_SENT_SHUTDOWN | SSL_RECEIVED_SHUTDOWN);
     SSL_free(ssl);
     close(client_sd);
