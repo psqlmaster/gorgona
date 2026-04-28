@@ -51,7 +51,7 @@ typedef struct {
 } MeshMetrics;
 
 /* Shared Mesh Node structure */
-typedef struct {
+typedef struct MeshNode {
     char ip[INET_ADDRSTRLEN];
     int port;
     bool is_seed;               /* Hardcoded in config */

@@ -56,6 +56,11 @@ void cleanup_subscriber(int index) {
     int sd = client_sockets[index];
     if (sd <= 0) return;
 
+    Subscriber *sub = &subscribers[index];
+    /* We synchronize the port before the structure is used */
+    if (sub->node_ptr && sub->node_ptr->port > 0) {
+        sub->port = sub->node_ptr->port;
+    }
     /* [LAYER 2 INTEGRATION] 
      * Identify the peer IP before clearing metadata.
      */
@@ -206,6 +211,9 @@ void process_out(int sub_index, int sd) {
 
     /* Handle graceful shutdown after sending requested info (like 'info' or 'version') */
     if (subscribers[sub_index].out_head == NULL && subscribers[sub_index].close_after_send) {
+        if (sub->node_ptr && sub->node_ptr->port > 0) {
+            sub->port = sub->node_ptr->port;
+        }
         log_event("INFO", sd, sub->ip_address, sub->port, "Session finished");
         close(sd);
         client_sockets[sub_index] = 0;
@@ -474,16 +482,17 @@ void run_server(int server_fd) {
                     client_sockets[i] = new_socket;
                     subscribers[i].sock = new_socket;
                     
-                    /* Сохраняем IP адрес */
                     inet_ntop(AF_INET, &address.sin_addr, subscribers[i].ip_address, INET_ADDRSTRLEN); 
 
-                    /* [PORT AUTO-CORRECTION] 
-                     * Проверяем, есть ли этот IP в таблице меша. Если да — используем 
-                     * логический порт сервиса для чистоты логов, иначе — системный порт.
+                    /* [NODE LINKING & PORT AUTO-CORRECTION] 
+                     * We bind a pointer to the mesh node and take the logical port 
                      */
                     int display_port = ntohs(address.sin_port);
+                    subscribers[i].node_ptr = NULL; // По умолчанию
+                    
                     for (int n = 0; n < cluster_node_count; n++) {
                         if (strcmp(cluster_nodes[n].ip, subscribers[i].ip_address) == 0) {
+                            subscribers[i].node_ptr = &cluster_nodes[n]; // Линковка
                             if (cluster_nodes[n].port > 0) {
                                 display_port = cluster_nodes[n].port;
                             }
@@ -845,6 +854,9 @@ void run_server(int server_fd) {
                         }
                     } else if (valread == 0) {
                         /* Connection closed by client while idle */
+                        if (sub->node_ptr && sub->node_ptr->port > 0) {
+                            sub->port = sub->node_ptr->port;
+                        } 
                         log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected") ;
                         cleanup_subscriber(i); 
                         if (sub->in_buffer) free(sub->in_buffer);

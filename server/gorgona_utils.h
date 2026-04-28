@@ -102,6 +102,7 @@ typedef struct {
     char *in_buffer;
     size_t in_pos;
     bool close_after_send;
+    struct MeshNode *node_ptr; 
 } Subscriber;
 
 typedef struct {

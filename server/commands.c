@@ -286,20 +286,31 @@ static void process_auth(int i, char *buffer) {
         /* Authentication Success */
         if (peer_max_alerts == 0) {
             sub->type = SUB_TYPE_CLIENT;
+            
+            /* If we already have this IP in our mesh table, use its configured port for logs */
+            if (sub->node_ptr && sub->node_ptr->port > 0) {
+                sub->port = sub->node_ptr->port;
+            }
         } else {
             sub->type = SUB_TYPE_PEER;
-            /* If the peer provided its listening port, update it for cleaner logs */
+            
+            /* Update logical port from handshake if provided */
             if (port_str) {
                 int remote_service_port = atoi(port_str);
                 if (remote_service_port > 0 && remote_service_port < 65535) {
                     sub->port = remote_service_port;
+                    
+                    /* Sync the port back to the mesh topology table for future reference */
+                    if (sub->node_ptr) {
+                        sub->node_ptr->port = remote_service_port;
+                    }
                 }
             }
         }
         
         sub->auth_state = AUTH_OK;
         
-        /* Consolidated Log: Format [IP:7777] instead of random ephemeral ports */
+        /* [PORT FINALIZED] Log entry will now use the correct logical port (e.g., 7777) */
         log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [%s]", 
                   (sub->type == SUB_TYPE_PEER) ? "Mesh Peer" : "Binary Client");
         
