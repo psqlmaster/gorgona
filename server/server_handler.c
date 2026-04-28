@@ -539,19 +539,44 @@ void run_server(int server_fd) {
 
                         /* 1. DETECTION OF HTTPS (0x16 = TLS Handshake) */
                         if (first_byte == 0x16) {
-                            if (verbose) log_event("INFO", sd, sub->ip_address, sub->port, "HTTPS metrics probe detected. Upgrading to SSL.");
-                            
-                            int current_sd = sd;
-                            /* 1.Remove from the active customers table so that select() no longer affects it */ 
-                            client_sockets[i] = 0; 
-                            /* 2.IMPORTANT: We are returning the socket to blocking mode for OpenSSL to operate */ 
-                            int flags = fcntl(current_sd, F_GETFL, 0);
-                            fcntl(current_sd, F_SETFL, flags & ~O_NONBLOCK);
-                            /* 3. We clear the structure and call the handler */ 
-                            if (sub->in_buffer) free(sub->in_buffer);
-                            memset(sub, 0, sizeof(Subscriber));
-                            handle_https_metrics_request(current_sd);
-                            continue;
+                            if (verbose) log_event("INFO", sd, sub->ip_address, sub->port, "HTTPS metrics probe detected. Forking to SSL handler.");
+                            pid_t pid = fork();
+                            if (pid < 0) {
+                                log_event("ERROR", sd, sub->ip_address, sub->port, "Fork failed for HTTPS request");
+                                cleanup_subscriber(i);
+                                continue;
+                            }
+                            if (pid == 0) {
+                                /* --- CHILD PROCESS --- */
+                                /* 1. Close the listener and ALL other client sockets to prevent resource leaks */
+                                if (server_fd > 0) close(server_fd); 
+                                for (int j = 0; j < max_clients; j++) {
+                                    if (client_sockets[j] > 0 && client_sockets[j] != sd) {
+                                        close(client_sockets[j]);
+                                    }
+                                }
+                                /* 2. FIX: Correct fcntl logic to restore blocking mode */
+                                int flags = fcntl(sd, F_GETFL, 0);
+                                if (flags != -1) {
+                                    fcntl(sd, F_SETFL, flags & ~O_NONBLOCK);
+                                }
+                                /* 3. Handle the metrics request (blocking OpenSSL call) */
+                                handle_https_metrics_request(sd);
+                                /* 4. Exit child immediately */
+                                exit(0);
+                            } else {
+                                /* --- PARENT PROCESS --- */
+                                /* Close our reference to this socket as it's now handled by the child */
+                                close(sd);
+                                client_sockets[i] = 0;
+                                if (sub->in_buffer) {
+                                    free(sub->in_buffer);
+                                    sub->in_buffer = NULL;
+                                }
+                                memset(sub, 0, sizeof(Subscriber));
+                                /* Parent stays in select() and handles other events */
+                                continue;
+                            }
                         }
 
                         /* 2. GORGONA CORE PROTOCOLS (Binary/Text) */

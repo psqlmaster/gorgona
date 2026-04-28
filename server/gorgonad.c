@@ -118,6 +118,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, shutdown_handler);
     signal(SIGTERM, shutdown_handler);
     signal(SIGPIPE, SIG_IGN); 
+    signal(SIGCHLD, SIG_IGN);  /* Automatic cleanup of terminated child processes */
 
     /* Load configuration from file or use defaults */
     int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp; 
@@ -210,7 +211,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* Start listening for incoming connections */
-    if (listen(server_fd, 5) < 0) {
+    if (listen(server_fd, 128) < 0) {
         log_event("ERROR", -1, NULL, 0, "Listen failed: %s", strerror(errno));
         perror("listen");
         exit(EXIT_FAILURE);
