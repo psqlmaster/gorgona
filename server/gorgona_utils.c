@@ -488,11 +488,14 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
  * This function handles various listening modes (LIVE, ALL, LOCK, LAST, SINGLE)
  * and applies filters based on recipient public key hashes. It also performs
  * proactive maintenance by cleaning expired alerts before transmission.
+ *
+ * For MODE_ALL, an optional 'count' can be provided to send the 'N' most
+ * recent historical alerts before entering the live subscription state.
  * 
  * @param sub_index Index of the client in the global subscribers array.
  * @param mode The subscription mode (determines which alerts are sent).
  * @param pubkey_hash_b64_filter Optional filter for a specific recipient.
- * @param count Maximum number of alerts to send (used in MODE_LAST).
+ * @param count Maximum number of historical alerts to send (used in MODE_LAST and counted MODE_ALL).
  */
 void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
@@ -532,14 +535,20 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         }
 
         /* 4. Ordering: Sort alerts by ID (descending) if historical data is requested */
-        if (mode == MODE_LAST || mode == MODE_SINGLE) {
+        /* We sort based on whether it is LAST, SINGLE, or ALL with a specified limit */
+        if (mode == MODE_LAST || mode == MODE_SINGLE || (mode == MODE_ALL && count > 0)) {
             qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
         }
 
-        int limit = (mode == MODE_LAST) ? count : rec->count;
-        int sent_count = 0;
-
         /* 5. Transmission: Process alerts in the recipient's buffer */
+        int limit;
+        if (mode == MODE_LAST || (mode == MODE_ALL && count > 0)) {
+            limit = count; 
+        } else {
+            limit = rec->count; /* If count == 0, return everything */
+        }
+        
+        int sent_count = 0;
         for (int i = 0; i < rec->count && sent_count < limit; i++) {
             Alert *a = &rec->alerts[i];
             
@@ -589,7 +598,8 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         r++; /* Move to the next recipient in the list */
     }
 
-    /* 6. Post-processing: Handle one-time requests by flagging connection for closure */
+    /* 6. Post-processing: Handle one-time requests by flagging connection for closure.
+     * Note: MODE_ALL is a subscription, so it is intentionally excluded here. */
     if (mode == MODE_LAST || mode == MODE_SINGLE) {
         subscribers[sub_index].close_after_send = true;
     }

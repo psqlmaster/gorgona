@@ -133,64 +133,57 @@ static void process_send(int i, char *buffer) {
  */
 static void process_listen(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-
     char *rest = strdup(buffer + 7);
-    if (!rest) {
-        char *error_msg = "Error: Memory allocation failed ";
-        enqueue_message(i, error_msg, strlen(error_msg));
-        return;
+    if (!rest) return;
+
+    char *pubkey_hash_b64 = rest;
+    char *mode_str = NULL;
+    char *count_str = NULL;
+
+    char *p1 = strchr(pubkey_hash_b64, '|');
+    if (p1) {
+        *p1 = '\0';
+        mode_str = p1 + 1;
+        char *p2 = strchr(mode_str, '|');
+        if (p2) {
+            *p2 = '\0';
+            count_str = p2 + 1;
+        }
     }
-    
-    char *pubkey_hash_b64 = strtok(rest, "| ");
-    char *mode_str = strtok(NULL, "| ");
-    char *count_str = strtok(NULL, "| ");
-    
+
     int sub_mode = MODE_SINGLE;
-    if (mode_str) {
+    if (mode_str && strlen(mode_str) > 0) {
         trim_string(mode_str);
         char upper_mode[16];
         strncpy(upper_mode, mode_str, sizeof(upper_mode) - 1);
         upper_mode[sizeof(upper_mode) - 1] = '\0';
-        for (char *p = upper_mode; *p; p++) *p = toupper(*p); 
+        for (char *p = upper_mode; *p; p++) *p = toupper(*p);
         if (strcmp(upper_mode, "LAST") == 0) sub_mode = MODE_LAST;
         else if (strcmp(upper_mode, "NEW") == 0) sub_mode = MODE_NEW;
     }
-    
+
     int count = 1;
-    if (count_str) {
-        trim_string(count_str);
+    if (count_str && strlen(count_str) > 0) {
         count = atoi(count_str);
         if (count <= 0) count = 1;
     }
-    
-    trim_string(pubkey_hash_b64);
-    if (strlen(pubkey_hash_b64) == 0 && sub_mode != MODE_LAST) {
-        char *error_msg = "Error: Empty pubkey hash in LISTEN ";
-        enqueue_message(i, error_msg, strlen(error_msg));
-        free(rest);
-        return;
-    }
 
-    if (strlen(pubkey_hash_b64) > 0) {
+    if (pubkey_hash_b64 && strlen(pubkey_hash_b64) > 0) {
+        trim_string(pubkey_hash_b64);
         strncpy(sub->pubkey_hash, pubkey_hash_b64, sizeof(sub->pubkey_hash) - 1);
-        sub->pubkey_hash[sizeof(sub->pubkey_hash) - 1] = '\0';
     } else {
         sub->pubkey_hash[0] = '\0';
     }
-    
+
     sub->mode = sub_mode;
-    
     if (sub_mode != MODE_NEW) {
-        send_current_alerts(i, sub_mode, pubkey_hash_b64, count);
+        send_current_alerts(i, sub_mode, sub->pubkey_hash, count);
     }
     
-    char sub_msg[512];
-    snprintf(sub_msg, sizeof(sub_msg), "Subscribed to [%s] %s mode [%d]", 
-             (pubkey_hash_b64 && strlen(pubkey_hash_b64) > 0) ? pubkey_hash_b64 : "ALL KEYS",
-             mode_str ? mode_str : "SINGLE",
-             count);
+    char sub_msg[256];
+    snprintf(sub_msg, sizeof(sub_msg), "Subscribed to [%s] mode", 
+             (sub->pubkey_hash[0] != '\0') ? sub->pubkey_hash : "ALL");
     enqueue_message(i, sub_msg, strlen(sub_msg));
-    
     free(rest);
 }
 
@@ -199,17 +192,35 @@ static void process_listen(int i, char *buffer) {
  */
 static void process_subscribe(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-
     char *rest = strdup(buffer + 10);
     if (!rest) return;
 
-    char *mode_str = strtok(rest, "|");
-    char *pubkey_hash_b64 = strtok(NULL, "|");
+    /* Надежный парсинг полей mode|hash|count */
+    char *mode_str = rest;
+    char *pubkey_hash_b64 = NULL;
+    char *count_str = NULL;
 
-    if (!mode_str) {
+    char *first_delim = strchr(mode_str, '|');
+    if (first_delim) {
+        *first_delim = '\0';
+        pubkey_hash_b64 = first_delim + 1;
+        
+        char *second_delim = strchr(pubkey_hash_b64, '|');
+        if (second_delim) {
+            *second_delim = '\0';
+            count_str = second_delim + 1;
+        }
+    }
+
+    if (!mode_str || strlen(mode_str) == 0) {
         enqueue_message(i, "Error: Missing mode in SUBSCRIBE", 31);
         free(rest);
         return;
+    }
+
+    int count = 0;
+    if (count_str && strlen(count_str) > 0) {
+        count = atoi(count_str);
     }
 
     trim_string(mode_str);
@@ -231,6 +242,8 @@ static void process_subscribe(int i, char *buffer) {
     }
 
     sub->mode = sub_mode;
+    
+    /* If the hash is empty (between ||), the subscription applies to all keys */
     if (pubkey_hash_b64 && strlen(pubkey_hash_b64) > 0) {
         trim_string(pubkey_hash_b64);
         strncpy(sub->pubkey_hash, pubkey_hash_b64, sizeof(sub->pubkey_hash) - 1);
@@ -239,8 +252,9 @@ static void process_subscribe(int i, char *buffer) {
     }
 
     if (sub_mode != MODE_NEW) {
-        send_current_alerts(i, sub_mode, pubkey_hash_b64, 1);
+        send_current_alerts(i, sub_mode, sub->pubkey_hash, count);
     }
+    
     enqueue_message(i, "Subscription updated", 20);
     free(rest);
 }

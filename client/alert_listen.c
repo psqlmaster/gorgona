@@ -761,27 +761,36 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         return 1;
     }
 
+    /* Set the default value based on the mode  */
+    if (strcmp(mode, "all") == 0) {
+        count = 0; /* 0 means “unlimited” for the “all” mode */
+    } else {
+        count = 1; /* The default value for “last” mode is 1 */
+    }
+
     /* Parse arguments */
-    if (strcmp(mode, "last") == 0) {
+    if (strcmp(mode, "last") == 0 || strcmp(mode, "all") == 0) {
         if (argc == 2) {
-            // No pubkey_hash_b64
+            /* There are no parameters; we'll use the default values above */
         } else if (argc == 3) {
             char *endptr;
-            count = strtol(argv[2], &endptr, 10);
-            if (*endptr != '\0' || count <= 0) {
+            long val = strtol(argv[2], &endptr, 10);
+            if (*endptr != '\0' || val <= 0) {
                 pubkey_hash_b64 = argv[2];
-                count = 1;
+                /* The `count` parameter remains at its default value (0 for `all`, 1 for `last`) */
+            } else {
+                count = (int)val;
             }
         } else if (argc == 4) {
             char *endptr;
-            count = strtol(argv[2], &endptr, 10);
+            count = (int)strtol(argv[2], &endptr, 10);
             if (*endptr != '\0' || count <= 0) {
                 fprintf(stderr, "Invalid count: %s\n", argv[2]);
                 return 1;
             }
             pubkey_hash_b64 = argv[3];
         } else {
-            fprintf(stderr, "Usage for last: listen last [<count>] [pubkey_hash_b64]\n");
+            fprintf(stderr, "Usage: listen %s [<count>] [pubkey_hash_b64]\n", mode);
             return 1;
         }
     } else if (strcmp(mode, "single") == 0) {
@@ -933,8 +942,8 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                                    current_pubkey_hash ? current_pubkey_hash : "", mode, count);
             } else {
                 /* Continuous subscriptions use standard SUBSCRIBE format */
-                req_len = snprintf(req_buffer, sizeof(char) * needed_len, "SUBSCRIBE %s|%s", 
-                                   mode, current_pubkey_hash ? current_pubkey_hash : "");
+                req_len = snprintf(req_buffer, sizeof(char) * needed_len, "SUBSCRIBE %s|%s|%d", 
+                                   mode, current_pubkey_hash ? current_pubkey_hash : "", count);
             }
             
             /* Ship the protocol request to the mesh provider */

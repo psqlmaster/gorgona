@@ -58,7 +58,7 @@ void print_help(const char *program_name) {
     printf("  " CLR_YELLOW "listen" CLR_RESET " " CLR_CYAN "<mode> [<count>] [pubkey_hash_b64]" CLR_RESET "\n");
     printf("    Listens for messages. " CLR_BOLD "Modes:" CLR_RESET "\n");
     printf("    " CLR_CYAN "live" CLR_RESET "   - only active messages (unlock_at <= now)\n");
-    printf("    " CLR_CYAN "all" CLR_RESET "    - all non-expired messages, including locked\n");
+    printf("    " CLR_CYAN "all" CLR_RESET "    - all non-expired messages, including locked, optionally last [<count>] and stay subscribed\n");
     printf("    " CLR_CYAN "lock" CLR_RESET "   - only locked messages (unlock_at > now)\n");
     printf("    " CLR_CYAN "single" CLR_RESET " - only active messages for the given pubkey_hash_b64\n");
     printf("    " CLR_CYAN "last" CLR_RESET "   - the most recent [<count>] message(s), (count defaults to 1), optionally filtered by pubkey_hash_b64\n");
