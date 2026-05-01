@@ -92,6 +92,7 @@ sudo gorgona listen last 4 RWTPQzuhzBw=
 ```
 #### Quick Start Gorgona Stheno 
 Run the following command to create and start the container:
+
 ```bash
 docker run -d \
  --name gorgona_stheno \
