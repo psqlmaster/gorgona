@@ -169,17 +169,16 @@ Recipient *add_recipient(const unsigned char *hash) {
  */
 void remove_recipient_at_index(int index) {
     if (index < 0 || index >= recipient_count) return;
+    /* We are clearing the alerts and the alert array for this recipient */
+    for (int j = 0; j < recipients[index].count; j++) {
+        free_alert(&recipients[index].alerts[j]);
+    }
+    free(recipients[index].alerts);
 
-    /* Move the last element into the current slot to maintain a packed array */
     if (index < recipient_count - 1) {
         memcpy(&recipients[index], &recipients[recipient_count - 1], sizeof(Recipient));
     }
-
     recipient_count--;
-    
-    if (verbose) {
-        fprintf(stderr, "Recipient removed from memory. Total keys: %d\n", recipient_count);
-    }
 }
 
 /**
@@ -187,26 +186,30 @@ void remove_recipient_at_index(int index) {
  * Note: Must handle index externally if called in a loop.
  */
 void clean_expired_alerts_logic(Recipient *rec, time_t reference_time) {
-    int expired_found = 0;
-
+    int changes_made = 0; /* We detect any data deletion from RAM */
     for (int i = 0; i < rec->count; ) {
-        /* Используем переданное время reference_time вместо time(NULL) */
-        if (rec->alerts[i].active && rec->alerts[i].expire_at <= reference_time) {
-            if (use_disk_db) {
+        /* Delete if it is NO LONGER active (Revoke) OR if the time has expired */
+        if (!rec->alerts[i].active || rec->alerts[i].expire_at <= reference_time) {
+            
+            if (use_disk_db && rec->alerts[i].active) {
+                /* If an alert was active but has expired, we mark it as inactive in the database before removing it from memory */
                 alert_db_deactivate_alert(&rec->alerts[i]);
                 rec->waste_count++;
             }
+
             free_alert(&rec->alerts[i]);
             memmove(&rec->alerts[i], &rec->alerts[i + 1], sizeof(Alert) * (rec->count - i - 1));
             rec->count--;
-            expired_found++;
+            
+            changes_made++; /* was deleted from RAM */
         } else {
             i++;
         }
     }
-
-    if (use_disk_db && expired_found > 0) {
+    if (use_disk_db && changes_made > 0) {
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
+         /* We call sync if: 
+         * A lot of waste has accumulated (waste_count >= waste_limit) */ 
         if (rec->waste_count >= waste_limit) {
             alert_db_sync(rec);
         }
@@ -864,3 +867,4 @@ void run_global_maintenance(void) {
         last_cache_dump = now;
     }
 }
+
