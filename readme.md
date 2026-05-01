@@ -90,6 +90,21 @@ printf "[server]\nip = 64.188.70.158\nport = 7777\nsync_psk = BQQCyN8zo4La2lRSIQ
 sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && sudo cp ./gorgona /usr/bin && sudo mkdir -p /var/lib/gorgona && \
 sudo gorgona listen last 4 RWTPQzuhzBw=
 ```
+#### Quick Start Gorgona Stheno 
+Run the following command to create and start the container:
+```bash
+docker run -d \
+ --name gorgona_stheno \
+ --network host \
+ --restart unless-stopped \
+ -v /etc/gorgona:/etc/gorgona \
+ -v /var/lib/gorgona:/var/lib/gorgona \
+ perynfr/gorgona_stheno:latest
+``` 
+###### Accessing the Dashboard
+1. Open your browser and go to: `http://<your-server-ip>:8000`
+2. Default Login: admin
+3. Default Password: admin
 
 #### Installation
 
@@ -1034,3 +1049,4 @@ WantedBy=multi-user.target
 start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
+
