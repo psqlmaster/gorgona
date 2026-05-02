@@ -96,6 +96,13 @@ sudo docker run -d \
   perynfr/gorgona_stheno:latest && \
 sudo docker image prune -f
 ```
+- Accessing the Dashboard
+1. Open your browser and go to: `http://<your-server-ip>:8000/`
+2. **Default Login:** `admin`
+3. **Default Password:** `admin`
+
+![ ](docs/gorgona_stheno.png)
+
 #### Quick Start
 
 ```bash
