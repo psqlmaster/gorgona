@@ -80,6 +80,22 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 - **OpenBMC ready**: Extremely low footprint and zero-dependency C implementation make it ideal for Baseboard Management Controllers (BMC).
 - **Storage longevity**: Optimized `mmap` I/O significantly reduces Flash memory wear-leveling cycles on routers and IoT devices.
 
+
+#### Quick Start Gorgona Stheno 
+Run the following command to create and start the container:
+
+```bash
+sudo docker pull perynfr/gorgona_stheno:latest && \
+sudo docker rm -f gorgona_stheno && \
+sudo docker run -d \
+  --name gorgona_stheno \
+  --network host \
+  --restart unless-stopped \
+  -v /etc/gorgona:/etc/gorgona \
+  -v /var/lib/gorgona:/var/lib/gorgona \
+  perynfr/gorgona_stheno:latest && \
+sudo docker image prune -f
+```
 #### Quick Start
 
 ```bash
@@ -90,18 +106,7 @@ printf "[server]\nip = 64.188.70.158\nport = 7777\nsync_psk = BQQCyN8zo4La2lRSIQ
 sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && sudo cp ./gorgona /usr/bin && sudo mkdir -p /var/lib/gorgona && \
 sudo gorgona listen last 4 RWTPQzuhzBw=
 ```
-#### Quick Start Gorgona Stheno 
-Run the following command to create and start the container:
 
-```bash
-docker run -d \
- --name gorgona_stheno \
- --network host \
- --restart unless-stopped \
- -v /etc/gorgona:/etc/gorgona \
- -v /var/lib/gorgona:/var/lib/gorgona \
- perynfr/gorgona_stheno:latest
-``` 
 ###### Accessing the Dashboard
 1. Open your browser and go to: `http://<your-server-ip>:8000`
 2. Default Login: admin
