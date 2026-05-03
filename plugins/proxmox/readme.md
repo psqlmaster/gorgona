@@ -26,7 +26,7 @@ apt update && apt install python3-flask -y
 ```
 
 #### 2. Setup the Bridge Script
-Create a directory and save the bridge script:
+Create a directory and save the [bridge script](bridge.py) :
 ```bash
 mkdir -p /root/gorgona/plugins/proxmox
 vim /root/gorgona/plugins/proxmox/bridge.py
