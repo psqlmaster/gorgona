@@ -5,6 +5,7 @@
 
 - [Introduction](#introduction)
 - [Features](#features)
+- [Plugins](#plugins)
 - [Advantages](#advantages)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
@@ -57,6 +58,10 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Flexible & Efficient Storage**: High-speed In-Memory mode or `mmap`-backed disk persistence. Features automatic ring-buffer management and "Vacuum" auto-compaction to keep the database lean and fast.
 - **Fast & Lightweight**: Zero-dependency implementation in pure C99/C11 with OpenSSL. Engineered for high concurrency, low latency, and a minimal resource footprint in critical infrastructure.
 - **Authorized Message Revocation**: Scheduled tasks can be cancelled before they unlock. The revocation process uses RSA digital signatures to prove ownership to the mesh nodes. Since servers are "blind carriers", only the holder of the private key can authorized the deletion of a message across the entire P2P network.
+
+#### plugins    
+
+- **Proxmox VE (8.2+)** integration: A lightweight bridge that receives Webhook notifications and forwards them to the Gorgona P2P Mesh Network -> [View Setup Guide](plugins/proxmox/readme.md)
 
 #### Advantages
 
