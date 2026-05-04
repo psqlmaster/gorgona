@@ -1,6 +1,6 @@
 ### Gorgona Notification Bridge for Proxmox VE
 
-A lightweight Python-based bridge that receives Webhook notifications from **Proxmox VE (8.2+)** and forwards them to the **Gorgona P2P Mesh Network**.
+A lightweight bridge that receives Webhook notifications from **Proxmox VE (8.2+)** and forwards them to the **Gorgona P2P Mesh Network**.
 
 ![_](gorgona_stheno.png)
 
@@ -23,6 +23,16 @@ A lightweight Python-based bridge that receives Webhook notifications from **Pro
 On your Proxmox host, install the required Python library:
 ```bash
 apt update && apt install python3-flask -y
+```
+
+#### 2. Install gorgona client
+```bash
+apt install -y libssl-dev git gcc make && \
+cd && git clone --depth 1 https://github.com/psqlmaster/gorgona.git && \
+cd gorgona && make clean && make && mkdir -p /etc/gorgona /var/lib/gorgona && \
+printf "[server]\nip = 64.188.70.158\nport = 7777\nsync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3\n" | tee /etc/gorgona/gorgona.conf >/dev/null && \
+mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && cp ./gorgona /usr/bin && mkdir -p /var/lib/gorgona && \
+gorgona listen last 4 RWTPQzuhzBw=
 ```
 
 #### 2. Setup the Bridge Script
@@ -102,3 +112,4 @@ journalctl -u gorgona-bridge -f
 **Common issues:**
 * **Status 400:** Check if the "Body" JSON in Proxmox UI is valid.
 * **Status 500:** Check if the `GORGONA_BIN` path and `PUBLIC_KEY` in `bridge.py` are correct.
+
