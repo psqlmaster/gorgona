@@ -2,7 +2,7 @@
 
 A lightweight bridge that receives Webhook notifications from **Proxmox VE (8.2+)** and forwards them to the **Gorgona P2P Mesh Network**.
 
-[![_](gorgona_stheno.png)](readme.md#quick-start-native-client)
+[![_](gorgona_stheno.png)](../../readme.md#quick-start-native-client)
 
 #### Features
 * **Multi-line Support:** Preserves the formatting of Proxmox backup logs.
