@@ -8,6 +8,8 @@
 - [Plugins](#plugins)
 - [Advantages](#advantages)
 - [Quick Start](#quick-start)
+  - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno)
+  - [Quick Start Native client](#quick-start-native-client)
 - [Installation](#installation)
   - [Install Client](#install-client)
   - [Install Server](#install-server)
@@ -109,7 +111,7 @@ sudo docker image prune -f
 
 ![ ](docs/gorgona_stheno.png)
 
-#### Quick Start
+#### Quick Start Native client 
 
 ```bash
 sudo apt update && sudo apt install -y libssl-dev git gcc make && \
