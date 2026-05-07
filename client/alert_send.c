@@ -189,19 +189,36 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     /* 6. MESH LAYER AUTHENTICATION (The L2 Handshake) */
     if (l2_enabled) {
         char auth_req[256];
-        int al = snprintf(auth_req, 256, "AUTH|%s|0", config.sync_psk);
+        /* 
+         * Strict Protocol Update: 
+         * Sending 4 fields: [psk | max_alerts(0) | max_ttl(0) | port(0)] 
+         * '0' for alerts/ttl/port identifies this connection as a standard client.
+         */
+        int al = snprintf(auth_req, sizeof(auth_req), "AUTH|%s|0|0|0", config.sync_psk);
+        
         uint32_t al_net = htonl(al);
         if (send(sock, &al_net, 4, MSG_NOSIGNAL) != 4 || send(sock, auth_req, al, MSG_NOSIGNAL) != al) {
             peer_manager_mark_bad(current_ip);
             close(sock); goto cleanup_all;
         }
-        /* Drain auth response - this is a blocking RTT call */
+
+        /* Drain auth response - handle the new AUTH_SUCCESS|alerts|ttl format */
         uint32_t a_r_l_n;
         if (read(sock, &a_r_l_n, 4) == 4) {
             size_t a_r_l = ntohl(a_r_l_n);
             if (a_r_l < 1024) { 
                 char a_buf[1024]; 
-                read(sock, a_buf, a_r_l); 
+                ssize_t read_bytes = read(sock, a_buf, a_r_l);
+                if (read_bytes > 0) {
+                    a_buf[read_bytes] = '\0';
+                    if (verbose_flag) printf("Mesh: Authentication successful (%s)\n", a_buf);
+                    
+                    /* Safety check: if server rejected PSK */
+                    if (strstr(a_buf, "Error:")) {
+                        fprintf(stderr, "Auth Error: %s\n", a_buf);
+                        close(sock); goto cleanup_all;
+                    }
+                }
             }
         }
     }

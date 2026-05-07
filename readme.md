@@ -8,8 +8,6 @@
 - [Plugins](#plugins)
 - [Advantages](#advantages)
 - [Quick Start](#quick-start)
-  - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno)
-  - [Quick Start Native client](#quick-start-native-client)
 - [Installation](#installation)
   - [Install Client](#install-client)
   - [Install Server](#install-server)
@@ -111,7 +109,7 @@ sudo docker image prune -f
 
 ![ ](docs/gorgona_stheno.png)
 
-#### Quick Start Native client 
+#### Quick Start
 
 ```bash
 sudo apt update && sudo apt install -y libssl-dev git gcc make && \
@@ -176,6 +174,7 @@ Controls the `gorgonad` daemon behavior.
 [server]
 port = 7777                                           # Listen port
 max_alerts = 1000                                     # Max alerts stored per key
+max_alert_ttl = 7776000                               # (90 days) lifetime in seconds
 max_clients = 100                                     # Concurrent client connections
 max_log_size = 10                                     # Log rotation size in MB
 log_level = info                                      # info, error, or debug
@@ -1070,4 +1069,5 @@ WantedBy=multi-user.target
 start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
+
 

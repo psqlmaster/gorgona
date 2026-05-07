@@ -42,46 +42,64 @@ void shutdown_handler(int sig) {
 }
 
 void print_server_help(const char *program_name) {
-    printf("Gorgona Mesh Server (Version %s)\n", VERSION);
-    printf("Usage: %s [-h|--help] [-v|--verbose] [-V|--version]\n", program_name);
+    // ANSI Цвета
+    #define CLR_RESET      "\033[0m"
+    #define CLR_BOLD       "\033[1m"
+    #define CLR_GREEN      "\033[0;32m"
+    #define CLR_YELLOW     "\033[0;33m"
+    #define CLR_CYAN       "\033[0;36m"
+    #define CLR_MAGENTA    "\033[0;35m"
+    #define CLR_WHITE_BOLD "\033[1;37m"
+
+    printf(CLR_BOLD CLR_GREEN "Gorgona Mesh Server" CLR_RESET " (Version " CLR_YELLOW "%s" CLR_RESET ")\n", VERSION);
+    printf(CLR_BOLD "Usage:" CLR_RESET " %s " CLR_CYAN "[-h|--help] [-v|--verbose] [-V|--version]" CLR_RESET "\n", program_name);
     
-    printf("\nDescription:\n");
+    printf("\n" CLR_BOLD "Description:" CLR_RESET "\n");
     printf(" The gorgona server is a decentralized P2P node for encrypted alert delivery.\n");
     printf(" It implements a Dual-Layer architecture:\n");
     printf("  - Layer 1 (Command Plane): Blind E2E encrypted data replication.\n");
     printf("  - Layer 2 (Management Plane): AES-256-GCM encrypted mesh for PEX and metrics.\n");
 
-    printf("\nFlags:\n");
-    printf(" -h, --help     Displays this help message\n");
-    printf(" -v, --verbose  Enables detailed trace (L2 metrics, gossip, decryption events)\n");
-    printf(" -V, --version  Displays version information\n");
+    printf("\n" CLR_BOLD "Flags:" CLR_RESET "\n");
+    printf(" " CLR_CYAN "-h, --help" CLR_RESET "     Displays this help message\n");
+    printf(" " CLR_CYAN "-v, --verbose" CLR_RESET "  Enables detailed trace (L2 metrics, gossip, decryption events)\n");
+    printf(" " CLR_CYAN "-V, --version" CLR_RESET "  Displays version information\n");
 
-    printf("\nConfiguration (/etc/gorgona/gorgonad.conf):\n");
-    printf(" [server]\n");
-    printf("  port = <port>           Listen port (default: 5555)\n");
-    printf("  max_alerts = <number>   Storage limit per recipient key\n");
-    printf("  max_clients = <number>  Total TCP connection limit (Clients + Peers)\n");
-    printf("  use_disk_db = <bool>    Persistence in " ALERT_DB_DIR "\n");
-    printf("  log_level = <level>     \"info\" (standard) or \"debug\" (full P2P trace)\n");
-    printf("  vacuum_threshold_percent = <%%>  Trigger database compression (1-100)\n");
+    printf("\n" CLR_BOLD "Configuration (" CLR_CYAN "/etc/gorgona/gorgonad.conf" CLR_RESET "):\n");
+    printf(" " CLR_MAGENTA "[server]" CLR_RESET "\n");
+    printf("  " CLR_CYAN "port" CLR_RESET " = <port>           Listen port (default: 5555)\n");
+    printf("  " CLR_CYAN "max_alerts" CLR_RESET " = <number>   Storage limit per recipient key\n");
+    printf("  " CLR_CYAN "max_alert_ttl" CLR_RESET " = <sec>   Global cluster-wide TTL limit (default: 30 days)\n");
+    printf("  " CLR_CYAN "max_clients" CLR_RESET " = <number>  Total TCP connection limit (Clients + Peers)\n");
+    printf("  " CLR_CYAN "use_disk_db" CLR_RESET " = <bool>    Persistence in " CLR_YELLOW ALERT_DB_DIR CLR_RESET "\n");
+    printf("  " CLR_CYAN "log_level" CLR_RESET " = <level>     \"info\" (standard) or \"debug\" (full P2P trace)\n");
+    printf("  " CLR_CYAN "vacuum_threshold_percent" CLR_RESET " = <%%>  Trigger database compression (1-100)\n");
 
-    printf("\n [replication]\n");
-    printf("  sync_psk = <key>        Cluster-wide secret for Layer 2 encryption (AES-256-GCM)\n");
-    printf("  sync_interval = <sec>   Gossip & Heartbeat frequency (default: 10s)\n");
-    printf("  peer = <IP:PORT>        Seed node for initial discovery (can be multiple entries)\n");
+    printf("\n " CLR_MAGENTA "[replication]" CLR_RESET "\n");
+    printf("  " CLR_CYAN "sync_psk" CLR_RESET " = <key>        Cluster-wide secret for Layer 2 encryption (AES-256-GCM)\n");
+    printf("  " CLR_CYAN "sync_interval" CLR_RESET " = <sec>   Gossip & Heartbeat frequency (default: 10s)\n");
+    printf("  " CLR_CYAN "peer" CLR_RESET " = <IP:PORT>        Seed node for initial discovery (can be multiple entries)\n");
 
-    printf("\nMesh Resilience:\n");
+    printf("\n" CLR_BOLD "Mesh Resilience:" CLR_RESET "\n");
     printf(" - Anti-Entropy: Continuous MaxID synchronization ensures data consistency.\n");
     printf(" - Intelligent Routing: Best peers are prioritized via 'Gorgona Score' (RTT/Throughput).\n");
-    printf(" - Self-Healing: Dynamic node discovery (PEX) and boot-strapping from /var/lib/gorgona/peers.cache.\n");
+    printf(" - Self-Healing: Dynamic node discovery (PEX) and boot-strapping from " CLR_CYAN "/var/lib/gorgona/peers.cache" CLR_RESET "\n");
 
-    printf("\nDiagnostic Commands (via nc/telnet):\n");
-    printf(" status <sync_psk>        Detailed L1/L2 metrics and cluster topology map.\n");
-    printf(" info                     Brief uptime and identification.\n");
-    printf(" help                     Lists available plaintext commands.\n");
+    printf("\n" CLR_BOLD "Diagnostic Commands (via " CLR_CYAN "nc/telnet" CLR_RESET "):\n");
+    printf(" " CLR_YELLOW "status" CLR_RESET " <sync_psk>        Detailed L1/L2 metrics and cluster topology map.\n");
+    printf(" " CLR_YELLOW "info" CLR_RESET "                     Brief uptime and identification.\n");
+    printf(" " CLR_YELLOW "help" CLR_RESET "                     Lists available plaintext commands.\n");
 
-    printf("\nExample:\n");
-    printf(" %s --verbose\n", program_name);
+    printf("\n" CLR_BOLD "Example:" CLR_RESET "\n");
+    printf(" " CLR_WHITE_BOLD "%s --verbose" CLR_RESET "\n", program_name);
+
+    #undef CLR_RESET
+    #undef CLR_BOLD
+    #undef CLR_GREEN
+    #undef CLR_YELLOW
+    #undef CLR_CYAN
+    #undef CLR_MAGENTA
+    #undef CLR_WHITE_BOLD
 }
 int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
 
@@ -121,12 +139,12 @@ int main(int argc, char *argv[]) {
     signal(SIGCHLD, SIG_IGN);  /* Automatic cleanup of terminated child processes */
 
     /* Load configuration from file or use defaults */
-    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp; 
+    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config; 
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
 
     read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
-                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp); 
+                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config); 
     sync_interval = sync_interval_tmp;
     if (verbose) {
         printf("DEBUG: sync_interval applied: %d seconds\n", sync_interval);
@@ -137,6 +155,7 @@ int main(int argc, char *argv[]) {
     log_event("INFO", -1, NULL, 0, "Layer 2: Management Plane Initialized with PSK fingerprint");
 
     max_alerts = max_alerts_config;
+    max_alert_ttl = max_ttl_config;
     vacuum_threshold = vacuum_threshold_config;
     max_clients = max_clients_config;
     max_log_size = max_log_size_config;

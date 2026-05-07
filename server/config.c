@@ -29,7 +29,7 @@ typedef enum {
  * [replication] - P2P synchronization settings (PSK, peer list)
  */
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
-                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, int *sync_interval) {
+                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, int *sync_interval, int *max_ttl) {
     
     /* Initialize default values in case the config file is missing or incomplete */
     *port = DEFAULT_SERVER_PORT;
@@ -40,6 +40,7 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
     *use_disk_db = 0; 
     *vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
     *sync_interval = DEFAULT_SYNC_INTERVAL;
+    *max_ttl = DEFAULT_MAX_ALERT_TTL;
     
     /* Reset replication globals before parsing */
     remote_peer_count = 0;
@@ -142,6 +143,9 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
                     strncpy(log_level, value, 31);
                     log_level[31] = '\0';
                 }
+            } else if (strcmp(key, "max_alert_ttl") == 0) {
+                *max_ttl = atoi(value);
+                if (*max_ttl < 60) *max_ttl = 60;
             }
         } 
         else if (current_section == SECTION_REPLICATION) {

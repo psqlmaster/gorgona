@@ -903,7 +903,12 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             /* --- 2.2 LAYER 2 HANDSHAKE --- */
             if (l2_mesh_enabled) {
                 char auth_req[256];
-                int auth_len = snprintf(auth_req, sizeof(auth_req), "AUTH|%s|0", config.sync_psk);
+                /* 
+                 * Strict Protocol Update:
+                 * We must send exactly 4 fields after AUTH|: [psk|max_alerts|max_ttl|port].
+                 * For a standard listener client, we send '0' for the last three fields.
+                 */
+                int auth_len = snprintf(auth_req, sizeof(auth_req), "AUTH|%s|0|0|0", config.sync_psk);
                 uint32_t auth_len_net = htonl(auth_len);
                 
                 /* Perform PSK-based authentication */
@@ -914,15 +919,27 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                     continue; /* Try next available node */
                 }
 
-                /* SYNC BLOCK: Clear AUTH_SUCCESS from socket to keep alert stream clean */
+                /* 
+                 * Drain AUTH_SUCCESS from socket. 
+                 * The server now responds with "AUTH_SUCCESS|max_alerts|max_ttl".
+                 */
                 uint32_t a_resp_len_n;
                 if (recv(sock, &a_resp_len_n, sizeof(uint32_t), MSG_WAITALL) == sizeof(uint32_t)) {
                     size_t a_resp_len = ntohl(a_resp_len_n);
                     if (a_resp_len < 1024) {
                         char a_buf[1024];
-                        recv(sock, a_buf, a_resp_len, MSG_WAITALL);
-                        a_buf[a_resp_len] = '\0';
-                        if (verbose) printf("Mesh Status: %s\n", a_buf);
+                        ssize_t read_bytes = recv(sock, a_buf, a_resp_len, MSG_WAITALL);
+                        if (read_bytes > 0) {
+                            a_buf[read_bytes] = '\0';
+                            if (verbose) printf("Mesh Status: %s\n", a_buf);
+
+                            /* Safety: check if the server explicitly rejected us */
+                            if (strstr(a_buf, "Error:")) {
+                                fprintf(stderr, "Auth Error: %s\n", a_buf);
+                                close(sock);
+                                goto backoff;
+                            }
+                        }
                     }
                 }
             } else if (verbose) {

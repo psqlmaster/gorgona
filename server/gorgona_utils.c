@@ -41,6 +41,7 @@ PeerConfig remote_peers[MAX_PEERS];
 int remote_peer_count = 0;
 char sync_psk[64] = DEFAULT_SYNC_PSK;
 uint64_t global_max_alert_id = 0;
+int max_alert_ttl = DEFAULT_MAX_ALERT_TTL;
 
 /**
  * Main logging function.
@@ -286,7 +287,17 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
      * reach the same consensus on expiration and windowing. */
     uint64_t current_max = get_max_alert_id();
     time_t cluster_now = (current_max > 0) ? snowflake_to_timestamp(current_max) : time(NULL);
-
+    /* --- TTL POLICY ENFORCEMENT --- 
+     * We forcefully limit the alert's lifetime using the node's local limit. */
+    time_t local_ttl_limit = cluster_now + max_alert_ttl;
+    if (expire_at > local_ttl_limit) {
+        if (verbose) {
+            log_event("DEBUG", client_fd, NULL, 0, 
+                      "TTL Policy: expire_at truncated from %ld to %ld", 
+                      (long)expire_at, (long)local_ttl_limit);
+        }
+        expire_at = local_ttl_limit;
+    }
     /* 3. Metadata: Identify sender context for logging purposes */
     const char *client_ip = NULL;
     int client_port = 0;
@@ -867,4 +878,3 @@ void run_global_maintenance(void) {
         last_cache_dump = now;
     }
 }
-

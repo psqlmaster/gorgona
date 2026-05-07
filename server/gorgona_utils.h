@@ -42,6 +42,7 @@
 
 extern int max_alerts;
 extern int vacuum_threshold; 
+extern int max_alert_ttl;
 
 /* Structure for outgoing buffer list (linked list for queue) */
 typedef struct OutBuffer {
@@ -145,7 +146,7 @@ extern int sync_interval;
 /* Function declarations */
 void trim_string(char *str);
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db, 
-                  int *vacuum_threshold_config, int *sync_int_cfg);
+                  int *vacuum_threshold_config, int *sync_int_cfg, int *max_ttl);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);

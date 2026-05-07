@@ -16,7 +16,8 @@
 #define DEFAULT_VACUUM_THRESHOLD 25 /* 25% by default */
 #define DEFAULT_SYNC_PSK "change-me-immediately"
 #define DEFAULT_SYNC_INTERVAL 30 /* min 30 */
+#define DEFAULT_MAX_ALERT_TTL 2592000 /* 30 days in seconds*/
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
                  char *log_level, size_t *max_message_size, int *use_disk_db, 
-                 int *vacuum_threshold, int *sync_interval);
+                 int *vacuum_threshold, int *sync_interval, int *max_ttl);
 #endif

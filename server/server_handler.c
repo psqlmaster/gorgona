@@ -362,10 +362,8 @@ void try_connect_peers() {
                 sub->in_pos = 0;
                 if (sub->in_buffer) free(sub->in_buffer);
                 sub->in_buffer = NULL;
-
                 /* Mark node as pending in Mesh Table */
                 node->status = PEER_STATUS_HANDSHAKE;
-
                 /* Backward Compatibility: Sync with legacy remote_peers array if applicable */
                 for (int r = 0; r < remote_peer_count; r++) {
                     if (strcmp(remote_peers[r].ip, node->ip) == 0) {
@@ -374,15 +372,12 @@ void try_connect_peers() {
                         break;
                     }
                 }
-
                 /* 9. Send Handshake: L1 PSK Authentication */
                 extern int port; 
                 char auth_msg[256];
-                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d", 
-                            sync_psk, max_alerts, port); 
-                
+                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d|%d", 
+                        sync_psk, max_alerts, max_alert_ttl, port);
                 enqueue_message(i, auth_msg, (size_t)auth_len);
-
                 log_event("INFO", sd, sub->ip_address, sub->port, 
                           "Mesh: Connecting to %s node (Score: %.2f)", 
                           node->is_seed ? "Seed" : "PEX", node->metrics.gorgona_score);
@@ -789,6 +784,7 @@ void run_server(int server_fd) {
                                                 "  - Last Data Ingest:     [%s UTC]\n"
                                                 "Operational Configuration:\n"
                                                 "  - Max Alerts per Key: %d\n"
+                                                "  - Max Alert TTL: %d seconds (%.1f days)\n"
                                                 "  - Max Message Size: %zu MB\n"
                                                 "  - Logging Level: %s\n",
                                                 node_ip, node_port, VERSION, ud, uh, um,
@@ -798,7 +794,8 @@ void run_server(int server_fd) {
                                                 recipient_count, live_alerts, current_max_id,
                                                 (double)total_bytes / (1024 * 1024), total_waste, vacuum_threshold,
                                                 oldest_time_str, pulse_time_str,
-                                                max_alerts, (size_t)(max_message_size / (1024 * 1024)), log_level
+                                                max_alerts, max_alert_ttl, (double)max_alert_ttl / 86400.0,
+                                                (size_t)(max_message_size / (1024 * 1024)), log_level
                                             );
 
                                             /* 6. Секция L2 Топологии */

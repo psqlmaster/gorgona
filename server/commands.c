@@ -262,34 +262,38 @@ static void process_subscribe(int i, char *buffer) {
 /**
  * Processes the AUTH|psk handshake command.
  * Called when a remote entity (Client or Peer) attempts to join the Mesh.
+ * Strict Protocol: Requires [psk|max_alerts|max_alert_ttl|port]
  */
 static void process_auth(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     char *copy = strdup(buffer + 5); /* Skip "AUTH|" */
     if (!copy) return;
 
-    char *psk = strtok(copy, "|");
-    char *max_alerts_str = strtok(NULL, "|");
-    char *port_str = strtok(NULL, "|"); /* Optional logical service port */
+    /* Strict tokenization: all 4 fields must be present */
+    char *psk             = strtok(copy, "|");
+    char *max_alerts_str  = strtok(NULL, "|");
+    char *max_ttl_str     = strtok(NULL, "|");
+    char *port_str        = strtok(NULL, "|");
 
-    if (!psk || !max_alerts_str) {
+    /* 1. Protocol Integrity Check */
+    if (!psk || !max_alerts_str || !max_ttl_str || !port_str) {
+        log_event("WARN", sub->sock, sub->ip_address, sub->port, "Auth failed: Truncated handshake");
         cleanup_subscriber(i);
         free(copy);
         return;
     }
 
     int peer_max_alerts = atoi(max_alerts_str);
+    int peer_max_ttl    = atoi(max_ttl_str);
+    int peer_port       = atoi(port_str);
 
-    /* 1. PSK Verification (Management Plane Security) */
+    /* 2. PSK Verification (Management Plane Security) */
     if (strcmp(psk, sync_psk) != 0) {
         log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Auth failed: Invalid PSK");
         enqueue_message(i, "Error: Wrong PSK", 15);
         sub->close_after_send = true;
     } 
-    /* 2. Capacity Check (Cluster Consistency) 
-     * Convention: peer_max_alerts == 0 means a STANDARD CLIENT.
-     * Convention: peer_max_alerts > 0 means a MESH PEER (Server).
-     */
+    /* 3. Cluster Consistency Check (Only for Peers) */
     else if (peer_max_alerts > 0 && peer_max_alerts != max_alerts) {
         log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
                   "Cluster capacity mismatch! Peer: %d, Local: %d", peer_max_alerts, max_alerts);
@@ -297,44 +301,46 @@ static void process_auth(int i, char *buffer) {
         sub->close_after_send = true;
     } 
     else {
-        /* Authentication Success */
+        /* Authentication Success Path */
         if (peer_max_alerts == 0) {
+            /* Standard Binary Client */
             sub->type = SUB_TYPE_CLIENT;
             
-            /* If we already have this IP in our mesh table, use its configured port for logs */
+            /* Use mesh table port if IP is known, otherwise fallback to connection port */
             if (sub->node_ptr && sub->node_ptr->port > 0) {
                 sub->port = sub->node_ptr->port;
             }
         } else {
+            /* Full Mesh Peer (Server) */
             sub->type = SUB_TYPE_PEER;
             
-            /* Update logical port from handshake if provided */
-            if (port_str) {
-                int remote_service_port = atoi(port_str);
-                if (remote_service_port > 0 && remote_service_port < 65535) {
-                    sub->port = remote_service_port;
-                    
-                    /* Sync the port back to the mesh topology table for future reference */
-                    if (sub->node_ptr) {
-                        sub->node_ptr->port = remote_service_port;
-                    }
+            /* Mandatory port sync for replication routing */
+            if (peer_port > 0 && peer_port < 65535) {
+                sub->port = peer_port;
+                if (sub->node_ptr) {
+                    sub->node_ptr->port = peer_port;
                 }
+            }
+
+            /* Log TTL policy divergence for administrative awareness */
+            if (peer_max_ttl != max_alert_ttl) {
+                log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                          "Policy Notice: Peer TTL (%d) differs from Local TTL (%d)", 
+                          peer_max_ttl, max_alert_ttl);
             }
         }
         
         sub->auth_state = AUTH_OK;
         
-        /* [PORT FINALIZED] Log entry will now use the correct logical port (e.g., 7777) */
         log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [%s]", 
                   (sub->type == SUB_TYPE_PEER) ? "Mesh Peer" : "Binary Client");
         
-        char resp[64];
-        int r_len = snprintf(resp, sizeof(resp), "AUTH_SUCCESS|%d", max_alerts);
+        /* Symmetric strictly-formatted response */
+        char resp[128];
+        int r_len = snprintf(resp, sizeof(resp), "AUTH_SUCCESS|%d|%d", max_alerts, max_alert_ttl);
         enqueue_message(i, resp, (size_t)r_len);
-
-        /* Note: Peers will automatically initiate a SYNC request after receiving AUTH_SUCCESS. 
-           Standard clients will simply remain connected to receive real-time updates. */
     }
+
     free(copy);
 }
 
