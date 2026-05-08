@@ -221,9 +221,12 @@ void clean_expired_alerts(Recipient *rec) {
     clean_expired_alerts_logic(rec, time(NULL));
 }
 
+/**
+ * Removes the oldest alert and manages persistent storage compaction.
+ */
 void remove_oldest_alert(Recipient *rec) {
     if (rec->count == 0) return;
-
+    /* 1. Identification: Find the oldest Snowflake ID */
     int oldest_idx = 0;
     uint64_t min_id = rec->alerts[0].id;
     for (int i = 1; i < rec->count; i++) {
@@ -232,26 +235,42 @@ void remove_oldest_alert(Recipient *rec) {
             oldest_idx = i;
         }
     }
-
+    /* 2. Disk Deactivation */
     if (use_disk_db) {
         alert_db_deactivate_alert(&rec->alerts[oldest_idx]);
         rec->waste_count++;
     }
-
+    /* 3. Memory Cleanup */
     free_alert(&rec->alerts[oldest_idx]);
     memmove(&rec->alerts[oldest_idx], &rec->alerts[oldest_idx + 1], 
             sizeof(Alert) * (rec->count - oldest_idx - 1));
     rec->count--;
-
-    /* Calculate the threshold based on the configuration */
+    /* 4. Smart Vacuum Trigger Logic */
     int waste_limit = (max_alerts * vacuum_threshold) / 100;
-    
-    /* Trigger sync if threshold reached, too much junk, or recipient became empty */
-    if (use_disk_db && (rec->waste_count >= waste_limit || rec->waste_count > 50000 || rec->count == 0)) {
-        if (verbose) {
-            fprintf(stderr, "Vacuum trigger (overflow): waste=%d (limit=%d%% of %d), count=%d\n", 
-                    rec->waste_count, vacuum_threshold, max_alerts, rec->count);
+    /* 
+     * PROGRESSIVE IO PROTECTION:
+     * We only trigger a rewrite if:
+     * 1. Waste count is above the threshold % AND we have at least 100 records to clean.
+     *    (This prevents frequent rewrites of very small files).
+     * 2. OR we hit a hard safety limit of 50,000 records.
+     * 3. OR the recipient is completely empty (final cleanup).
+     */
+    bool should_vacuum = false;
+    if (use_disk_db) {
+        if (rec->waste_count >= waste_limit && rec->waste_count >= 100) {
+            should_vacuum = true;
+        } else if (rec->waste_count > 50000) {
+            should_vacuum = true;
+        } else if (rec->count == 0 && rec->waste_count > 0) {
+            should_vacuum = true;
         }
+    }
+    if (should_vacuum) {
+        if (verbose) {
+            fprintf(stderr, "Vacuum trigger (compaction): waste=%d (threshold=%d), count=%d\n", 
+                    rec->waste_count, waste_limit, rec->count);
+        }
+        /* alert_db_sync performs atomic swap and ftruncate */
         alert_db_sync(rec);
     }
 }
