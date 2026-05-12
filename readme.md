@@ -102,10 +102,36 @@ sudo docker run -d \
   perynfr/gorgona_stheno:latest && \
 sudo docker image prune -f
 ```
+
+---
+
 - Accessing the Dashboard
-1. Open your browser and go to: `http://<your-server-ip>:8000/`
-2. **Default Login:** `admin`
-3. **Default Password:** `admin`
+
+1. **Open your browser** and go to: `https://<your-server-ip>:8000/`
+   > **Note:** Make sure to use **HTTPS**, as it is required for modern browser features like Desktop Notifications and the Clipboard API.
+
+2. **Handling the SSL Warning:**
+   Since the system uses a self-signed certificate generated during installation, your browser will display a security warning (e.g., *"Your connection is not private"*).
+   * **In Chrome/Edge:** Click **Advanced** and then click **Proceed to <your-ip> (unsafe)**.
+   * **In Firefox:** Click **Advanced**, then click **Accept the Risk and Continue**.
+
+3. **Login Credentials:**
+   * **Default Login:** `admin`
+   * **Default Password:** `admin`
+   *(It is highly recommended to change your password in the Preferences menu after the first login.)*
+
+4. **Enable Features:**
+   Once logged in, the browser may ask for permission to **Show Notifications**. Click **Allow** to receive real-time desktop alerts.
+
+---
+
+### Почему это важно добавить:
+*   **Упоминание HTTPS:** Пользователи часто по привычке вводят `http`, что ломает уведомления.
+*   **Инструкция по "Advanced":** Это снимает страх у неопытных пользователей перед "красным экраном" браузера.
+*   **Связь с фичами:** Объяснение того, что HTTPS нужен для уведомлений и копирования, обосновывает использование самоподписанного сертификата.
+
+**Текст коммита:**
+`docs: update README with SSL warning instructions and login details`
 
 ![ ](docs/gorgona_stheno.png)
 
@@ -1069,5 +1095,6 @@ WantedBy=multi-user.target
 start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
+
 
 
