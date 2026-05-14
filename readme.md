@@ -100,7 +100,8 @@ sudo docker run -d \
   -v /etc/gorgona:/etc/gorgona \
   -v /var/lib/gorgona:/var/lib/gorgona \
   perynfr/gorgona_stheno:latest && \
-sudo docker image prune -f
+sudo docker image prune -f && \
+sleep 1 && sudo docker logs gorgona_stheno 2>&1 | grep "#"
 ```
 
 ---
@@ -1087,6 +1088,8 @@ WantedBy=multi-user.target
 start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
+
+
 
 
 
