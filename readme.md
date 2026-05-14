@@ -7,7 +7,7 @@
 - [Features](#features)
 - [Plugins](#plugins)
 - [Advantages](#advantages)
-- [Quick Start Gorgona Stheno](####quick-start-gorgona-stheno) 
+- [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
   - [Install Client](#install-client)
