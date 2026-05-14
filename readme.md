@@ -932,9 +932,9 @@ The dashboard provides insights into:
 
 ##### Testing
 
-[![Demo Teaser](https://img.youtube.com/vi/3JodTvfr88c/maxresdefault.jpg)](https://youtu.be/LQXBN_35dQg)
+[![Demo Teaser](https://img.youtube.com/vi/oyzwiag1Fcc/maxresdefault.jpg)](https://youtu.be/oyzwiag1Fcc)
 
-Watch the quick 30‑minute demo on YouTube: https://youtu.be/LQXBN_35dQg 
+Watch the quick 30‑minute demo on YouTube: https://youtu.be/oyzwiag1Fcc 
 ```bash
 # To run the test suite, use the following command:
 make clean && make test
