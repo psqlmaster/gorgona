@@ -6,6 +6,8 @@
 - [Introduction](#introduction)
 - [Features](#features)
 - [Plugins](#plugins)
+  - [Proxmox integration: A lightweight bridge](#proxmox-bridge)
+  - [Resilient P2P Telemetry for Prometheus Monitoring](plugins/prom_push/readme.md)
 - [Advantages](#advantages)
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)
@@ -62,7 +64,11 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 #### plugins    
 
+#### proxmox bridge
 - **Proxmox VE (8.2+)** integration: A lightweight bridge that receives Webhook notifications and forwards them to the Gorgona P2P Mesh Network -> [View Setup Guide](plugins/proxmox/readme.md)
+
+#### prom_push plugin for gorgona
+- [View Setup Guide](plugins/prom_push/readme.md)
 
 #### Advantages
 
@@ -898,7 +904,10 @@ curl -k -u gorgona:BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3 https://64.188.70.15
 A pre-configured dashboard for cluster visualization is available here:
 [![Grafana Dashboard](docs/grafana.png)](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics)
 
-[📊 Gorgona Core Cluster Metrics Dashboard](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics)
+| Gorgonad cluster visualization | Gorgona Bridge |
+|:---:|:---:|
+| [![Grafana Dashboard](docs/grafana.png)](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics) | [![Prometheus Push](docs/gorgona_prom_push.png)](http://46.138.247.148:3000/d/adc5txg/multi-host-node-monitor-pushgateway-2) |
+|  | gorgona/plugins/prom_push|
 
 The dashboard provides insights into:
 - **Cluster Pulse**: The propagation speed of data between nodes.
@@ -918,10 +927,10 @@ The dashboard provides insights into:
 - **Self-Optimizing Mesh**: Implementing **Peer Exchange (PEX)** and automated **Service Discovery**. This eliminates manual `/etc/` peer updates, allowing nodes and clients to dynamically learn the full cluster topology from a single entry point. [See p2p mash](docs/roadmap_p2p_mash.md).
 - **Performance-Driven Routing**: Real-time monitoring of **Effective Throughput (Bytes/sec)**. Moving beyond simple Pings to intelligent traffic steering that prioritizes peers based on actual hardware performance (Disk/CPU) and network health.
 - **Authorized Revocation**: Implemented RSA-signed cancellation of scheduled tasks with global mesh propagation (Tombstones logic).
+- **Symmetric Sidecar Mesh**: Achieving ultimate resilience by deploying Gorgonad on every node as a local proxy. [See prom_push](plugins/prom_push/readme.md).
 
 **Next Frontiers:**
 - **Snowflake Oracle Protocol**: Implementing pairing-based threshold cryptography (BLS) to ensure time-locked payloads remain mathematically undecryptable until a verifiable P2P consensus of $K$-of-$N$ nodes reconstructs the decryption key upon reaching a target Snowflake ID. [White Paper: The Snowflake Oracle Protocol](docs/snowflake_oracle_protocol.md)
-- **Symmetric Sidecar Mesh**: Achieving ultimate resilience by deploying Gorgonad on every node as a local proxy. [See prom_push roadmap](plugins/prom_push/readme.md).
 - **High-Concurrency Engine**: Migration from `select()` to **`epoll()` (Linux)** or **`io_uring`** to support thousands of simultaneous P2P connections per node with zero overhead.
 - **Consensus Hardening**: Exploring lightweight **Raft** or **Paxos** implementations for atomic cluster-wide configuration changes and state synchronization.
 
@@ -1085,11 +1094,8 @@ WantedBy=multi-user.target
 start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
----
 
-##### Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=psqlmaster/gorgona&type=date&legend=top-left)](https://www.star-history.com/#psqlmaster/gorgona&type=date&legend=top-left)
 
 
 
