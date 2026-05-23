@@ -901,8 +901,6 @@ curl -k -u gorgona:BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3 https://64.188.70.15
 ```
 
 ##### Grafana Dashboard
-A pre-configured dashboard for cluster visualization is available here:
-[![Grafana Dashboard](docs/grafana.png)](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics)
 
 | Gorgonad cluster visualization | Gorgona Bridge |
 |:---:|:---:|
