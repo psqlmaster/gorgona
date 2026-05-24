@@ -1,7 +1,6 @@
 ![ ](gorgona.png)
 ---
 #### Gorgona. Decentralized P2P Distributed Cron & Remote Execution Engine. End-to-End Encrypted, Time-Locked, and Resilient.  
->[📖 -> How I wrote a distributed Cron in C with P2P replication](docs/story.md)
 
 - [Introduction](#introduction)
 - [Features](#features)
@@ -1093,6 +1092,9 @@ start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
 
+##### Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=psqlmaster/gorgona&type=date&legend=top-left)](https://www.star-history.com/#psqlmaster/gorgona&type=date&legend=top-left)
 
 
 
