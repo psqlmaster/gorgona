@@ -242,3 +242,10 @@ sudo systemctl enable --now gorgona-bridge
 2. Navigate to **Dashboards > Import**.
 3. Upload the `Multi-Host Node Monitor (Pushgateway).json` file.
 4. Select your Prometheus data source and click **Import**.
+
+##### Grafana Dashboard
+
+| Gorgona Bridge |
+|:---:|
+| [![Prometheus Push](../../docs/gorgona_prom_push.png)](http://46.138.247.148:3000/d/adc5txg/multi-host-node-monitor-pushgateway-2) |
+
