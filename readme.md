@@ -940,7 +940,7 @@ Watch the quick demo on YouTube:
 
 | Gorgona Stheno, part1 | Gorgona Stheno, part2 |
 |:---:|:---:|
-| <a href="https://youtu.be/oyzwiag1Fcc"><img src="https://img.youtube.com/vi/oyzwiag1Fcc/maxresdefault.jpg" width="200"></a> | <a href="https://youtu.be/ojyTizkcEQQ"><img src="https://img.youtube.com/vi/ojyTizkcEQQ/maxresdefault.jpg" width="200"></a> |
+| <a href="https://youtu.be/oyzwiag1Fcc"><img src="https://img.youtube.com/vi/oyzwiag1Fcc/maxresdefault.jpg" width="90%" style="max-width:250px"></a> | <a href="https://youtu.be/ojyTizkcEQQ"><img src="https://img.youtube.com/vi/ojyTizkcEQQ/maxresdefault.jpg" width="90%" style="max-width:250px"></a> |
 
 ```bash
 # To run the test suite, use the following command:
