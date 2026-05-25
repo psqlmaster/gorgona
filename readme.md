@@ -936,9 +936,12 @@ The dashboard provides insights into:
 
 ##### Testing
 
-[![Demo Teaser](https://img.youtube.com/vi/oyzwiag1Fcc/maxresdefault.jpg)](https://youtu.be/oyzwiag1Fcc)
+Watch the quick demo on YouTube:
 
-Watch the quick 30‑minute demo on YouTube: https://youtu.be/oyzwiag1Fcc 
+| Gorgona Stheno, part1 | Gorgona Stheno, part2 |
+|:---:|:---:|
+| [![YouTube](https://img.youtube.com/vi/oyzwiag1Fcc/maxresdefault.jpg)](https://youtu.be/oyzwiag1Fcc) | [![YouTube](https://youtu.be/ojyTizkcEQQ/maxresdefault.jpg)](https://youtu.be/ojyTizkcEQQ) |
+
 ```bash
 # To run the test suite, use the following command:
 make clean && make test
