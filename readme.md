@@ -30,7 +30,7 @@
 - [Advanced Use Case: The Dead Man's Switch (DMS)](#advanced-use-case-the-dead-mans-switch-dms)
 - [Monitoring & Observability](#monitoring--observability)
 - [Future Plans & Evolution](#future-plans--evolution)
-- [Testing](#testing) ![](https://img.shields.io/badge/YouTube-Demo-red?logo=youtube)- <a href="#testing">Testing <img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" height="18" style="vertical-align:middle;"></a>
+- <a href="#testing">Testing <img src="https://img.shields.io/badge/YouTube-Demo-red?logo=youtube" height="18" style="vertical-align:middle;"></a>
 - [More examples](#more-examples)
 
 ---
