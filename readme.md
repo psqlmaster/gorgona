@@ -11,7 +11,7 @@
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-  - [Install Client & Server](#install-client-&-server)
+  - [Install Client and Server](#install-client-and-server)
 - [Configuration](#configuration)
   - [Server Configuration (gorgonad.conf)](#server-configuration-gorgonadconf)
   - [Client Configuration (gorgona.conf)](#client-configuration-gorgonaconf)
@@ -175,7 +175,8 @@ make clean && make
 
 Builds `gorgona` (client) and `gorgonad` (server). Clean: `make clean`. Rebuild: `make rebuild`.
 
-### [Install Client & Server](https://github.com/psqlmaster/gorgona/releases)
+#### Install Client and Server
+[releases](https://github.com/psqlmaster/gorgona/releases) 📦
 
 ```bash
 sudo dpkg -i ./gorgona_<version>_amd64.deb
