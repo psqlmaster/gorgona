@@ -11,8 +11,7 @@
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-  - [Install Client](#install-client)
-  - [Install Server](#install-server)
+  - [Install Client & Server](#install-client-&-server)
 - [Configuration](#configuration)
   - [Server Configuration (gorgonad.conf)](#server-configuration-gorgonadconf)
   - [Client Configuration (gorgona.conf)](#client-configuration-gorgonaconf)
@@ -146,7 +145,7 @@ sudo mv RWTPQzuhzBw=.pub RWTPQzuhzBw=.key /etc/gorgona/ && sudo cp ./gorgona /us
 sudo gorgona listen last 4 RWTPQzuhzBw=
 ```
 
-#### Installation
+### Installation
 
 Clone the repository:
 
