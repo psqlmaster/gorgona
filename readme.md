@@ -7,6 +7,7 @@
 - [Plugins](#plugins)
   - [Proxmox integration: A lightweight bridge](#proxmox-bridge)
   - [Resilient P2P Telemetry for Prometheus Monitoring](plugins/prom_push/readme.md)
+  - [Gorgona Python Sender Plugin](plugins/sender_python/readme.md)
 - [Advantages](#advantages)
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)
@@ -1094,12 +1095,9 @@ WantedBy=multi-user.target
 start greenplum = /bin/systemctl start greenplum
 stop greenplum  = /bin/systemctl stop greenplum
 ```
+---
 
 ##### Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=psqlmaster/gorgona&type=date&legend=top-left)](https://www.star-history.com/#psqlmaster/gorgona&type=date&legend=top-left)
-
-
-
-
 
