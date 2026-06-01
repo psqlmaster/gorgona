@@ -8,6 +8,7 @@
   - [Proxmox integration: A lightweight bridge](#proxmox-bridge)
   - [Resilient P2P Telemetry for Prometheus Monitoring](plugins/prom_push/readme.md)
   - [Gorgona Python Sender Plugin](plugins/sender_python/readme.md)
+  - [Gorgona stheno bridge http](plugins/stheno_bridge_http/readme.md)
 - [Advantages](#advantages)
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)
@@ -68,6 +69,9 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 #### prom_push plugin for gorgona
 - [View Setup Guide](plugins/prom_push/readme.md)
+
+#### Gorgona stheno bridge http
+- [View Setup Guide](plugins/stheno_bridge_http/readme.md)
 
 #### Advantages
 
@@ -1100,4 +1104,6 @@ stop greenplum  = /bin/systemctl stop greenplum
 ##### Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=psqlmaster/gorgona&type=date&legend=top-left)](https://www.star-history.com/#psqlmaster/gorgona&type=date&legend=top-left)
+
+
 
