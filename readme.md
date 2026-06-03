@@ -64,13 +64,13 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 #### plugins    
 
-#### proxmox bridge
+##### proxmox bridge
 - **Proxmox VE (8.2+)** integration: A lightweight bridge that receives Webhook notifications and forwards them to the Gorgona P2P Mesh Network -> [View Setup Guide](plugins/proxmox/readme.md)
 
-#### prom_push plugin for gorgona
+##### prom_push plugin for gorgona
 - [View Setup Guide](plugins/prom_push/readme.md)
 
-#### Gorgona stheno bridge http
+##### Gorgona stheno bridge http
 - [View Setup Guide](plugins/stheno_bridge_http/readme.md)
 
 #### Advantages
