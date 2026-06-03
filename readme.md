@@ -105,16 +105,16 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 
 ```bash
 sudo docker pull perynfr/gorgona_stheno:latest && \
-sudo docker rm -f gorgona_stheno && \
+sudo docker rm -f gorgona_stheno || true && \
 sudo docker run -d \
   --name gorgona_stheno \
-  --network host \
+  -p 8000:8000 -p 7777:7777 \
   --restart unless-stopped \
   -v /etc/gorgona:/etc/gorgona \
   -v /var/lib/gorgona:/var/lib/gorgona \
   perynfr/gorgona_stheno:latest && \
 sudo docker image prune -f && \
-sleep 1 && sudo docker logs gorgona_stheno 2>&1 | grep "#"
+sleep 2 && sudo docker logs gorgona_stheno 2>&1 | grep "#"
 ```
 
 ---
