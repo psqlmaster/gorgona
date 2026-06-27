@@ -908,7 +908,7 @@ curl -k -u gorgona:BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3 https://64.188.70.15
 
 | Gorgonad cluster visualization | Gorgona Bridge |
 |:---:|:---:|
-| [![Grafana Dashboard](docs/grafana.png)](http://46.138.247.148:3000/d/ad7rr5j/gorgona-cluster-core-metrics) | [![Prometheus Push](docs/gorgona_prom_push.png)](http://46.138.247.148:3000/d/adc5txg/multi-host-node-monitor-pushgateway-2) |
+| [![Grafana Dashboard](docs/grafana.png)](http://46.138.247.148:59999/d/ad7rr5j/gorgona-cluster-core-metrics) | [![Prometheus Push](docs/gorgona_prom_push.png)](http://46.138.247.148:59999/d/adc5txg/multi-host-node-monitor-pushgateway) |
 |  | gorgona/plugins/prom_push|
 
 The dashboard provides insights into:
