@@ -98,7 +98,11 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 
 #### Quick Start Gorgona Stheno 
 
-![ ](docs/gorgona_stheno.png)
+[![docs/gorgona_stheno.png](docs/gorgona_stheno.png)](https://46.138.247.148:8000/)
+
+> **Note:** Use the following credentials for demo access:
+> - **Username:** `demo`
+> - **Password:** `demo`
 
 - Run the following command to create and start the container:
 - Use the same command **to update**, it your personal **settings will not be deleted**.
