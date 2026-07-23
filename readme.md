@@ -2,10 +2,9 @@
 ---
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/psqlmaster/gorgona?style=flat-square&color=blue)](https://github.com/psqlmaster/gorgona/releases)
 [![License](https://img.shields.io/github/license/psqlmaster/gorgona?style=flat-square&color=orange)](LICENSE)
-[![Lines of code](https://img.shields.io/tokei/lines/github/psqlmaster/gorgona?style=flat-square&color=yellow)](https://github.com/psqlmaster/gorgona)
+[![GitHub repo size](https://img.shields.io/github/repo-size/psqlmaster/gorgona?style=flat-square&color=yellow&label=size)](https://github.com/psqlmaster/gorgona)
 [![Language: C11](https://img.shields.io/badge/Language-C11-00599C?style=flat-square&logo=c)](https://en.cppreference.com/w/c/11)
 [![Dependencies: OpenSSL only](https://img.shields.io/badge/Dependencies-OpenSSL%20only-brightgreen?style=flat-square)](Makefile)
-[![Platform: Linux / OpenWrt](https://img.shields.io/badge/Platform-Linux%20%2F%20OpenWrt-lightgrey?style=flat-square&logo=linux)](https://github.com/psqlmaster/gorgona)
 #### Gorgona. Decentralized P2P Distributed Cron & Remote Execution Engine. End-to-End Encrypted, Time-Locked, and Resilient.  
 
 - [Introduction](#introduction)
