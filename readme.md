@@ -1110,9 +1110,5 @@ stop greenplum  = /bin/systemctl stop greenplum
 ```
 ---
 
-##### Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=psqlmaster/gorgona&type=date&legend=top-left)](https://www.star-history.com/#psqlmaster/gorgona&type=date&legend=top-left)
-
-
+The end
 
