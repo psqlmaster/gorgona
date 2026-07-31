@@ -8,6 +8,7 @@
 #### Gorgona. Decentralized P2P Distributed Cron & Remote Execution Engine. End-to-End Encrypted, Time-Locked, and Resilient.  
 
 - [Introduction](#introduction)
+- [Project Overview & Deep Dive (DeepWiki) ↗](https://deepwiki.com/psqlmaster/gorgona/1-gorgona:-overview)
 - [Features](#features)
 - [Plugins](#plugins)
   - [Proxmox integration: A lightweight bridge](#proxmox-bridge)
