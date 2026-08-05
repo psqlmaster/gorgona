@@ -1,0 +1,6 @@
+# cat /etc/gorgona/gorgona.conf
+
+[server]
+ip = 192.168.1.172
+port = 7777
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key (optionally)

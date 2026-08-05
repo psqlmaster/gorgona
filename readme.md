@@ -15,6 +15,7 @@
   - [Resilient P2P Telemetry for Prometheus Monitoring](plugins/prom_push/readme.md)
   - [Gorgona Python Sender Plugin](plugins/sender_python/readme.md)
   - [Gorgona stheno bridge http](plugins/stheno_bridge_http/readme.md)
+  - [Distributed PostgreSQL High-Availability manager with LSN-based consensus and automated self-healing.](plugins/gfm/readme.md)
 - [Advantages](#advantages)
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
 - [Quick Start](#quick-start)

@@ -1,0 +1,13 @@
+# cat /etc/systemd/system/gorgona-remote.service
+
+[Unit]
+Description=Gorgona Remote Execution Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/gorgona -ev listen new zpPVK9fbEqo=
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

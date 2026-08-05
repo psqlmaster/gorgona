@@ -1,0 +1,19 @@
+# cat /etc/gorgona/gorgona.conf
+
+[server]
+ip = 192.168.1.171
+port = 7777
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3
+
+[exec_commands:zpPVK9fbEqo=]
+gorgonad2_step_down = /usr/bin/systemctl stop postgresql
+gorgonad2_promote   = /usr/bin/sudo -u postgres /usr/bin/pg_ctlcluster 17 main promote
+gorgonad2_start     = /usr/bin/systemctl start postgresql
+# Перезапуск менеджера (если изменили код gfm.py и хотите обновить без SSH)
+gfm_restart         = /usr/bin/systemctl restart gfm
+# умный rebuild реплики
+gorgonad2_rebuild = /usr/local/bin/gfm_rebuild.sh 192.168.1.170
+# Команда для переезда (узел отдаст роль мастера и станет репликой)
+gfm_switchover = /usr/local/bin/gfm_switchover.sh
+# Здоровье узла
+gfm_health = /usr/local/bin/gfm_health.sh

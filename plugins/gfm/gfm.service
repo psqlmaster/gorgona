@@ -1,0 +1,13 @@
+# cat /etc/systemd/system/gfm.service
+
+[Unit]
+Description=Gorgona Failover Manager
+After=gorgonad.service postgresql.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/gfm.py
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
