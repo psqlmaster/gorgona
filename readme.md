@@ -80,6 +80,9 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 ##### Gorgona stheno bridge http
 - [View Setup Guide](plugins/stheno_bridge_http/readme.md)
 
+##### Distributed PostgreSQL High-Availability manager with LSN-based consensus and automated self-healing.
+- [Distributed PostgreSQL High-Availability manager with LSN-based consensus and automated self-healing.](plugins/gfm/readme.md)
+
 #### Advantages
 
 - **High Availability**: If one server goes down, messages are preserved and accessible via other replicated nodes.
