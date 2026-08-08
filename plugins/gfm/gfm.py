@@ -18,10 +18,14 @@ from datetime import datetime, timedelta, timezone
 
 class GFM:
     def __init__(self):
-        # --- Загрузка конфигурации ---
+        """
+        Инициализация менеджера отказоустойчивости.
+        Загружает конфигурацию, определяет роль узла и подготавливает среду.
+        """
+        # 1. Загрузка параметров из gfm.conf
         self.load_config() 
 
-        # --- Внутреннее состояние ---
+        # 2. Внутреннее состояние системы
         self.role = "STANDBY"
         self.leader_name = None
         self.last_leader_heartbeat = time.time()
@@ -29,101 +33,114 @@ class GFM:
         self.current_lsn = "0/0"
         self.is_running = True
         
-        # --- Блокировки и флаги ---
+        # 3. Флаги и блокировки
+        # Используем RLock (Recursive Lock), чтобы один поток мог захватывать замок несколько раз
+        # Это критически важно для предотвращения Deadlock при вызове auto_rebuild из process_message
         self.lock = threading.RLock() 
         self.rebuild_in_progress = False
         
-        # --- Инициализация окружения ---
+        # 4. Подготовка системного окружения
         self.fix_etc_hosts()
         self.is_witness = self.detect_witness_mode()
         self.psk = self.load_psk_from_config()
         
-        # --- Определение роли на основе состояния БД ---
-        if self.is_witness:
+        # 5. Определение начальной логической роли на основе реальности
+        if self.is_witness == True:
             self.role = "WITNESS"
         else:
             try:
+                # Проверяем реальное состояние локальной БД (Master или Standby)
                 self.sync_role_with_db()
             except Exception as e:
                 self.log("Initial DB sync failed: " + str(e))
             
-        self.log("--- GFM DISTRIBUTED MANAGER LOADED ---")
-        self.log("Node: " + str(self.node_name) + " | Role: " + str(self.role))
-        self.log("Logic: Missed Heartbeats allowed = " + str(self.max_missing_heartbeats))
-        self.log("Calculated Election Timeout = " + str(self.election_timeout) + "s")
+        self.log("======================================================")
+        self.log("--- GFM DISTRIBUTED CLUSTER MANAGER STARTING ---")
+        self.log("Node Name       : " + str(self.node_name))
+        self.log("Operation Mode  : " + ("WITNESS (Arbitrator)" if self.is_witness else "DATABASE NODE"))
+        self.log("Initial State   : " + str(self.role))
+        self.log("Election Timeout: " + str(self.election_timeout) + "s")
+        self.log("Audit TTL       : " + str(self.event_ttl) + "s")
+        self.log("======================================================")
 
-        # --- Прогрев (чтение истории меша перед стартом) ---
+        # 6. Прогрев (Warmup)
+        # Читаем историю меша, чтобы не начинать выборы, если лидер уже есть
         try:
             self.warmup_mesh_state()
         except Exception as e:
-            self.log("Warmup notice: " + str(e))
+            self.log("Warmup notice (it's okay for new clusters): " + str(e))
+
+    # --------------------------------------------------------------------------
+    # КОНФИГУРАЦИЯ И СИСТЕМНОЕ ОКРУЖЕНИЕ
+    # --------------------------------------------------------------------------
 
     def load_config(self):
-        """Загрузка параметров из gfm.conf с учетом новых TTL"""
+        """Загрузка параметров из внешнего файла /etc/gorgona/gfm.conf"""
         config_path = "/etc/gorgona/gfm.conf"
-        if not os.path.exists(config_path):
-            print("FATAL: Config file not found at " + config_path)
+        if os.path.exists(config_path) == False:
+            print("FATAL ERROR: Configuration file " + config_path + " not found!")
             sys.exit(1)
 
         conf = configparser.ConfigParser()
         conf.read(config_path)
 
-        # Кластер
+        # Секция [cluster]
         self.my_pub_hash = conf.get("cluster", "my_pub_hash")
         self.node_name = os.uname()[1]
         self.quorum_total_nodes = conf.getint("cluster", "quorum_total_nodes")
 
-        # Тайминги и TTL
+        # Секция [timings]
         self.heartbeat_interval = conf.getint("timings", "heartbeat_interval")
         self.max_missing_heartbeats = conf.getint("timings", "max_missing_heartbeats")
         self.monitor_interval = conf.getint("timings", "monitor_interval")
         
-        # Специализированные TTL
+        # Специализированные значения TTL (Time To Live)
         self.heartbeat_ttl = conf.getint("timings", "heartbeat_ttl")
         self.event_ttl = conf.getint("timings", "event_ttl")
         self.default_ttl = conf.getint("timings", "default_ttl")
         
-        # Расчет таймаута выборов
+        # Динамический расчет таймаута выборов
+        # Формула: (интервал * кол-во пропусков) + 5 сек запаса на сетевой лаг
         self.election_timeout = (self.heartbeat_interval * self.max_missing_heartbeats) + 5
 
-        # Пути
-        base = conf.get("paths", "base_dir")
+        # Секция [paths]
+        base_dir_path = conf.get("paths", "base_dir")
         self.gorgona_bin = conf.get("paths", "gorgona_bin")
         self.psql_bin = conf.get("paths", "psql_bin")
         self.pg_ctl_bin = conf.get("paths", "pg_ctl_bin")
         self.rebuild_script = conf.get("paths", "rebuild_script")
 
-        # Производные пути
-        self.priv_key_path = base + "/" + self.my_pub_hash + ".key"
+        # Производные пути к файлам и ключам
+        self.priv_key_path = base_dir_path + "/" + self.my_pub_hash + ".key"
         self.pub_key_arg = self.my_pub_hash + ".pub"
-        self.gorgonad_conf_path = base + "/gorgonad.conf"
-        self.status_json_path = base + "/cluster_status.json"
-
-    # --------------------------------------------------------------------------
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
-    # --------------------------------------------------------------------------
+        self.gorgonad_conf_path = base_dir_path + "/gorgonad.conf"
+        self.status_json_path = base_dir_path + "/cluster_status.json"
 
     def log(self, msg):
-        """Логирование в stdout с меткой времени"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        """Стандартизированное логирование в stdout (для системного журнала journald)"""
+        now = datetime.now()
+        timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+        # Включаем текущую роль в каждую строку лога для облегчения анализа переключений
         print("[" + timestamp + "] [" + self.role + "] " + str(msg), flush=True)
 
     def fix_etc_hosts(self):
-        """Оптимизация резолвинга для ускорения sudo команд"""
+        """Оптимизация /etc/hosts для ускорения работы sudo команд внутри GFM"""
         try:
             with open("/etc/hosts", "r") as f:
                 content = f.read()
             if self.node_name not in content:
+                self.log("Optimizing local hostname resolution in /etc/hosts...")
                 with open("/etc/hosts", "a") as f:
                     f.write("\n127.0.0.1 " + self.node_name + "\n")
-        except:
-            pass
+        except Exception as e:
+            self.log("Warning: Could not update /etc/hosts: " + str(e))
 
     def detect_witness_mode(self):
-        """Определяет, является ли узел Witness-нодой (без Postgres)"""
+        """Определяет, является ли узел Witness-нодой (отсутствие локальной БД)"""
         if os.path.exists(self.psql_bin) == False:
             return True
         try:
+            # Проверяем наличие пользователя postgres в системе
             import pwd
             pwd.getpwnam('postgres')
             return False
@@ -131,56 +148,70 @@ class GFM:
             return True
 
     def load_psk_from_config(self):
-        """Загрузка PSK из конфигурации gorgonad"""
+        """Загружает sync_psk из конфигурации сервера для внутренних статус-запросов"""
         try:
             config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
             config.read(self.gorgonad_conf_path)
             for section in config.sections():
                 if 'sync_psk' in config[section]:
                     return config[section]['sync_psk'].strip()
-        except:
+        except Exception:
             pass
         return None
 
     # --------------------------------------------------------------------------
-    # РАБОТА С POSTGRESQL
+    # МЕТОДЫ РАБОТЫ С POSTGRESQL
     # --------------------------------------------------------------------------
 
     def sync_role_with_db(self):
-        """Сверяет внутреннюю роль с реальным состоянием PostgreSQL"""
-        if self.is_witness == True or self.rebuild_in_progress == True:
+        """Сверяет внутреннюю роль GFM с реальным состоянием PostgreSQL"""
+        if self.is_witness == True:
             return
+        # Во время активного ребилда мы не меняем роль, чтобы не мешать процессу
+        if self.rebuild_in_progress == True:
+            return
+
         try:
+            # Проверка режима Recovery через SQL запрос
             cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", "SELECT pg_is_in_recovery();"]
             res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
             
-            if res == "f": # Master
+            if res == "f": # f = False (База в режиме записи Master)
                 if self.role != "LEADER":
-                    self.log("DB is in Master mode. Role promoted to LEADER.")
+                    self.log("Postgres state change: Master mode detected.")
                 self.role = "LEADER"
-            else: # Standby
+            else: # t = True (База в режиме репликации Standby)
                 if self.role == "LEADER":
-                    self.log("DB is in Recovery mode. Role demoted to STANDBY.")
+                    self.log("Postgres state change: Standby mode detected. Stepping down.")
                 self.role = "STANDBY"
         except Exception:
+            # Если база данных выключена или сокет недоступен
             if self.role == "LEADER":
-                self.log("DB UNREACHABLE. Dropping LEADER status.")
+                self.log("Postgres is UNREACHABLE. Dropping status to prevent data divergence.")
             self.role = "STANDBY"
 
     def is_replication_active(self):
-        """Проверяет, запущен ли процесс приема WAL (wal_receiver)"""
-        if self.is_witness == True or self.role != "STANDBY":
+        """Проверяет, реально ли узел получает WAL логи от Мастера"""
+        if self.is_witness == True:
             return True
+        # Если мы сами лидер, репликация "активна" по определению
+        if self.role != "STANDBY":
+            return True
+            
         try:
+            # Проверяем наличие строки в таблице wal_receiver
             cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", "SELECT count(*) FROM pg_stat_wal_receiver;"]
             res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+            # Возвращает True если процесс приема запущен
             return int(res) > 0
         except Exception:
             return False
 
     def get_pg_lsn(self):
-        """Получает текущий LSN (позицию WAL), адаптировано для Postgres 17"""
+        """Получает наиболее актуальную позицию WAL (совместимо с Postgres 17)"""
         if self.is_witness: return "0/0"
+        
+        # Для Standby берем максимум из полученного и проигранного WAL
         query = """
         SELECT CASE 
             WHEN pg_is_in_recovery() THEN GREATEST(COALESCE(pg_last_wal_receive_lsn(), '0/0'), COALESCE(pg_last_wal_replay_lsn(), '0/0'))
@@ -188,159 +219,169 @@ class GFM:
         END;
         """
         try:
-            res = subprocess.check_output(["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", query], stderr=subprocess.DEVNULL).decode().strip()
+            cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", query]
+            res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
             if res and "/" in res:
                 return res
             return "0/0"
-        except:
+        except Exception:
             return "0/0"
 
     def lsn_to_int(self, lsn_string):
-        """Конвертирует LSN строку в число для сравнения"""
+        """Конвертирует LSN строку (0/4028E10) в целое число для математического сравнения"""
         if not lsn_string or "/" not in lsn_string:
             return 0
         try:
             parts = lsn_string.split('/')
-            return (int(parts[0], 16) << 32) + int(parts[1], 16)
-        except:
+            high_bits = int(parts[0], 16)
+            low_bits = int(parts[1], 16)
+            return (high_bits << 32) + low_bits
+        except Exception:
             return 0
 
     def promote_node(self):
-        """Переход в MASTER с записью события"""
-        if self.is_witness == True:
-            return
+        """Действие: Повышение текущей реплики до роли Мастера"""
+        if self.is_witness: return
+        self.log("!!! EMERGENCY ACTION: PROMOTING TO MASTER !!!")
         
-        self.log("ACTION: PROMOTING TO MASTER.")
-        # Выполняем системную команду
+        # Записываем событие в историю кластера
+        self.send_event("INITIATING PROMOTION. Node is becoming the new Leader.")
+        
+        # Используем pg_ctlcluster для Debian/Ubuntu (самый надежный способ)
         cmd = ["sudo", "-u", "postgres", self.pg_ctl_bin, "17", "main", "promote"]
         subprocess.run(cmd, stderr=subprocess.DEVNULL)
         
         self.role = "LEADER"
-        # Записываем в вечную историю меша
-        self.send_event("PROMOTED TO MASTER. Cluster is now serving writes on this node.")
+        self.leader_name = None
 
     def demote_node(self, reason_text):
-        """Жесткий Fencing: немедленная остановка Postgres для защиты данных."""
+        """Синхронный Fencing: Мгновенная остановка базы при обнаружении конфликта лидерства"""
         if self.is_witness: return
-        self.log("!!! FENCING !!! Reason: " + reason_text)
-        self.send_event("FENCING: Stopping Postgres. Reason: " + reason_text)
+        self.log("!!! FENCING INITIATED !!! Reason: " + str(reason_text))
         
-        # Останавливаем базу. GFM при этом остается жив и переходит в STANDBY.
+        # Регистрация события
+        self.send_event("FENCING triggered. Reason: " + str(reason_text))
+        
+        # Жесткая остановка через системный менеджер (systemctl)
+        # Это гарантирует прерывание всех транзакций и закрытие соединений
         subprocess.run(["systemctl", "stop", "postgresql"], stderr=subprocess.DEVNULL)
+        
         self.role = "STANDBY"
         self.leader_name = None
 
     # --------------------------------------------------------------------------
-    # МЕТОДЫ РАБОТЫ С МЕШЕМ GORGONA
+    # МЕТОДЫ СЕТЕВОГО ВЗАИМОДЕЙСТВИЯ (LAYER 1 MESH)
     # --------------------------------------------------------------------------
 
-    def gorgona_send(self, message_text, ttl_sec=None):
-        """Низкоуровневая отправка через бинарник. Использует абсолютный UTC."""
-        # Если TTL не указан, берем общий из конфига
-        actual_ttl = ttl_sec if ttl_sec is not None else self.default_ttl
-        now = datetime.now(timezone.utc)
-        start_str = now.strftime('%Y-%m-%d %H:%M:%S')
-        expire_time = now + timedelta(seconds=actual_ttl)
+    def gorgona_send(self, message_text, ttl_sec_override=None):
+        """Отправка зашифрованного сообщения через бинарный клиент gorgona"""
+        # Используем TTL из вызова или значение по умолчанию из конфига
+        actual_ttl = ttl_sec_override if ttl_sec_override is not None else self.default_ttl
+        
+        now_utc = datetime.now(timezone.utc)
+        start_str = now_utc.strftime('%Y-%m-%d %H:%M:%S')
+        expire_time = now_utc + timedelta(seconds=actual_ttl)
         end_str = expire_time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Формируем список аргументов для безопасного выполнения (без оболочки shell)
         cmd = [self.gorgona_bin, "send", start_str, end_str, message_text, self.pub_key_arg]
         try:
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
-            self.log("Gorgona binary call failed: " + str(e))
+            self.log("Gorgona network error: " + str(e))
 
     def send_event(self, event_description):
-        """
-        Отправляет важное событие (Audit Log). 
-        Эти сообщения живут долго (event_ttl), чтобы их можно было прочитать спустя часы.
-        """
-        event_msg = "EVENT|" + self.node_name + "|" + str(event_description)
-        # Шлем с длинным TTL
-        self.gorgona_send(event_msg, ttl_sec=self.event_ttl)
-        # дублируем в локальный системный лог
-        self.log("AUDIT_EVENT: " + event_description)
+        """Отправляет важное событие в Аудит-лог меша ( Audit Log )"""
+        msg = "EVENT|" + str(self.node_name) + "|" + str(event_description)
+        # События живут долго (event_ttl), чтобы админ мог прочитать их спустя часы
+        self.gorgona_send(msg, ttl_sec_override=self.event_ttl)
+        self.log("AUDIT: " + str(event_description))
 
     def broadcast_status(self):
-        """Короткоживущий пульс Лидера (Heartbeat)"""
-        if self.role != "LEADER":
-            return
-        
-        current_lsn = self.get_pg_lsn()
-        msg = "LEADER_STATUS|" + self.node_name + "|" + current_lsn
-        # Используем короткий TTL из конфига (heartbeat_ttl)
-        self.gorgona_send(msg, ttl_sec=self.heartbeat_ttl)
-
-    def start_election(self):
-        """Процедура выборов с регистрацией события в истории"""
-        if self.is_witness == True:
-            return
-        
-        # Логируем начало выборов в историю меша (Audit Log)
-        self.send_event("TIMEOUT. Initiating leader election.")
-        
-        self.role = "CANDIDATE"
-        lsn_at_start = self.get_pg_lsn()
-        
-        # Сама заявка живет недолго
-        self.gorgona_send("CANDIDATE|" + self.node_name + "|" + lsn_at_start, ttl_sec=30)
-        
-        # Ждем оспорений
-        time.sleep(10)
-        
-        if self.role == "CANDIDATE":
-            self.promote_node()
+        """Пульс Лидера (Heartbeat): сообщает всем LSN и статус"""
+        if self.role != "LEADER": return
+        current_lsn_val = self.get_pg_lsn()
+        # Хертбит живет короткое время (heartbeat_ttl), чтобы не засорять историю
+        self.gorgona_send("LEADER_STATUS|" + str(self.node_name) + "|" + str(current_lsn_val), 
+                          ttl_sec_override=self.heartbeat_ttl)
 
     def warmup_mesh_state(self):
-        """Разогрев состояния из истории меша перед началом цикла"""
+        """Проверка истории меша перед запуском HA цикла (избежание ложных выборов)"""
+        self.log("Warmup: Checking mesh for an active leader status...")
+        # Читаем 5 последних сообщений из канала управления
         cmd = [self.gorgona_bin, "listen", "last", "5", self.my_pub_hash]
         try:
             res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=10).decode()
-            for line in res.splitlines():
+            lines = res.splitlines()
+            for line in lines:
                 if "|" in line:
+                    # Обрабатываем исторические сообщения как входящие
                     self.process_message(line.strip())
-        except:
-            pass
+        except Exception as e:
+            self.log("Warmup notice: history not available (" + str(e) + ")")
 
     def auto_rebuild(self, target_master_host, reason_description):
-        """Ребилд с записью в историю"""
+        """Процедура автоматического запуска ребилда базы (Patroni-style self-healing)"""
+        # Блокировка от повторных запусков
         with self.lock:
-            if self.is_witness or self.rebuild_in_progress:
+            if self.is_witness == True:
+                return
+            if self.rebuild_in_progress == True:
                 return
             self.rebuild_in_progress = True
         
-        self.send_event("STARTING AUTO-RECOVERY. Source Master: " + str(target_master_host))
+        self.log("!!! AUTO-REBUILD TRIGGERED !!! Target Master: " + str(target_master_host))
+        self.send_event("Starting REBUILD cycle from Master: " + str(target_master_host) + ". Reason: " + reason_description)
         
-        def run_recovery_process():
+        def run_recovery_task():
             try:
-                subprocess.run(
-                    ["/bin/bash", self.rebuild_script, str(target_master_host)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
+                # ПРОВЕРКА: существует ли скрипт на диске
+                if os.path.exists(self.rebuild_script):
+                    # Запускаем bash-скрипт восстановления. $1 = имя мастера
+                    subprocess.run(
+                        ["/bin/bash", self.rebuild_script, str(target_master_host)],
+                        stdout=subprocess.DEVNULL, 
+                        stderr=subprocess.DEVNULL
+                    )
             except Exception as e:
-                self.log("Rebuild thread error: " + str(e))
+                self.log("Background recovery thread error: " + str(e))
                 self.send_event("RECOVERY FAILED: " + str(e))
             finally:
-                self.log("Rebuild finished.")
+                self.log("Recovery process finished. RESYNCING node status.")
+                # Снимаем флаг активности
                 with self.lock:
                     self.rebuild_in_progress = False
+                # Пауза для того, чтобы Postgres успел стартовать и открыть порты
                 time.sleep(5)
+                # Синхронизируем роль с реальностью
                 self.sync_role_with_db()
                 if self.role == "STANDBY":
-                    self.send_event("RECOVERY SUCCESSFUL. Node is now a healthy Standby.")
+                    self.send_event("RECOVERY COMPLETED. Node is back in cluster.")
 
-        threading.Thread(target=run_recovery_process, daemon=True).start()
+        # Запускаем поток в режиме демона
+        recovery_thread = threading.Thread(target=run_recovery_task, daemon=True)
+        recovery_thread.start()
+        
         self.role = "STANDBY"
+        self.leader_name = target_master_host
 
     # --------------------------------------------------------------------------
-    # ОБРАБОТКА СЕТЕВЫХ СОБЫТИЙ (LISTENER)
+    # ОБРАБОТКА СЕТЕВЫХ СОБЫТИЙ (LISTENER & BRAIN)
     # --------------------------------------------------------------------------
 
     def listener_thread(self):
-        """Поток-слушатель меша: исправлено чтение Pipe и многострочного вывода"""
-        self.log("Mesh Listener Thread active on " + self.my_pub_hash)
+        """Основной поток: Слушает зашифрованный меш и ловит статусы соседей"""
+        self.log("Mesh Listener Thread active on hash " + str(self.my_pub_hash))
+        
+        # 'stdbuf -oL' гарантирует, что мы получаем строки сразу, без буферизации
+        # Мы НЕ используем флаг '-e', чтобы Python сам управлял логикой
         cmd = ["stdbuf", "-oL", self.gorgona_bin, "listen", "new", self.my_pub_hash]
         
         try:
+            # Открываем процесс и перехватываем stdout
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            
+            # Флаг многострочного парсинга (для сообщений после 'Decrypted Content:')
             is_content_on_next_line = False
             
             for line in proc.stdout:
@@ -351,23 +392,28 @@ class GFM:
                 if not raw_line: 
                     continue
                 
+                # СЛУЧАЙ А: Данные и маркер протокола в одной строке (LEADER_STATUS|... или CANDIDATE|...)
                 if "|" in raw_line and ("LEADER_STATUS|" in raw_line or "CANDIDATE|" in raw_line):
                     self.process_message(raw_line)
                     is_content_on_next_line = False
+                
+                # СЛУЧАЙ Б: Нашли заголовок расшифрованного текста
                 elif "Decrypted Content:" in raw_line:
                     is_content_on_next_line = True
                     continue
+                
+                # СЛУЧАЙ В: Предыдущая строка была заголовком, значит эта - суть сообщения
                 elif is_content_on_next_line == True:
                     if "|" in raw_line:
                         self.process_message(raw_line)
                     is_content_on_next_line = False
                     
         except Exception as e:
-            self.log("CRITICAL: Listener Thread error: " + str(e))
+            self.log("CRITICAL ERROR: Mesh Listener Thread crashed: " + str(e))
 
     def process_message(self, raw_payload):
-        """Разбор сообщения и логика разрешения конфликтов (Tie-break)"""
-        # RegEx находит ТИП|ИМЯ|LSN даже среди системного мусора
+        """Бизнес-логика: Разрешение конфликтов, Fencing и принятие ролей"""
+        # Используем RegEx для очистки строки от возможного системного мусора бинарника
         pattern = r"(LEADER_STATUS|CANDIDATE)\|([^|]+)\|([0-9a-fA-F/]+)"
         match = re.search(pattern, raw_payload)
         
@@ -376,145 +422,187 @@ class GFM:
 
         msg_type, s_name, s_lsn = match.groups()
         
-        # Не обрабатываем эхо собственных сообщений
+        # Игнорируем эхо собственных пакетов
         if s_name == self.node_name: 
             return
 
         with self.lock:
             # --- СЦЕНАРИЙ 1: Получен статус действующего Лидера ---
             if msg_type == "LEADER_STATUS":
+                # Обновляем таймер: мастер в сети, всё в порядке
                 self.last_leader_heartbeat = time.time()
                 self.leader_name = s_name
                 
-                # Если мы сами пытались стать лидером - отменяем выборы
+                # Если мы сами пытались стать лидером, но увидели Мастера - немедленно отступаем
                 if self.role == "CANDIDATE":
-                    self.log("Leader pulse heard from " + s_name + ". Election aborted.")
+                    self.log("Active Leader " + str(s_name) + " found. Cancelling my election.")
                     self.role = "STANDBY"
                 
-                # Сверяем наши данные с данными из пакета
-                local_lsn_str = self.get_pg_lsn()
-                my_lsn_val = self.lsn_to_int(local_lsn_str)
+                # Сверка LSN
+                my_lsn_str = self.get_pg_lsn()
+                my_lsn_val = self.lsn_to_int(my_lsn_str)
                 rem_lsn_val = self.lsn_to_int(s_lsn)
 
                 if self.role == "LEADER":
                     # КОНФЛИКТ МАСТЕРОВ (Split-Brain)
+                    # 1. По LSN (кто новее, тот и прав)
                     if rem_lsn_val > my_lsn_val:
-                        # У соседа данных больше - мы обязаны уйти
-                        self.demote_node("Superior LSN found: " + s_lsn)
-                        self.auto_rebuild(s_name, "Rejoining as replica (inferior LSN)")
+                        self.demote_node("Superior leader detected: " + str(s_name) + " is ahead.")
+                        self.auto_rebuild(s_name, "Rejoining as replica (LSN mismatch)")
                     
+                    # 2. По имени (Tie-break), если LSN равны
                     elif rem_lsn_val == my_lsn_val:
-                        # LSN равны, решаем по алфавиту
-                        if s_name < self.node_name:
-                            self.demote_node("Tie-break priority given to " + s_name)
-                            self.auto_rebuild(s_name, "Rejoining as replica (alphabetical priority)")
+                        if s_name < self.node_name: # Алфавитный приоритет (gorgonad1 > gorgonad2)
+                            self.demote_node("Tie-break priority given to " + str(s_name))
+                            self.auto_rebuild(s_name, "Rejoining as replica (Alphabetical Tie-break)")
                         else:
-                            self.log("Conflict with " + s_name + ". I have name priority. Staying Master.")
+                            self.log("Conflict with " + str(s_name) + ". I have name priority. Staying Master.")
                 
                 elif self.role == "STANDBY":
-                    # SELF-HEALING (Авто-восстановление реплики)
+                    # SELF-HEALING: Если мы реплика, но база у нас пустая (0/0) или линк упал
                     if not self.rebuild_in_progress and not self.is_witness:
-                        # Если база пуста или репликация "отсохла"
                         if my_lsn_val == 0:
-                            self.log("DB is empty. Auto-initializing recovery from " + s_name)
-                            self.auto_rebuild(s_name, "Initial synchronization")
+                            self.auto_rebuild(s_name, "Local database is empty")
                         elif self.is_replication_active() == False:
-                            # Проверяем, что мастер слышен стабильно (не разовый пакет)
+                            # Проверяем, не слишком ли давно был хертбит (защита от моргания сети)
                             if (time.time() - self.last_leader_heartbeat) < 30:
-                                self.log("Replication broken but Leader is active. Triggering rebuild.")
-                                self.auto_rebuild(s_name, "Broken replication link recovery")
+                                self.auto_rebuild(s_name, "Replication process (wal_receiver) is missing")
 
-            # --- СЦЕНАРИЙ 2: Получена заявка от Кандидата ---
+            # --- СЦЕНАРИЙ 2: Кто-то другой хочет стать Лидером ---
             elif msg_type == "CANDIDATE":
                 if self.role in ["LEADER", "CANDIDATE"]:
                     my_lsn_val = self.lsn_to_int(self.get_pg_lsn())
                     rem_lsn_val = self.lsn_to_int(s_lsn)
                     
-                    # Если кто-то другой претендует на лидерство и он сильнее нас
+                    # Если кандидат "сильнее" нас
                     if rem_lsn_val > my_lsn_val or (rem_lsn_val == my_lsn_val and s_name < self.node_name):
-                        self.log("Yielding to superior candidate: " + s_name)
+                        self.log("Yielding to superior candidate in mesh: " + str(s_name))
                         self.role = "STANDBY"
-                        # Сбрасываем таймер, чтобы не начать свои выборы сразу же
                         self.last_leader_heartbeat = time.time()
 
     # --------------------------------------------------------------------------
-    # ГЛАВНЫЙ ЦИКЛ УПРАВЛЕНИЯ
+    # ГЛАВНЫЙ ЦИКЛ УПРАВЛЕНИЯ (HEARTBEAT & ELECTION)
     # --------------------------------------------------------------------------
 
     def manager_loop(self):
-        """Главный HA-цикл"""
-        last_heartbeat_sent_time = 0 
+        """Бесконечный цикл HA-проверок (шаг 5 секунд)"""
+        last_hb_sent_at = 0 
         
         while self.is_running:
             now = time.time()
-            if not self.is_witness and not self.rebuild_in_progress:
-                try:
-                    self.sync_role_with_db()
-                except: pass
             
+            # 1. Синхронизируем роль с реальностью Postgres
+            if not self.is_witness and not self.rebuild_in_progress:
+                try: self.sync_role_with_db()
+                except Exception: pass
+            
+            # 2. Обновляем показатели
             self.current_lsn = self.get_pg_lsn()
             my_lsn_val = self.lsn_to_int(self.current_lsn)
             silence_time = now - self.last_leader_heartbeat
 
+            # --- ЛОГИКА ЛИДЕРА ---
             if self.role == "LEADER":
-                if (now - last_heartbeat_sent_time) > self.heartbeat_interval:
+                # Мастер зануляет имя лидера в своем статусе
+                self.leader_name = None
+                if (now - last_hb_sent_at) > self.heartbeat_interval:
                     self.broadcast_status()
-                    last_heartbeat_sent_time = now
+                    last_hb_sent_at = now
             
+            # --- ЛОГИКА РЕПЛИКИ (STANDBY) ---
             elif self.role == "STANDBY":
-                last_heartbeat_sent_time = 0 
+                last_hb_sent_at = 0 
+                
+                # ПРИОРИТЕТ 1: Выборы (если лидера нет слишком долго)
                 if silence_time > self.election_timeout:
                     if not self.is_witness and not self.rebuild_in_progress:
+                        # Узел с пустой базой не имеет права голосовать (нет данных - нет кворума)
                         if my_lsn_val > 0:
-                            self.log("TIMEOUT: Leader lost (" + str(int(silence_time)) + "s). Starting election.")
+                            self.log("TIMEOUT: No pulse from leader for " + str(int(silence_time)) + "s. Initiating election.")
+                            # Сбрасываем флаг ребилда: если лидер умер, ребилд не поможет
                             self.rebuild_in_progress = False 
                             self.start_election()
                         else:
                             if int(now) % 60 == 0:
-                                self.log("Standby mode: DB is empty. Waiting for a master...")
+                                self.log("Standby mode: Database is empty. Waiting for a master...")
 
+                # ПРИОРИТЕТ 2: Ребилд (если лидер слышен, но репликация сломана)
                 elif not self.is_witness and not self.rebuild_in_progress and self.leader_name:
                     if my_lsn_val == 0 or self.is_replication_active() == False:
+                        # Чинимся только если мастер вещал в последние 30 сек (он жив)
                         if silence_time < 30:
-                            self.log("Loop Trigger: Replication is broken. Initializing auto-rebuild from " + str(self.leader_name))
-                            self.auto_rebuild(self.leader_name, "Periodic recovery check")
+                            self.log("LOOP TRIGGER: Replication check failed. Automatic recovery from " + str(self.leader_name))
+                            self.auto_rebuild(self.leader_name, "Periodic health check failed")
 
+            # 4. Обновление локального JSON статуса (для Stheno UI)
             try:
                 status_obj = {
-                    "node": self.node_name, "role": self.role, "lsn": self.current_lsn, 
-                    "leader": self.leader_name, "rebuild": self.rebuild_in_progress, "ts": time.time()
+                    "node": str(self.node_name), 
+                    "role": str(self.role), 
+                    "lsn": str(self.current_lsn), 
+                    "leader": str(self.leader_name), 
+                    "rebuild_active": self.rebuild_in_progress, 
+                    "update_time": time.time()
                 }
                 with open(self.status_json_path, "w") as f: 
                     json.dump(status_obj, f, indent=4)
-            except: pass
+            except Exception: pass
             
+            # 5. MONITOR телеметрия
             if (now - self.last_monitor_sent) > self.monitor_interval:
-                self.gorgona_send("MONITOR|" + self.node_name + "|" + self.role + "|" + self.current_lsn)
+                monitor_msg = "MONITOR|" + str(self.node_name) + "|" + str(self.role) + "|" + str(self.current_lsn)
+                self.gorgona_send(monitor_msg)
                 self.last_monitor_sent = now
             
+            # Шаг итерации - 5 секунд
             time.sleep(5)
 
+    def start_election(self):
+        """Протокол проведения выборов кандидата"""
+        if self.is_witness == True: return
+        
+        self.role = "CANDIDATE"
+        lsn_at_election = self.get_pg_lsn()
+        self.log("ELECTION: Broadcasting candidacy. Local LSN: " + str(lsn_at_election))
+        self.send_event("INITIATING ELECTION. Local LSN: " + str(lsn_at_election))
+        
+        # Заявка живет 20 секунд
+        self.gorgona_send("CANDIDATE|" + str(self.node_name) + "|" + str(lsn_at_election), ttl_sec_override=20)
+        
+        # Окно ожидания для оспорений (10 секунд)
+        time.sleep(10)
+        
+        # Если за 10 секунд нас не перевели обратно в STANDBY через process_message (никто не прислал LSN лучше)
+        if self.role == "CANDIDATE":
+            self.log("ELECTION WON: No superior nodes found. Seizing leadership.")
+            self.promote_node()
+
+# ==============================================================================
+# [ ТОЧКА ВХОДА (MAIN) ]
+# ==============================================================================
+
 if __name__ == "__main__":
-    # Создание объекта GFM (сначала загружаем конфиг и пути)
-    gfm_instance = GFM()
+    # Сначала создаем экземпляр, чтобы загрузились пути из gfm.conf
+    gfm_daemon = GFM()
     
-    # Теперь проверка ключа безопасна
-    if not os.path.exists(gfm_instance.priv_key_path):
-        print("FATAL: Key " + gfm_instance.priv_key_path + " not found!")
+    # Теперь проверяем наличие ключа безопасности
+    if not os.path.exists(gfm_daemon.priv_key_path):
+        print("FATAL ERROR: Control key " + gfm_daemon.priv_key_path + " not found!")
+        print("Please check your MY_PUB_HASH in gfm.conf")
         sys.exit(1)
 
-    # Запуск потока прослушивания
-    mesh_listener = threading.Thread(target=gfm_instance.listener_thread, daemon=True)
-    mesh_listener.start()
+    # Запуск фонового сетевого слушателя в отдельном потоке
+    listener = threading.Thread(target=gfm_daemon.listener_thread, daemon=True)
+    listener.start()
     
-    # Запуск основного цикла
+    # Запуск основного бесконечного цикла в главном потоке
     try:
-        gfm_instance.manager_loop()
+        gfm_daemon.manager_loop()
     except KeyboardInterrupt:
-        gfm_instance.is_running = False
-        print("\nGFM stopping gracefully...")
+        gfm_daemon.is_running = False
+        print("\nGFM shutdown initiated by user.")
         sys.exit(0)
     except Exception as fatal_e:
-        print("\nGFM process CRASHED: " + str(fatal_e))
+        print("\nGFM CRASHED: " + str(fatal_e))
         sys.exit(1)
 
