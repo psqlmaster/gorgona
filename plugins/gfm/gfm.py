@@ -206,6 +206,25 @@ class GFM:
             return int(res) > 0
         except Exception:
             return False
+        
+    def get_replication_status(self):
+        """Краткий статус репликации для MONITOR-телеметрии"""
+        if self.is_witness:
+            return "n/a"
+        if self.role == "LEADER":
+            try:
+                cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c",
+                       "SELECT count(*) FROM pg_stat_replication;"]
+                res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+                return "replicas:" + str(int(res))
+            except Exception:
+                return "replicas:?"
+        # STANDBY / CANDIDATE
+        if self.lsn_to_int(self.current_lsn) == 0:
+            return "empty"
+        if self.is_replication_active():
+            return "streaming"
+        return "not_streaming"
 
     def get_pg_lsn(self):
         """Получает наиболее актуальную позицию WAL (совместимо с Postgres 17)"""
@@ -554,7 +573,9 @@ class GFM:
             
             # 5. MONITOR телеметрия
             if (now - self.last_monitor_sent) > self.monitor_interval:
-                monitor_msg = "MONITOR|" + str(self.node_name) + "|" + str(self.role) + "|" + str(self.current_lsn)
+                repl_status = self.get_replication_status()
+                monitor_msg = ("MONITOR|" + str(self.node_name) + "|" + str(self.role) +
+                               "|" + str(self.current_lsn) + "|" + repl_status)
                 self.gorgona_send(monitor_msg)
                 self.last_monitor_sent = now
             
