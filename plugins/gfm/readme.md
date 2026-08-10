@@ -1,91 +1,85 @@
 ### GFM: Gorgona Failover Manager for PostgreSQL
 
-**GFM** is a decentralized, high-availability (HA) management daemon for PostgreSQL. It uses the **Gorgona P2P Mesh Network** as an encrypted control plane to provide leader election, split-brain protection, and automated self-healing. 
+**GFM** is a decentralized, high-availability (HA) management daemon for PostgreSQL. It utilizes the **Gorgona P2P Mesh Network** as an encrypted, serverless control plane to provide leader election, split-brain protection, and automated self-healing.
 
-Unlike traditional HA solutions, GFM does not require a centralized consensus store (like etcd, Consul, or ZooKeeper), making it ideal for distributed environments and edge computing.
+Unlike traditional HA solutions (Patroni, Stolon), GFM does not require a centralized consensus store (like etcd, Consul, or ZooKeeper), making it perfect for distributed edge computing, multi-region clusters, and high-security environments.
 
 ---
 
 ### Core Features
 
-- **P2P Orchestration:** Fully decentralized signaling via Gorgona Mesh.
+- **Multi-Instance Isolation:** Run multiple independent GFM clusters on the same physical hardware using unique `cluster_id`s and Systemd templates.
+- **P2P Orchestration:** Fully decentralized signaling via Gorgona Mesh—no single point of failure.
 - **LSN-Based Consensus:** Mathematical leader election based on the most advanced PostgreSQL Log Sequence Number (LSN).
-- **Deterministic Tie-Breaking:** Alphabetical hostname priority ensures a single leader in case of identical LSNs.
-- **Patroni-style Self-Healing:** Failed nodes automatically rejoin the cluster as Standby via `pg_rewind` or `pg_basebackup`.
-- **Witness Support:** Lightweight arbitration node to prevent "Split-Brain" in 2-node database setups.
-- **Encrypted Control Plane:** All cluster transitions and heartbeats are end-to-end encrypted.
-- **Audit Logging:** Critical cluster events (promotions, fencing, rebuilds) are persisted in the mesh history for 24h+.
+- **Deterministic Tie-Breaking:** In case of identical LSNs, alphabetical hostname priority ensures a single, stable leader.
+- **Safe DB Monitoring:** Protects your database from monitoring overhead using file-level locking (`fcntl.flock`) and strict execution timeouts.
+- **Patroni-style Self-Healing:** Failed nodes automatically rejoin as Standby via `pg_rewind` (saving bandwidth) or `pg_basebackup`.
+- **Dual-Key Security:** Separate keys for cluster control and administrative reporting (`admin_pub_hash`).
+- **Audit & History:** Critical events (promotions, fencing, rebuilds) are persisted in the mesh history for 24h+.
 
 ---
 
 ### Deployment & Installation
 
-GFM includes a professional installer that automates host mapping and role provisioning.
+GFM features a professional installer that automates cluster provisioning based on a single configuration file.
 
 #### 1. Prepare the Inventory (`nodes.list`)
-Create a file named `nodes.list` in the installation directory. Database nodes are identified automatically; only the Witness role needs explicit marking.
-
+Define your nodes in a local `nodes.list` file:
 ```text
-# IP Address      Role (Use 'witness' for arbiter nodes, leave empty for DB nodes)
+# IP Address      Role (Use 'witness' for arbiter, leave empty for DB nodes)
 192.168.1.170
 192.168.1.171
 192.168.1.172    witness
 ```
 
 #### 2. Run the Installer
-The `install.sh` script will configure `/etc/hosts`, deploy GFM scripts, and set up Systemd services across all nodes.
-
+Launch the installer by pointing it to your cluster configuration:
 ```bash
 chmod +x install.sh
-./install.sh
+./install.sh ./gfm.conf
 ```
+*The installer automatically creates the Postgres instance (via `pg_createcluster`), configures `/etc/hosts`, and starts the `gfm@pg_prod_5432` service.*
 
 #### 3. Uninstall / Cleanup
-To completely remove GFM and its configuration from the cluster:
-
+To remove a specific instance from the cluster:
 ```bash
-chmod +x uninstall.sh
-./uninstall.sh
+./uninstall.sh ./gfm.conf
 ```
 
 ---
 
 ### Configuration (`gfm.conf`)
 
-GFM is configured via `/etc/gorgona/gfm.conf`. The installer generates this file automatically based on your `nodes.list`.
+Each instance is managed by its own config file (e.g., `/etc/gorgona/gfm_pg_prod.conf`).
 
 | Section | Parameter | Description |
 | :--- | :--- | :--- |
-| **[cluster]** | `my_pub_hash` | The public key hash for the encrypted control channel. |
-| | `quorum_total_nodes` | Total node count used to calculate majority quorum. |
-| **[timings]** | `heartbeat_interval` | Frequency of the Leader pulse (seconds). |
-| | `max_missing_heartbeats` | Missing pulses allowed before election starts (default: 3). |
-| | `heartbeat_ttl` | Expiry of pulse packets (default: 45s). |
-| | `event_ttl` | Expiry of Audit Log events (default: 86400s / 24h). |
-| **[paths]** | `psql_bin` | Path to `psql` (automatically discovered by installer). |
-| | `rebuild_script` | Path to the recovery script (`gfm_rebuild.sh`). |
+| **[cluster]** | `cluster_id` | Unique ID for the instance (isolates logs, status, and services). |
+| | `my_pub_hash` | The P2P hash for the encrypted cluster control channel. |
+| | `admin_pub_hash` | The P2P hash for administrative health reports. |
+| **[postgresql]** | `service_name` | The Systemd service name (e.g., `postgresql@17-main`). |
+| | `pg_version` | PostgreSQL version (e.g., `17`). |
+| | `port` | Database port (e.g., `5432`). |
+| **[timings]** | `heartbeat_interval`| Frequency of the Leader pulse (seconds). |
+| | `election_timeout` | Calculated automatically ($interval \times missed + 5s$). |
 
 ---
 
-### Architecture & How It Works
+### Architecture & Failover Logic
 
-#### 1. State Synchronization
-Every 5 seconds, GFM probes the local Postgres instance. If the database is in Read-Write mode, the node asserts **LEADER**. If in Recovery, it remains **STANDBY**. If no database is detected, it enters **WITNESS** mode.
+#### 1. Template-Based Orchestration
+GFM uses Systemd template units (`gfm@.service`). This allows `gfm@prod` and `gfm@dev` to coexist on the same node without interference. Each instance maintains its own status file: `/etc/gorgona/status_CLUSTER_ID.json`.
 
-#### 2. Heartbeat & Monitoring
-The Leader broadcasts a `LEADER_STATUS` packet. Standby nodes track these pulses. If silence exceeds the `ELECTION_TIMEOUT` ($interval \times missed + 5s$), the node starts an election.
-
-#### 3. Conflict Resolution (Fencing)
-If a conflict occurs (two Masters), GFM resolves it:
+#### 2. Conflict Resolution (Fencing)
+If two nodes claim to be Master, GFM resolves the conflict:
 1. **Higher LSN wins.**
-2. **If LSN is equal, the lower hostname alphabetically wins.**
-The "losing" node immediately performs **Hard Fencing** (stops its Postgres instance) and triggers an **Auto-Rebuild**.
+2. **If LSN is equal, the lower hostname wins.**
+The losing node performs **Hard Fencing** (stops its Postgres service immediately) and triggers an **Auto-Rebuild** to rejoin as a replica.
 
-#### 4. Self-Healing (Auto-Rebuild)
-A node will automatically trigger the `gfm_rebuild.sh` script if:
-- It is a Standby and detects an empty database.
-- It is a Standby and the replication link is broken while a Leader is active.
-- It lost a leadership conflict.
+#### 3. Smart Rebuild
+The `gfm_rebuild.sh` script automatically:
+- Attempts `pg_rewind` first to synchronize data with minimal traffic.
+- Falls back to `pg_basebackup` with automated replication slot creation if the timelines have diverged too much.
 
 ---
 
@@ -93,67 +87,66 @@ A node will automatically trigger the `gfm_rebuild.sh` script if:
 
 ```mermaid
 graph TD
-    %% Database Nodes
-    subgraph DB1 ["Node 1: Master (.170)"]
+    %% Cluster Instance 1
+    subgraph NODE1 ["Node 1: Master"]
         direction TB
-        gfm1["GFM (Python)"] <-->|Local| pg1[("Postgres Master")]
+        gfm1["GFM@pg_prod"] <-->|Safe SQL Lock| pg1[("Postgres Instance")]
         gfm1 <-->|Local| D1["gorgonad"]
     end
 
-    subgraph DB2 ["Node 2: Standby (.171)"]
+    %% Cluster Instance 2
+    subgraph NODE2 ["Node 2: Standby"]
         direction TB
-        gfm2["GFM (Python)"] <-->|Local| pg2[("Postgres Standby")]
+        gfm2["GFM@pg_prod"] <-->|Monitor| pg2[("Postgres Instance")]
         gfm2 <-->|Local| D2["gorgonad"]
     end
 
-    %% Witness Node
-    subgraph WIT ["Node 3: Witness (.172)"]
-        direction TB
-        gfm3["GFM (Python)"] ---|Quorum Only| D3["gorgonad"]
-    end
+    %% Administrative Layer
+    ADMIN["Admin / Monitoring Mesh"] 
 
     %% P2P Signaling
-    D1 <-->|Encrypted Heartbeats| D2
-    D2 <-->|Mesh Consensus| D3
-    D3 <-->|Tie-Breaking| D1
-
-    %% Interactions
+    D1 <-->|Control Channel| D2
     gfm1 -.->|LEADER_STATUS| D1
-    gfm2 -.->|CANDIDATE / AUTO-REBUILD| D2
+    gfm2 -.->|CANDIDATE| D2
     
+    %% Reporting
+    gfm1 -- "Health Report (Admin Key)" --> ADMIN
+    gfm2 -- "Health Report (Admin Key)" --> ADMIN
+
     %% Styling
-    style DB1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style DB2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-    style WIT fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style NODE1 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    style NODE2 fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
     style gfm1 fill:#ffe0b2,stroke:#fb8c00
     style D1 fill:#e3f2fd,stroke:#1e88e5
     style pg1 fill:#f3e5f5,stroke:#7b1fa2
+    style ADMIN fill:#e8f5e9,stroke:#2e7d32
 ```
 
 ---
 
 ### Operational Commands
 
-Remote administration is performed via the Gorgona `send` utility using the `+I9IQuXYW8I=` channel.
+Remote administration is executed via the Gorgona mesh using the specific instance configuration.
 
 | Command | Action |
 | :--- | :--- |
-| `gfm_health` | Returns a comprehensive health report (LSN, Sync Status, Role). |
-| `gfm_status` | Returns the raw JSON cluster state. |
-| `gfm_switchover` | Forces the current Master to step down and rejoin as a Replica. |
-| `gfm_rebuild` | Manually triggers `pg_rewind` or `pg_basebackup`. |
+| `gfm_health <conf>` | Detailed report: Role, LSN, Replication Lag (bytes & time). |
+| `gfm_status <conf>` | Returns raw JSON cluster state. |
+| `gfm_switchover <conf>` | Graceful role reversal: Master steps down to become Standby. |
+| `gfm_rebuild <conf>` | Manually triggers `pg_rewind` or `pg_basebackup`. |
+| `gfm_control <conf> <act>`| Service control: `start`, `stop`, `promote`, `restart_gfm`. |
 
-**Example: Check Cluster Health**
+**Example: Check Health of a Specific Cluster**
 ```bash
-gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+1 min' '+%Y-%m-%d %H:%M:%S')" "gfm_health" "+I9IQuXYW8I=.pub"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 min' '+%Y-%m-%d %H:%M:%S')" \
+"gfm_cluster_health" "admin_key.pub"
 ```
 
 ---
 
-### Failover Logic Flow
-1. **Master Failure:** Standby stops receiving pulses $\rightarrow$ Timeout reached.
-2. **Quorum Check:** Standby verifies it can see at least one other node (e.g., Witness).
-3. **Candidacy:** Standby broadcasts `CANDIDATE` with its LSN $\rightarrow$ Wait 10s.
-4. **Promotion:** No superior candidate found $\rightarrow$ `pg_ctl promote`.
-5. **Recovery:** Old Master returns $\rightarrow$ Sees new Leader $\rightarrow$ `auto_rebuild` $\rightarrow$ Rejoins as Standby.
+### Logs & Troubleshooting
 
+- **GFM Daemon Logs:** `journalctl -u gfm@CLUSTER_ID -f`
+- **Rebuild History:** `/var/log/gorgona/rebuild_CLUSTER_ID.log`
+- **Health History:** `/var/log/gorgona/health_CLUSTER_ID.log`
+- **Local State File:** `cat /etc/gorgona/status_CLUSTER_ID.json`

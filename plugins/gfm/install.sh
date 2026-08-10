@@ -1,95 +1,112 @@
 #!/bin/bash
-# GFM (Gorgona Failover Manager) Discovery-based Installer
+# GFM (Gorgona Failover Manager) Config-based Installer
 
-NODES_FILE="nodes.list"
-PUB_HASH="+I9IQuXYW8I="
-
+# Цвета для вывода
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-if [ ! -f "$NODES_FILE" ]; then
-    echo -e "${RED}Error: $NODES_FILE not found!${NC}"
+usage() {
+    echo -e "${BLUE}GFM Automated Installer${NC}"
+    echo -e "Использование: $0 ${GREEN}<путь_к_конфигу>${NC}"
+    echo -e ""
+    echo -e "Пример:"
+    echo -e "  $0 ./gfm_prod_5432.conf"
+    echo -e ""
+    echo -e "Скрипт выполнит:"
+    echo -e "  1. Чтение параметров кластера (ID, порты, хеши) из файла."
+    echo -e "  2. Авто-создание кластера PostgreSQL на узлах (pg_createcluster)."
+    echo -e "  3. Деплой скриптов GFM и запуск системных сервисов."
+    exit 1
+}
+
+if [ -z "$1" ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    usage
+fi
+
+CONF_SRC=$1
+
+if [ ! -f "$CONF_SRC" ]; then
+    echo -e "${RED}Ошибка: Файл конфигурации '$CONF_SRC' не найден!${NC}"
     exit 1
 fi
 
-# Считаем общее количество узлов для кворума
+# Функция чтения конфига
+get_val() {
+    local section=$1
+    local key=$2
+    sed -nr "/^\[$section\]/,/^\[.*\]/ { s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p }" "$CONF_SRC" | \
+    sed 's/[#;].*//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs
+}
+
+# Извлекаем параметры для UI и проверки
+CLUSTER_ID=$(get_val "cluster" "cluster_id")
+PUB_HASH=$(get_val "cluster" "my_pub_hash")
+PG_SVC=$(get_val "postgresql" "service_name")
+PG_VER=$(get_val "postgresql" "pg_version")
+PG_INST=$(get_val "postgresql" "pg_instance_name")
+PG_PORT=$(get_val "postgresql" "port")
+
+if [ -z "$CLUSTER_ID" ]; then echo -e "${RED}Error: cluster_id not found in config!${NC}"; exit 1; fi
+
+NODES_FILE="nodes.list"
+if [ ! -f "$NODES_FILE" ]; then
+    echo -e "${RED}Ошибка: Файл '$NODES_FILE' не найден!${NC}"
+    exit 1
+fi
+
+# NODE_COUNT теперь используется в Header для информации
 NODE_COUNT=$(grep -v '^#' "$NODES_FILE" | grep -v '^$' | wc -l)
 
-echo -e "${BLUE}--- GFM Cluster Deployment (Discovery Mode) ---${NC}"
-echo -e "Cluster Size: ${GREEN}$NODE_COUNT${NC}"
+echo -e "${BLUE}--- GFM Automated Deployment ---${NC}"
+echo -e "Config        : ${GREEN}$CONF_SRC${NC}"
+echo -e "Cluster ID    : ${GREEN}$CLUSTER_ID${NC}"
+echo -e "Control Hash  : ${GREEN}$PUB_HASH${NC}"
+echo -e "Postgres      : ${GREEN}v$PG_VER ($PG_INST) on port $PG_PORT${NC}"
+echo -e "Nodes Count   : ${GREEN}$NODE_COUNT${NC}"
 
-# Шаг 1: Собираем карту хостов для /etc/hosts
-echo "Generating host map..."
+# Сбор карты хостов
+echo -ne "Discovery hostnames..."
 HOST_MAP=""
 while read -r IP ROLE <&3; do
-    # Узнаем реальный hostname каждого узла через SSH
     HNAME=$(ssh -n -o StrictHostKeyChecking=no root@$IP "hostname")
     HOST_MAP+="$IP $HNAME"$'\n'
 done 3< <(grep -v '^#' "$NODES_FILE" | grep -v '^$')
+echo -e " [${GREEN}OK${NC}]"
 
-# Шаг 2: Установка на каждый узел
 while read -r IP ROLE <&3; do
-    echo -e "\n${BLUE}>>> Provisioning Node: $IP ${ROLE:+(Role: $ROLE)}${NC}"
+    echo -e "\n${BLUE}>>> Node: $IP ($ROLE)${NC}"
 
-    # 1. Настройка /etc/hosts (удаляем старое, пишем актуальную карту)
-    # Это гарантирует, что ноды увидят друг друга по именам для репликации
-    ssh -n root@$IP "
-        sed -i '/192.168.1./d' /etc/hosts
-        echo '$HOST_MAP' >> /etc/hosts
-    "
+    ssh -n root@$IP "sed -i '/192.168.1./d' /etc/hosts; echo '$HOST_MAP' >> /etc/hosts"
 
-    # 2. Определение путей к Postgres (авто-поиск)
-    ssh -n root@$IP "
-        mkdir -p /etc/gorgona /usr/local/bin /var/log/gorgona
-        if [ \"$ROLE\" == \"witness\" ]; then
-            ln -sf /usr/bin/true /usr/bin/psql
-            echo 'WITNESS_MODE' > /etc/gorgona/node_type
-        else
-            # Восстанавливаем реальный psql если была заглушка
+    if [ "$ROLE" != "witness" ]; then
+        ssh -n root@$IP "
+            if ! pg_lsclusters | grep -q \"$PG_VER[[:space:]]\+$PG_INST\"; then
+                pg_createcluster $PG_VER $PG_INST --port $PG_PORT
+            fi
             [ -L /usr/bin/psql ] && [ \"\$(readlink /usr/bin/psql)\" == \"/usr/bin/true\" ] && rm -f /usr/bin/psql
-            # Ищем бинарник 17-й версии
-            REAL_PSQL=\$(ls /usr/lib/postgresql/17/bin/psql 2>/dev/null)
-            [ -n \"\$REAL_PSQL\" ] && ln -sf \$REAL_PSQL /usr/bin/psql
-            echo 'DB_MODE' > /etc/gorgona/node_type
-        fi
-    "
+            [ ! -f /usr/bin/psql ] && ln -sf /usr/lib/postgresql/$PG_VER/bin/psql /usr/bin/psql
+            systemctl enable $PG_SVC && systemctl start $PG_SVC
+        "
+    else
+        ssh -n root@$IP "ln -sf /usr/bin/true /usr/bin/psql 2>/dev/null"
+    fi
 
-    # 3. Копирование файлов управления
-    scp -o StrictHostKeyChecking=no gfm.py gfm_rebuild.sh gfm_health.sh gfm_switchover.sh root@$IP:/usr/local/bin/
+    # Копирование файлов
+    scp -o StrictHostKeyChecking=no gfm.py gfm_rebuild.sh gfm_health.sh gfm_switchover.sh gfm_control.sh root@$IP:/usr/local/bin/
+    scp -o StrictHostKeyChecking=no "$CONF_SRC" root@$IP:/etc/gorgona/gfm_${CLUSTER_ID}.conf
     ssh -n root@$IP "chmod +x /usr/local/bin/gfm*"
 
-    # 4. Генерация унифицированного gfm.conf
-    ssh -n root@$IP "cat <<EOF > /etc/gorgona/gfm.conf
-[cluster]
-my_pub_hash = $PUB_HASH
-quorum_total_nodes = $NODE_COUNT
-
-[timings]
-heartbeat_interval = 15
-max_missing_heartbeats = 3
-monitor_interval = 180
-heartbeat_ttl = 45
-event_ttl = 86400
-default_ttl = 3600
-
-[paths]
-base_dir = /etc/gorgona
-gorgona_bin = /usr/bin/gorgona
-psql_bin = /usr/bin/psql
-pg_ctl_bin = /usr/bin/pg_ctlcluster
-rebuild_script = /usr/local/bin/gfm_rebuild.sh
-EOF"
-
-    # 5. Деплой системных сервисов
+    # Настройка Systemd (добавлен gfm-remote)
     ssh -n root@$IP "
-        cat <<EOF > /etc/systemd/system/gfm.service
+        # 1. Шаблонный сервис GFM
+        cat <<EOF > /etc/systemd/system/gfm@.service
 [Unit]
-Description=Gorgona Failover Manager
-After=network.target gorgonad.service postgresql.service
+Description=Gorgona Failover Manager for %i
+After=network.target gorgonad.service %i.service
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/bin/gfm.py
+ExecStart=/usr/bin/python3 /usr/local/bin/gfm.py /etc/gorgona/gfm_%i.conf
 Restart=always
 RestartSec=10
 User=root
@@ -97,7 +114,10 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-        cat <<EOF > /etc/systemd/system/gfm-remote.service
+        # 2. Сервис для удаленных команд (общий для всех кластеров на ноде)
+        # Если его нет - создаем
+        if [ ! -f /etc/systemd/system/gfm-remote.service ]; then
+            cat <<EOF > /etc/systemd/system/gfm-remote.service
 [Unit]
 Description=Gorgona Remote Execution Service
 After=network.target gorgonad.service
@@ -109,13 +129,14 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
+            systemctl enable gfm-remote && systemctl start gfm-remote
+        fi
 
         systemctl daemon-reload
-        systemctl enable --now gfm gfm-remote
-        systemctl restart gfm gfm-remote
+        systemctl enable gfm@${CLUSTER_ID}
+        systemctl restart gfm@${CLUSTER_ID}
     "
-    echo -e "${GREEN}Node $IP configured.${NC}"
+    echo -e "${GREEN}Node $IP is ready.${NC}"
 
 done 3< <(grep -v '^#' "$NODES_FILE" | grep -v '^$')
 
-echo -e "\n${GREEN}Deployment finished! GFM will now negotiate roles.${NC}"

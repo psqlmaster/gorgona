@@ -76,21 +76,39 @@ class GFM:
     # --------------------------------------------------------------------------
 
     def load_config(self):
-        """Загрузка параметров из внешнего файла /etc/gorgona/gfm.conf"""
-        config_path = "/etc/gorgona/gfm.conf"
-        if os.path.exists(config_path) == False:
-            print("FATAL ERROR: Configuration file " + config_path + " not found!")
+        """
+        Загрузка параметров из файла конфигурации.
+        Поддерживает передачу пути к конфигу через первый аргумент командной строки.
+        """
+        # 1. Определение пути к файлу конфигурации
+        if len(sys.argv) > 1:
+            self.config_full_path = sys.argv[1]
+        else:
+            self.config_full_path = "/etc/gorgona/gfm.conf"
+            
+        # 2. Проверяем существование файла по сохраненному пути
+        if not os.path.exists(self.config_full_path):
+            print(f"FATAL ERROR: Configuration file {self.config_full_path} not found!")
             sys.exit(1)
 
         conf = configparser.ConfigParser()
-        conf.read(config_path)
+        conf.read(self.config_full_path)
 
-        # Секция [cluster]
+        # 2. Секция [cluster]
         self.my_pub_hash = conf.get("cluster", "my_pub_hash")
         self.node_name = os.uname()[1]
         self.quorum_total_nodes = conf.getint("cluster", "quorum_total_nodes")
+        # Уникальный ID кластера (например, pg_prod_5432) для изоляции логов и статусов
+        self.cluster_id = conf.get("cluster", "cluster_id", fallback="default")
 
-        # Секция [timings]
+        # 3. Секция [postgresql] (Новая секция для мульти-инстанса)
+        # Имя системной службы (например, postgresql@17-main)
+        self.pg_service = conf.get("postgresql", "service_name", fallback="postgresql")
+        # Версия и имя инстанса для pg_ctlcluster (например, 17 и main)
+        self.pg_version = conf.get("postgresql", "pg_version", fallback="17")
+        self.pg_instance_name = conf.get("postgresql", "pg_instance_name", fallback="main")
+
+        # 4. Секция [timings]
         self.heartbeat_interval = conf.getint("timings", "heartbeat_interval")
         self.max_missing_heartbeats = conf.getint("timings", "max_missing_heartbeats")
         self.monitor_interval = conf.getint("timings", "monitor_interval")
@@ -101,28 +119,29 @@ class GFM:
         self.default_ttl = conf.getint("timings", "default_ttl")
         
         # Динамический расчет таймаута выборов
-        # Формула: (интервал * кол-во пропусков) + 5 сек запаса на сетевой лаг
         self.election_timeout = (self.heartbeat_interval * self.max_missing_heartbeats) + 5
 
-        # Секция [paths]
+        # 5. Секция [paths]
         base_dir_path = conf.get("paths", "base_dir")
         self.gorgona_bin = conf.get("paths", "gorgona_bin")
         self.psql_bin = conf.get("paths", "psql_bin")
         self.pg_ctl_bin = conf.get("paths", "pg_ctl_bin")
         self.rebuild_script = conf.get("paths", "rebuild_script")
 
-        # Производные пути к файлам и ключам
-        self.priv_key_path = base_dir_path + "/" + self.my_pub_hash + ".key"
-        self.pub_key_arg = self.my_pub_hash + ".pub"
-        self.gorgonad_conf_path = base_dir_path + "/gorgonad.conf"
-        self.status_json_path = base_dir_path + "/cluster_status.json"
+        # 6. Производные пути к файлам и ключам
+        # Ключи и конфиги лежат в базовой директории
+        self.priv_key_path = os.path.join(base_dir_path, f"{self.my_pub_hash}.key")
+        self.pub_key_arg = f"{self.my_pub_hash}.pub"
+        self.gorgonad_conf_path = os.path.join(base_dir_path, "gorgonad.conf")
+        
+        # Файл статуса теперь содержит ID кластера, чтобы несколько GFM не затирали друг друга
+        self.status_json_path = os.path.join(base_dir_path, f"status_{self.cluster_id}.json")
 
     def log(self, msg):
-        """Стандартизированное логирование в stdout (для системного журнала journald)"""
         now = datetime.now()
         timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
-        # Включаем текущую роль в каждую строку лога для облегчения анализа переключений
-        print("[" + timestamp + "] [" + self.role + "] " + str(msg), flush=True)
+        # Добавляем ID кластера в каждую строку лога
+        print(f"[{timestamp}] [{self.cluster_id}] [{self.role}] {msg}", flush=True)
 
     def safe_db_query(self, query):
         """
@@ -279,32 +298,20 @@ class GFM:
             return 0
 
     def promote_node(self):
-        """Действие: Повышение текущей реплики до роли Мастера"""
         if self.is_witness: return
         self.log("!!! EMERGENCY ACTION: PROMOTING TO MASTER !!!")
+        self.send_event(f"PROMOTION INITIATED for {self.cluster_id}")
         
-        # Записываем событие в историю кластера
-        self.send_event("INITIATING PROMOTION. Node is becoming the new Leader.")
-        
-        # Используем pg_ctlcluster для Debian/Ubuntu (самый надежный способ)
-        cmd = ["sudo", "-u", "postgres", self.pg_ctl_bin, "17", "main", "promote"]
+        # Используем параметры из конфига
+        cmd = ["sudo", "-u", "postgres", self.pg_ctl_bin, self.pg_version, self.pg_instance_name, "promote"]
         subprocess.run(cmd, stderr=subprocess.DEVNULL)
-        
         self.role = "LEADER"
-        self.leader_name = None
 
     def demote_node(self, reason_text):
-        """Синхронный Fencing: Мгновенная остановка базы при обнаружении конфликта лидерства"""
         if self.is_witness: return
-        self.log("!!! FENCING INITIATED !!! Reason: " + str(reason_text))
-        
-        # Регистрация события
-        self.send_event("FENCING triggered. Reason: " + str(reason_text))
-        
-        # Жесткая остановка через системный менеджер (systemctl)
-        # Это гарантирует прерывание всех транзакций и закрытие соединений
-        subprocess.run(["systemctl", "stop", "postgresql"], stderr=subprocess.DEVNULL)
-        
+        self.log(f"!!! FENCING !!! Reason: {reason_text}")
+        # Останавливаем конкретную службу
+        subprocess.run(["systemctl", "stop", self.pg_service], stderr=subprocess.DEVNULL)
         self.role = "STANDBY"
         self.leader_name = None
 
@@ -378,7 +385,7 @@ class GFM:
                 if os.path.exists(self.rebuild_script):
                     # Запускаем bash-скрипт восстановления. $1 = имя мастера
                     subprocess.run(
-                        ["/bin/bash", self.rebuild_script, str(target_master_host)],
+                        ["/bin/bash", self.rebuild_script, self.config_full_path, str(target_master_host)],
                         stdout=subprocess.DEVNULL, 
                         stderr=subprocess.DEVNULL
                     )
@@ -650,4 +657,3 @@ if __name__ == "__main__":
     except Exception as fatal_e:
         print("\nGFM CRASHED: " + str(fatal_e))
         sys.exit(1)
-
