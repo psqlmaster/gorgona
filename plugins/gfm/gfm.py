@@ -10,6 +10,7 @@ import sys
 import socket
 import re
 import configparser
+import fcntl 
 from datetime import datetime, timedelta, timezone
 
 # ==============================================================================
@@ -123,6 +124,42 @@ class GFM:
         # Включаем текущую роль в каждую строку лога для облегчения анализа переключений
         print("[" + timestamp + "] [" + self.role + "] " + str(msg), flush=True)
 
+    def safe_db_query(self, query):
+        """
+        Безопасное выполнение SQL с защитой от наслоения (flock) 
+        и жестким тайм-аутом.
+        """
+        lock_file_path = "/tmp/gfm_db_query.lock"
+        
+        try:
+            # Открываем (или создаем) файл блокировки
+            with open(lock_file_path, 'w') as f:
+                # Пытаемся захватить эксклюзивную блокировку без ожидания (LOCK_NB)
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # Если файл уже заблокирован другим процессом GFM - выходим
+                    # self.log("Database query skipped: previous query still running.")
+                    return None
+
+                # Выполняем команду с системным тайм-аутом (команда timeout из coreutils)
+                # Это защитит, если даже psql зависнет на сетевом сокете
+                cmd = [
+                    "timeout", "3s", 
+                    "sudo", "-u", "postgres", self.psql_bin, 
+                    "-At", "-c", query
+                ]
+                
+                result = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+                return result
+
+        except subprocess.CalledProcessError:
+            # Ошибка выполнения (база лежит или таймаут)
+            return None
+        except Exception as e:
+            self.log(f"Query error: {e}")
+            return None
+
     def fix_etc_hosts(self):
         """Оптимизация /etc/hosts для ускорения работы sudo команд внутри GFM"""
         try:
@@ -164,30 +201,21 @@ class GFM:
     # --------------------------------------------------------------------------
 
     def sync_role_with_db(self):
-        """Сверяет внутреннюю роль GFM с реальным состоянием PostgreSQL"""
-        if self.is_witness == True:
-            return
-        # Во время активного ребилда мы не меняем роль, чтобы не мешать процессу
-        if self.rebuild_in_progress == True:
+        if self.is_witness or self.rebuild_in_progress:
             return
 
-        try:
-            # Проверка режима Recovery через SQL запрос
-            cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", "SELECT pg_is_in_recovery();"]
-            res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-            
-            if res == "f": # f = False (База в режиме записи Master)
-                if self.role != "LEADER":
-                    self.log("Postgres state change: Master mode detected.")
-                self.role = "LEADER"
-            else: # t = True (База в режиме репликации Standby)
-                if self.role == "LEADER":
-                    self.log("Postgres state change: Standby mode detected. Stepping down.")
-                self.role = "STANDBY"
-        except Exception:
-            # Если база данных выключена или сокет недоступен
+        res = self.safe_db_query("SELECT pg_is_in_recovery();")
+        
+        if res is None:
+            # База не отвечает - считаем, что мы в режиме ожидания (безопаснее)
             if self.role == "LEADER":
-                self.log("Postgres is UNREACHABLE. Dropping status to prevent data divergence.")
+                self.log("Postgres UNREACHABLE. Possible crash?")
+                self.role = "STANDBY"
+            return
+
+        if res == "f":
+            self.role = "LEADER"
+        else:
             self.role = "STANDBY"
 
     def is_replication_active(self):
@@ -227,24 +255,16 @@ class GFM:
         return "not_streaming"
 
     def get_pg_lsn(self):
-        """Получает наиболее актуальную позицию WAL (совместимо с Postgres 17)"""
         if self.is_witness: return "0/0"
         
-        # Для Standby берем максимум из полученного и проигранного WAL
         query = """
         SELECT CASE 
             WHEN pg_is_in_recovery() THEN GREATEST(COALESCE(pg_last_wal_receive_lsn(), '0/0'), COALESCE(pg_last_wal_replay_lsn(), '0/0'))
             ELSE pg_current_wal_lsn() 
         END;
         """
-        try:
-            cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", query]
-            res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-            if res and "/" in res:
-                return res
-            return "0/0"
-        except Exception:
-            return "0/0"
+        res = self.safe_db_query(query)
+        return res if res else "0/0"
 
     def lsn_to_int(self, lsn_string):
         """Конвертирует LSN строку (0/4028E10) в целое число для математического сравнения"""
