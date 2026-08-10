@@ -412,72 +412,77 @@ class GFM:
             self.log("CRITICAL ERROR: Mesh Listener Thread crashed: " + str(e))
 
     def process_message(self, raw_payload):
-        """Бизнес-логика: Разрешение конфликтов, Fencing и принятие ролей"""
-        # Используем RegEx для очистки строки от возможного системного мусора бинарника
+        """Бизнес-логика разрешения конфликтов и обработки сигналов меша"""
         pattern = r"(LEADER_STATUS|CANDIDATE)\|([^|]+)\|([0-9a-fA-F/]+)"
         match = re.search(pattern, raw_payload)
         
         if not match: 
             return
 
+        # Извлекаем данные из групп RegEx
         msg_type, s_name, s_lsn = match.groups()
         
-        # Игнорируем эхо собственных пакетов
+        # Игнорируем свои собственные пакеты
         if s_name == self.node_name: 
             return
 
         with self.lock:
             # --- СЦЕНАРИЙ 1: Получен статус действующего Лидера ---
             if msg_type == "LEADER_STATUS":
-                # Обновляем таймер: мастер в сети, всё в порядке
                 self.last_leader_heartbeat = time.time()
                 self.leader_name = s_name
                 
-                # Если мы сами пытались стать лидером, но увидели Мастера - немедленно отступаем
+                # Если мы сами пытались стать лидером, но услышали Мастера - отступаем
                 if self.role == "CANDIDATE":
-                    self.log("Active Leader " + str(s_name) + " found. Cancelling my election.")
+                    self.log("Leader pulse heard from " + s_name + ". Election aborted.")
                     self.role = "STANDBY"
                 
-                # Сверка LSN
-                my_lsn_str = self.get_pg_lsn()
-                my_lsn_val = self.lsn_to_int(my_lsn_str)
-                rem_lsn_val = self.lsn_to_int(s_lsn)
-
                 if self.role == "LEADER":
                     # КОНФЛИКТ МАСТЕРОВ (Split-Brain)
-                    # 1. По LSN (кто новее, тот и прав)
-                    if rem_lsn_val > my_lsn_val:
-                        self.demote_node("Superior leader detected: " + str(s_name) + " is ahead.")
-                        self.auto_rebuild(s_name, "Rejoining as replica (LSN mismatch)")
-                    
-                    # 2. По имени (Tie-break), если LSN равны
-                    elif rem_lsn_val == my_lsn_val:
-                        if s_name < self.node_name: # Алфавитный приоритет (gorgonad1 > gorgonad2)
-                            self.demote_node("Tie-break priority given to " + str(s_name))
-                            self.auto_rebuild(s_name, "Rejoining as replica (Alphabetical Tie-break)")
-                        else:
-                            self.log("Conflict with " + str(s_name) + ". I have name priority. Staying Master.")
+                    # Свежий LSN перед сравнением (не кэш)
+                    my_lsn_val = self.lsn_to_int(self.get_pg_lsn())
+                    rem_lsn_val = self.lsn_to_int(s_lsn)
+
+                    # Победитель: больший LSN, при равенстве — меньшее имя
+                    i_am_inferior = (
+                        rem_lsn_val > my_lsn_val or
+                        (rem_lsn_val == my_lsn_val and s_name < self.node_name)
+                    )
+
+                    if i_am_inferior:
+                        self.demote_node("Superior leader found: " + s_name + " (LSN " + s_lsn + ")")
+                        self.auto_rebuild(s_name, "Rejoining as replica (split-brain resolution)")
+                    else:
+                        self.log("Conflict with " + s_name + ". I have priority (LSN/name). Staying Master.")
                 
                 elif self.role == "STANDBY":
-                    # SELF-HEALING: Если мы реплика, но база у нас пустая (0/0) или линк упал
+                    my_lsn_val = self.lsn_to_int(self.current_lsn)
+                    # САМОЛЕЧЕНИЕ: Мы реплика с пустой базой или сломанным линком
                     if not self.rebuild_in_progress and not self.is_witness:
                         if my_lsn_val == 0:
-                            self.auto_rebuild(s_name, "Local database is empty")
+                            self.log("DB is empty. Starting auto-initialization from " + s_name)
+                            self.auto_rebuild(s_name, "Empty database trigger")
                         elif self.is_replication_active() == False:
-                            # Проверяем, не слишком ли давно был хертбит (защита от моргания сети)
                             if (time.time() - self.last_leader_heartbeat) < 30:
-                                self.auto_rebuild(s_name, "Replication process (wal_receiver) is missing")
+                                self.auto_rebuild(s_name, "Broken replication link recovery")
 
             # --- СЦЕНАРИЙ 2: Кто-то другой хочет стать Лидером ---
             elif msg_type == "CANDIDATE":
                 if self.role in ["LEADER", "CANDIDATE"]:
+                    # Свежий LSN перед сравнением
                     my_lsn_val = self.lsn_to_int(self.get_pg_lsn())
                     rem_lsn_val = self.lsn_to_int(s_lsn)
                     
-                    # Если кандидат "сильнее" нас
+                    # Если чужой кандидат "сильнее" нас
                     if rem_lsn_val > my_lsn_val or (rem_lsn_val == my_lsn_val and s_name < self.node_name):
-                        self.log("Yielding to superior candidate in mesh: " + str(s_name))
-                        self.role = "STANDBY"
+                        if self.role == "LEADER":
+                            # Если мы лидер, но кандидат лучше — ФИЗИЧЕСКИЙ СТОП
+                            self.demote_node("Yielding to superior CANDIDATE: " + s_name)
+                            self.auto_rebuild(s_name, "Rejoining after superior candidate election")
+                        else:
+                            self.log("Yielding candidacy to superior node: " + s_name)
+                            self.role = "STANDBY"
+                        
                         self.last_leader_heartbeat = time.time()
 
     # --------------------------------------------------------------------------
@@ -490,14 +495,13 @@ class GFM:
         
         while self.is_running:
             now = time.time()
-            
+            self.current_lsn = self.get_pg_lsn()
             # 1. Синхронизируем роль с реальностью Postgres
             if not self.is_witness and not self.rebuild_in_progress:
                 try: self.sync_role_with_db()
                 except Exception: pass
             
-            # 2. Обновляем показатели
-            self.current_lsn = self.get_pg_lsn()
+            # 2. ОБНОВЛЯЕМ LSN (самая свежая информация для всех потоков) 
             my_lsn_val = self.lsn_to_int(self.current_lsn)
             silence_time = now - self.last_leader_heartbeat
 
