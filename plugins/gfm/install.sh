@@ -69,7 +69,7 @@ quorum_total_nodes = $NODE_COUNT
 [timings]
 heartbeat_interval = 15
 max_missing_heartbeats = 3
-monitor_interval = 60
+monitor_interval = 180
 heartbeat_ttl = 45
 event_ttl = 86400
 default_ttl = 3600
