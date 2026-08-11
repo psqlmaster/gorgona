@@ -517,11 +517,11 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     uint64_t id = strtoull(id_str, NULL, 10);
 
     /* [IDEMPOTENCY] Skip processing if already in history */
-    if (!client_history_is_new(id)) {
-        if (verbose) printf("History: Skipping duplicate Alert ID %" PRIu64 "\n", id);
-        free(copy);
-        return;
-    }
+    if (execute && !client_history_is_new(id)) {
+         if (verbose) printf("History: Skipping duplicate Alert ID %" PRIu64 "\n", id);
+         free(copy);
+         return;
+    } 
 
     /* Snowflake ID Logic: 
      * Extract the timestamp (bits 63-12), add custom epoch, and convert to seconds. */
@@ -627,15 +627,12 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                                  &plaintext, priv_path, verbose);
 
     if (status == 0 && plaintext) {
-        /* SUCCESS: Write to persistent history log MAPPED in memory */
-        client_history_record(id);
-
         if (!execute) {
             printf("Decrypted Content:\n%s\n", plaintext);
         } else {
+            client_history_record(id);
             /* Command Execution Logic */
             char *final_cmd = NULL;
-
             if (config->exec_count == 0) {
                 /* No ACLs defined: run raw message as command (no time_limit available) */
                 final_cmd = strdup(plaintext);
