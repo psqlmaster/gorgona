@@ -5,7 +5,7 @@ Description=Gorgona Remote Execution Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/gorgona -ev listen new zpPVK9fbEqo=
+ExecStart=/usr/bin/gorgona -ev listen new
 Restart=always
 RestartSec=5
 

@@ -107,6 +107,7 @@ class GFM:
         # Версия и имя инстанса для pg_ctlcluster (например, 17 и main)
         self.pg_version = conf.get("postgresql", "pg_version", fallback="17")
         self.pg_instance_name = conf.get("postgresql", "pg_instance_name", fallback="main")
+        self.pg_port = conf.get("postgresql", "port", fallback="5432")
 
         # 4. Секция [timings]
         self.heartbeat_interval = conf.getint("timings", "heartbeat_interval")
@@ -148,7 +149,7 @@ class GFM:
         Безопасное выполнение SQL с защитой от наслоения (flock) 
         и жестким тайм-аутом.
         """
-        lock_file_path = "/tmp/gfm_db_query.lock"
+        lock_file_path = f"/tmp/gfm_db_query_{self.cluster_id}.lock" 
         
         try:
             # Открываем (или создаем) файл блокировки
@@ -166,6 +167,7 @@ class GFM:
                 cmd = [
                     "timeout", "3s", 
                     "sudo", "-u", "postgres", self.psql_bin, 
+                    "-p", str(self.pg_port), 
                     "-At", "-c", query
                 ]
                 
@@ -247,7 +249,7 @@ class GFM:
             
         try:
             # Проверяем наличие строки в таблице wal_receiver
-            cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c", "SELECT count(*) FROM pg_stat_wal_receiver;"]
+            cmd = ["sudo", "-u", "postgres", self.psql_bin, "-p", str(self.pg_port), "-At", "-c", "SELECT count(*) FROM pg_stat_wal_receiver;"] 
             res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
             # Возвращает True если процесс приема запущен
             return int(res) > 0
@@ -260,7 +262,7 @@ class GFM:
             return "n/a"
         if self.role == "LEADER":
             try:
-                cmd = ["sudo", "-u", "postgres", self.psql_bin, "-At", "-c",
+                cmd = ["sudo", "-u", "postgres", self.psql_bin, "-p", str(self.pg_port), "-At", "-c",
                        "SELECT count(*) FROM pg_stat_replication;"]
                 res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
                 return "replicas:" + str(int(res))
@@ -344,12 +346,10 @@ class GFM:
         self.log("AUDIT: " + str(event_description))
 
     def broadcast_status(self):
-        """Пульс Лидера (Heartbeat): сообщает всем LSN и статус"""
         if self.role != "LEADER": return
         current_lsn_val = self.get_pg_lsn()
-        # Хертбит живет короткое время (heartbeat_ttl), чтобы не засорять историю
-        self.gorgona_send("LEADER_STATUS|" + str(self.node_name) + "|" + str(current_lsn_val), 
-                          ttl_sec_override=self.heartbeat_ttl)
+        msg = f"LEADER_STATUS|{self.cluster_id}|{self.node_name}|{current_lsn_val}"
+        self.gorgona_send(msg, ttl_sec_override=self.heartbeat_ttl)
 
     def warmup_mesh_state(self):
         """Проверка истории меша перед запуском HA цикла (избежание ложных выборов)"""
@@ -398,7 +398,7 @@ class GFM:
                 with self.lock:
                     self.rebuild_in_progress = False
                 # Пауза для того, чтобы Postgres успел стартовать и открыть порты
-                time.sleep(5)
+                time.sleep(10)
                 # Синхронизируем роль с реальностью
                 self.sync_role_with_db()
                 if self.role == "STANDBY":
@@ -459,18 +459,19 @@ class GFM:
 
     def process_message(self, raw_payload):
         """Бизнес-логика разрешения конфликтов и обработки сигналов меша"""
-        pattern = r"(LEADER_STATUS|CANDIDATE)\|([^|]+)\|([0-9a-fA-F/]+)"
+        pattern = r"(LEADER_STATUS|CANDIDATE)\|([^|]+)\|([^|]+)\|([0-9a-fA-F/]+)" 
         match = re.search(pattern, raw_payload)
         
         if not match: 
             return
 
         # Извлекаем данные из групп RegEx
-        msg_type, s_name, s_lsn = match.groups()
+        msg_type, msg_cid, s_name, s_lsn = match.groups() 
         
         # Игнорируем свои собственные пакеты
-        if s_name == self.node_name: 
-            return
+        if s_name == self.node_name: return
+        # дополнительная проверка, даже если ключи разные
+        if msg_cid != self.cluster_id: return
 
         with self.lock:
             # --- СЦЕНАРИЙ 1: Получен статус действующего Лидера ---

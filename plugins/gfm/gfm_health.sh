@@ -35,6 +35,8 @@ get_val() {
 
 # 1. Чтение параметров кластера и идентификации
 CLUSTER_ID=$(get_val "cluster" "cluster_id")
+PG_PORT=$(get_val "postgresql" "port")
+[ -z "$PG_PORT" ] && PG_PORT=5432  # дефолт, если не найден
 # Ключ, на который отправляем отчет (Админский)
 ADMIN_PUB_HASH=$(get_val "cluster" "admin_pub_hash")
 # Если админский ключ не задан, используем локальный (фолбэк)
@@ -71,46 +73,45 @@ if [ "$IS_WITNESS" = true ]; then
     PG_LSN="n/a"
     REPLICATION_INFO="Witness node does not store database data."
 else
-    # 4. Проверяем состояние PostgreSQL
-    PG_UP=$(sudo -u postgres pg_isready -t 1 >/dev/null 2>&1 && echo "yes" || echo "no")
+# 4. Проверяем состояние PostgreSQL (ДОБАВЛЕН -p $PG_PORT)
+    PG_UP=$(sudo -u postgres pg_isready -p $PG_PORT -t 1 >/dev/null 2>&1 && echo "yes" || echo "no")
 
     if [ "$PG_UP" == "no" ]; then
         PG_MODE="DOWN"
         PG_LSN="0/0"
-        REPLICATION_INFO="CRITICAL: PostgreSQL is NOT responding on local socket!"
+        REPLICATION_INFO="CRITICAL: PostgreSQL is NOT responding on port $PG_PORT!"
     else
-        # База жива, собираем детальный статус через SQL
-        PG_RECOVERY=$(timeout 3s sudo -u postgres psql -At -c "SELECT pg_is_in_recovery();" 2>/dev/null)
+        # База жива (ДОБАВЛЕН -p $PG_PORT)
+        PG_RECOVERY=$(timeout 3s sudo -u postgres psql -p $PG_PORT -At -c "SELECT pg_is_in_recovery();" 2>/dev/null)
         
         if [ "$PG_RECOVERY" == "f" ]; then
             PG_MODE="MASTER (RW)"
-            PG_LSN=$(timeout 3s sudo -u postgres psql -At -c "SELECT pg_current_wal_lsn();" 2>/dev/null)
+            PG_LSN=$(timeout 3s sudo -u postgres psql -p "$PG_PORT" -At -c "SELECT pg_current_wal_lsn();" 2>/dev/null)
             
-            # Считаем отставание в байтах (через pg_wal_lsn_diff) и время
-            QUERY="
-            SELECT COALESCE(string_agg(
-                format('Replica: %s | State: %s | Lag: %s bytes | Time: %s', 
-                    client_addr, 
-                    state, 
-                    pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn),
-                    COALESCE(replay_lag::text, '00:00:00')
-                ), E'\n'), 'No active replicas connected') 
-            FROM pg_stat_replication;"
-            
-            REPLICATION_INFO=$(timeout 3s sudo -u postgres psql -At -c "$QUERY" 2>/dev/null)
+            # Корректный SQL с JOIN для получения имени слота
+            REPLICATION_INFO=$(timeout 3s sudo -u postgres psql -p "$PG_PORT" -At <<EOF
+                SELECT COALESCE(string_agg(
+                    format('%s: %s | State: %s | Lag: %s bytes | Time: %s', 
+                        COALESCE(s.slot_name, 'no_slot'), 
+                        COALESCE(r.client_addr::text, 'localhost'), 
+                        r.state, 
+                        pg_wal_lsn_diff(pg_current_wal_lsn(), r.replay_lsn),
+                        COALESCE(r.replay_lag::text, '00:00:00')
+                    ), CHR(10)), 'No active replicas connected') 
+                FROM pg_stat_replication r 
+                LEFT JOIN pg_replication_slots s ON r.pid = s.active_pid;
+EOF
+            )
+            [ -z "$REPLICATION_INFO" ] && REPLICATION_INFO="No active replicas connected"
         elif [ "$PG_RECOVERY" == "t" ]; then
             PG_MODE="STANDBY (RO)"
-            # Для Standby берем максимальный LSN из полученного/проигранного
-            PG_LSN=$(timeout 3s sudo -u postgres psql -At -c "SELECT GREATEST(COALESCE(pg_last_wal_receive_lsn(), '0/0'), COALESCE(pg_last_wal_replay_lsn(), '0/0'));" 2>/dev/null)
-            # Состояние процесса приема WAL
-            REPLICATION_INFO=$(timeout 3s sudo -u postgres psql -At -c "SELECT format('Source: %s | Status: %s | Delay: %s', sender_host, status, last_msg_receipt_time) FROM pg_stat_wal_receiver;" 2>/dev/null)
-            [ -z "$REPLICATION_INFO" ] && REPLICATION_INFO="WARNING: Wal_receiver is idle (no master connection)"
-        else
-            PG_MODE="ERROR"
-            REPLICATION_INFO="Failed to query pg_is_in_recovery status."
+            # (ДОБАВЛЕН -p $PG_PORT)
+            PG_LSN=$(timeout 3s sudo -u postgres psql -p $PG_PORT -At -c "SELECT GREATEST(COALESCE(pg_last_wal_receive_lsn(), '0/0'), COALESCE(pg_last_wal_replay_lsn(), '0/0'));" 2>/dev/null)
+            REPLICATION_INFO=$(timeout 3s sudo -u postgres psql -p $PG_PORT -At -c "SELECT format('Source: %s | Status: %s | Delay: %s', sender_host, status, last_msg_receipt_time) FROM pg_stat_wal_receiver;" 2>/dev/null)
+            [ -z "$REPLICATION_INFO" ] && REPLICATION_INFO="WARNING: Wal_receiver is idle"
         fi
     fi
-fi
+fi 
 
 # 5. Формируем финальный текст отчета
 REPORT="

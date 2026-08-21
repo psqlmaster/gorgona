@@ -36,6 +36,8 @@ MY_PUB_HASH=$(get_val "cluster" "my_pub_hash")
 PG_SVC=$(get_val "postgresql" "service_name")
 PG_VER=$(get_val "postgresql" "pg_version")
 PG_INST=$(get_val "postgresql" "pg_instance_name")
+PG_PORT=$(get_val "postgresql" "port")
+[ -z "$PG_PORT" ] && PG_PORT=5432
 GORGONA_BIN=$(get_val "paths" "gorgona_bin")
 [ -z "$GORGONA_BIN" ] && GORGONA_BIN="/usr/bin/gorgona"
 
@@ -80,8 +82,8 @@ if [ -z "$MASTER_HOST" ] || [ "$MASTER_HOST" == "$MY_NAME" ]; then
 fi
 
 # 4. Проверка связи с мастером
-if ! sudo -u postgres "$PG_BIN/pg_isready" -h "$MASTER_HOST" -t 10; then
-    log_msg "FATAL: Master $MASTER_HOST is not accepting connections (pg_isready failed)."
+if ! sudo -u postgres "$PG_BIN/pg_isready" -h "$MASTER_HOST" -p "$PG_PORT" -t 10; then
+    log_msg "FATAL: Master $MASTER_HOST is not accepting connections on port $PG_PORT."
     exit 1
 fi
 
@@ -94,7 +96,7 @@ REWIND_OK=0
 if [ -f "$PG_DATA/global/pg_control" ]; then
     log_msg "Data exists. Attempting pg_rewind to save bandwidth..."
     # pg_rewind требует, чтобы в postgresql.conf был включен wal_log_hints или чекпоинты
-    if sudo -u postgres "$PG_BIN/pg_rewind" --target-pgdata="$PG_DATA" --source-server="host=$MASTER_HOST user=$USER dbname=postgres" >> "$LOG_FILE" 2>&1; then
+    if sudo -u postgres "$PG_BIN/pg_rewind" --target-pgdata="$PG_DATA" --source-server="host=$MASTER_HOST port=$PG_PORT user=$USER dbname=postgres" >> "$LOG_FILE" 2>&1; then
         log_msg "SUCCESS: pg_rewind completed."
         REWIND_OK=1
     else
@@ -110,12 +112,12 @@ if [ $REWIND_OK -eq 0 ]; then
     fi
     
     # Первая попытка с созданием слота
-    if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -D "$PG_DATA" -U "$USER" -P -R \
+    if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
         --slot="$SLOT_NAME" --create-slot -X stream --no-password >> "$LOG_FILE" 2>&1; then
         log_msg "SUCCESS: pg_basebackup completed with slot creation."
     else
         log_msg "WARNING: Basebackup with --create-slot failed. Trying using existing slot..."
-        if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -D "$PG_DATA" -U "$USER" -P -R \
+        if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
             --slot="$SLOT_NAME" -X stream --no-password >> "$LOG_FILE" 2>&1; then
             log_msg "SUCCESS: pg_basebackup completed."
         else
@@ -130,6 +132,12 @@ fi
 # но мы подстрахуемся для надежности.
 sudo -u postgres touch "$PG_DATA/standby.signal"
 chown -R postgres:postgres "$PG_DATA"
+
+# Перед запуском проверяем, что конфиг в /etc смотрит на правильный порт
+CONF_PATH="/etc/postgresql/${PG_VER}/${PG_INST}/postgresql.conf"
+if [ -f "$CONF_PATH" ]; then
+    sed -i "s/^port[[:space:]]*=[[:space:]]*.*/port = $PG_PORT/" "$CONF_PATH"
+fi
 
 log_msg "Starting $PG_SVC..."
 systemctl start "$PG_SVC"
