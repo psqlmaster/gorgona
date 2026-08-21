@@ -171,12 +171,12 @@ graph TD
 ```bash
 chmod +x uninstall.sh
 ```
-# To delete everything including Postgres data:
+#### To delete everything including Postgres data:
 ```bash
 ./uninstall.sh ./gfm.conf
 ```
 
-# To remove GFM but keep the Postgres data (services will be stopped):
+#### To remove GFM but keep the Postgres data (services will be stopped):
 ```bash
 ./uninstall.sh ./gfm.conf --exclude-db
 ```
