@@ -88,31 +88,48 @@ GFM implements strict **Network Quorum** logic to ensure data integrity:
 
 ```mermaid
 graph TD
-    %% Cluster Instance 1
-    subgraph NODE1 ["Node 1: Master"]
+    %% Node 1: Master
+    subgraph NODE1 ["Node 1: Master Node"]
         direction TB
-        gfm1["GFM@pg_prod_5432"] <-->|Port 5432| pg1[("Postgres Instance 1")]
-        gfm1 <-->|Local| D1["gorgonad"]
+        gfm1["GFM@pg_prod_5432"] <-->|Local Port| pg1[("Postgres Instance")]
+        gfm1 <-->|Local Socket| D1["gorgonad (Peer A)"]
     end
 
-    %% Cluster Instance 2
-    subgraph NODE2 ["Node 2: Standby"]
+    %% Node 2: Standby
+    subgraph NODE2 ["Node 2: Standby Node"]
         direction TB
-        gfm2["GFM@pg_prod_5432"] <-->|Port 5432| pg2[("Postgres Instance 1")]
-        gfm2 <-->|Local| D2["gorgonad"]
+        gfm2["GFM@pg_prod_5432"] <-->|Local Port| pg2[("Postgres Instance")]
+        gfm2 <-->|Local Socket| D2["gorgonad (Peer B)"]
     end
 
-    %% Administrative Layer
-    ADMIN["Admin / Monitoring Mesh"] 
+    %% Node 3: Admin / Monitoring
+    subgraph NODE3 ["Node 3: Admin / Monitoring"]
+        direction TB
+        D3["gorgonad (Peer C)"]
+        UI["Admin Dashboard / CLI"] <-->|Local Listen| D3
+    end
 
-    %% P2P Signaling
-    D1 <-->|Encrypted Mesh| D2
-    gfm1 -.->|LEADER_STATUS| D1
-    gfm2 -.->|CANDIDATE| D2
+    %% P2P Mesh Layer (Full Connectivity)
+    D1 <-->|Encrypted P2P Link| D2
+    D2 <-->|Encrypted P2P Link| D3
+    D3 <-->|Encrypted P2P Link| D1
+
+    %% High-Availability Logic
+    gfm1 -.->|Broadcast: LEADER_STATUS| D1
+    gfm2 -.->|Broadcast: CANDIDATE| D2
+
+    %% Telemetry & Reporting Flow
+    gfm1 -- "Audit Events & Monitoring" --> D1
+    gfm2 -- "Audit Events & Monitoring" --> D2
     
-    %% Reporting
-    gfm1 -- "Health Report" --> ADMIN
-    gfm2 -- "Health Report" --> ADMIN
+    %% Mesh Routing to Admin
+    D1 -.->|Routed via Mesh| D3
+    D2 -.->|Routed via Mesh| D3
+    D3 -- "Aggregated Reports" --> UI
+
+    %% TCP Quorum Check (Logic Layer)
+    gfm1 -.->|TCP Quorum Check| NODE2
+    gfm1 -.->|TCP Quorum Check| NODE3
 ```
 
 ---
