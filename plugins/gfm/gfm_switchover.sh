@@ -18,7 +18,8 @@ fi
 get_val() {
     local section=$1
     local key=$2
-    sed -nr "/^\[$section\]/,/^\[.*\]/ { s/^[[:space:]]*$key[[:space:]]*//p }" "$CONF" | \
+    # Добавляем =[[:space:]]* в выражение замены
+    sed -nr "/^\[$section\]/,/^\[.*\]/ { s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p }" "$CONF" | \
     sed 's/[#;].*//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs
 }
 
@@ -103,4 +104,3 @@ systemctl start "gfm@${CLUSTER_ID}"
 
 send_event "SWITCHOVER COMPLETED: Node returned to cluster as Standby."
 echo -e "${GREEN}>>> Switchover finished.${NC}"
-
