@@ -86,7 +86,7 @@ class GFM:
         else:
             self.config_full_path = "/etc/gorgona/gfm.conf"
             
-        # 2. Проверяем существование файла по сохраненному пути
+        # Проверяем существование файла по сохраненному пути
         if not os.path.exists(self.config_full_path):
             print(f"FATAL ERROR: Configuration file {self.config_full_path} not found!")
             sys.exit(1)
@@ -94,14 +94,22 @@ class GFM:
         conf = configparser.ConfigParser()
         conf.read(self.config_full_path)
 
-        # 2. Секция [cluster]
+        # Секция [cluster]
         self.my_pub_hash = conf.get("cluster", "my_pub_hash")
         self.node_name = os.uname()[1]
         self.quorum_total_nodes = conf.getint("cluster", "quorum_total_nodes")
         # Уникальный ID кластера (например, pg_prod_5432) для изоляции логов и статусов
         self.cluster_id = conf.get("cluster", "cluster_id", fallback="default")
+        # Читаем список узлов для кворума
+        nodes_raw = conf.get("cluster", "quorum_nodes", fallback="")
+        self.quorum_nodes = []
+        for n in nodes_raw.split(","):
+            n = n.strip() # Очистка от пробелов
+            if ":" in n:
+                ip, port = n.split(":")
+                self.quorum_nodes.append((ip.strip(), int(port.strip())))
 
-        # 3. Секция [postgresql] (Новая секция для мульти-инстанса)
+        # Секция [postgresql] (Новая секция для мульти-инстанса)
         # Имя системной службы (например, postgresql@17-main)
         self.pg_service = conf.get("postgresql", "service_name", fallback="postgresql")
         # Версия и имя инстанса для pg_ctlcluster (например, 17 и main)
@@ -109,7 +117,7 @@ class GFM:
         self.pg_instance_name = conf.get("postgresql", "pg_instance_name", fallback="main")
         self.pg_port = conf.get("postgresql", "port", fallback="5432")
 
-        # 4. Секция [timings]
+        # Секция [timings]
         self.heartbeat_interval = conf.getint("timings", "heartbeat_interval")
         self.max_missing_heartbeats = conf.getint("timings", "max_missing_heartbeats")
         self.monitor_interval = conf.getint("timings", "monitor_interval")
@@ -122,14 +130,14 @@ class GFM:
         # Динамический расчет таймаута выборов
         self.election_timeout = (self.heartbeat_interval * self.max_missing_heartbeats) + 5
 
-        # 5. Секция [paths]
+        # Секция [paths]
         base_dir_path = conf.get("paths", "base_dir")
         self.gorgona_bin = conf.get("paths", "gorgona_bin")
         self.psql_bin = conf.get("paths", "psql_bin")
         self.pg_ctl_bin = conf.get("paths", "pg_ctl_bin")
         self.rebuild_script = conf.get("paths", "rebuild_script")
 
-        # 6. Производные пути к файлам и ключам
+        # Производные пути к файлам и ключам
         # Ключи и конфиги лежат в базовой директории
         self.priv_key_path = os.path.join(base_dir_path, f"{self.my_pub_hash}.key")
         self.pub_key_arg = f"{self.my_pub_hash}.pub"
@@ -143,6 +151,43 @@ class GFM:
         timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
         # Добавляем ID кластера в каждую строку лога
         print(f"[{timestamp}] [{self.cluster_id}] [{self.role}] {msg}", flush=True)
+
+    def is_port_open(self, host, port):
+        """Проверка доступности TCP порта (замена ping)"""
+        try:
+            # Таймаут 2 секунды, чтобы не блокировать цикл
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return False
+
+    def has_network_quorum(self):
+        if self.quorum_total_nodes <= 1:
+            return True
+
+        reachable_count = 1
+        
+        # Получаем список всех своих IP адресов, чтобы не проверять самих себя
+        try:
+            local_ips = subprocess.check_output(["hostname", "-I"]).decode().split()
+        except:
+            local_ips = []
+
+        for ip, port in self.quorum_nodes:
+            # Если IP из списка — это наш собственный IP, пропускаем его,
+            # так как мы себя уже посчитали (reachable_count = 1)
+            if ip in local_ips or ip == "127.0.0.1" or ip == "localhost":
+                continue
+                
+            if self.is_port_open(ip, port):
+                reachable_count += 1
+        
+        needed = (self.quorum_total_nodes // 2) + 1
+        if reachable_count >= needed:
+            return True
+        else:
+            self.log(f"QUORUM LOST: {reachable_count}/{self.quorum_total_nodes} nodes reachable. Need {needed}.")
+            return False    
 
     def safe_db_query(self, query):
         """
@@ -554,7 +599,12 @@ class GFM:
 
             # --- ЛОГИКА ЛИДЕРА ---
             if self.role == "LEADER":
-                # Мастер зануляет имя лидера в своем статусе
+                # ПРОВЕРКА КВОРУМА: Если мы в изоляции — снимаем корону
+                if not self.has_network_quorum():
+                    self.demote_node("FENCING: Isolated from quorum. Stopping to prevent Split-Brain.")
+                    time.sleep(5)
+                    continue
+
                 self.leader_name = None
                 if (now - last_hb_sent_at) > self.heartbeat_interval:
                     self.broadcast_status()
@@ -612,7 +662,12 @@ class GFM:
 
     def start_election(self):
         """Протокол проведения выборов кандидата"""
-        if self.is_witness == True: return
+        if self.is_witness: return
+        
+        # ПРОВЕРКА КВОРУМА ПЕРЕД ВЫБОРАМИ
+        if not self.has_network_quorum():
+            self.log("ELECTION ABORTED: No network quorum. Cannot guarantee majority.")
+            return
         
         self.role = "CANDIDATE"
         lsn_at_election = self.get_pg_lsn()

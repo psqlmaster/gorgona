@@ -8,111 +8,79 @@ Unlike traditional HA solutions (Patroni, Stolon), GFM does not require a centra
 
 ### Core Features
 
-- **Multi-Instance Isolation:** Run multiple independent GFM clusters on the same physical hardware using unique `cluster_id`s, separate database ports, and Systemd templates.
 - **P2P Orchestration:** Fully decentralized signaling via Gorgona Mesh—no single point of failure.
+- **TCP Quorum Fencing:** Advanced split-brain protection. The Leader automatically stops the database service ("suicide") if it loses connection to the majority of nodes.
+- **Auto Witness Detection:** Infrastructure roles are determined dynamically. If a node's port in the quorum list differs from the PostgreSQL port, GFM treats it as an Arbitrator (Witness).
+- **Multi-Instance Isolation:** Run multiple independent GFM clusters on the same physical hardware using unique `cluster_id`s and Systemd templates.
 - **LSN-Based Consensus:** Mathematical leader election based on the most advanced PostgreSQL Log Sequence Number (LSN).
 - **Deterministic Tie-Breaking:** In case of identical LSNs, alphabetical hostname priority ensures a single, stable leader.
 - **Safe DB Monitoring:** Protects your database from monitoring overhead using unique per-cluster lock files (`fcntl.flock`) and strict execution timeouts.
-- **Patroni-style Self-Healing:** Failed nodes automatically rejoin as Standby via `pg_rewind` (saving bandwidth) or `pg_basebackup`.
-- **Dual-Key Security:** Separate keys for cluster control and administrative reporting (`admin_pub_hash`).
-
----
-
-### Deployment & Installation
-
-GFM features a professional installer that automates cluster provisioning based on a single configuration file.
-
-#### 1. Prepare the Inventory (`nodes.list`)
-Define your nodes in a local `nodes.list` file:
-```text
-# IP Address      Role (Use 'witness' for arbiter, leave empty for DB nodes)
-192.168.1.170
-192.168.1.171
-192.168.1.172    witness
-```
-
-#### 2. Run the Installer
-Launch the installer by pointing it to your cluster configuration:
-```bash
-chmod +x install.sh
-./install.sh ./gfm.conf
-```
-*The installer automatically creates the Postgres instance (via `pg_createcluster`), configures `/etc/hosts`, and starts the `gfm@pg_prod_5432` service.*
 
 ---
 
 ### Configuration (`gfm.conf`)
 
-Each instance is managed by its own config file (e.g., `/etc/gorgona/gfm_pg_prod_5432.conf`).
+The configuration file is the **Single Source of Truth**. No external inventory files (like `nodes.list`) are required. The installer and the daemon both parse this file to understand the cluster topology.
 
-| Section | Parameter | Description |
-| :--- | :--- | :--- |
-| **[cluster]** | `cluster_id` | Unique ID (e.g., `pg_prod_5432`). Isolates logs and status. |
-| | `my_pub_hash` | The P2P hash for the encrypted cluster control channel. |
-| **[postgresql]** | `service_name` | The Systemd service name (e.g., `postgresql@17-prod`). |
-| | `pg_instance_name`| Instance name for `pg_ctlcluster` (e.g., `prod`). |
-| | `port` | Database port (e.g., `5433`). |
-
----
-
-### Post-Installation Checklist (Critical for Multi-Instance)
-
-When running multiple clusters on the same nodes, ensure each PostgreSQL instance is manually configured for network replication:
-
-#### 1. Create Replication User (On each Master)
-Each instance is a separate DB environment. You **must** create the user for each port:
-```bash
-# For Cluster 1 (5432)
-psql -p 5432 -c "CREATE USER repuser WITH REPLICATION PASSWORD 'your_secure_password';"
-# For Cluster 2 (5433)
-psql -p 5433 -c "CREATE USER repuser WITH REPLICATION PASSWORD 'your_secure_password';"
-```
-
-#### 2. Configure Authentication (`.pgpass`)
-The `gfm_rebuild.sh` script uses a shared `.pgpass` file. Ensure it contains entries for all used ports:
-```bash
-# cat /var/lib/postgresql/.pgpass
-*:5432:*:repuser:your_secure_password
-*:5433:*:repuser:your_secure_password
-```
-*Note: Permissions must be `0600` and owner `postgres`.*
-
-#### 3. Enable Network & Replication (`postgresql.conf`)
-Each instance has its own config file (e.g., `/etc/postgresql/17/prod2/postgresql.conf`).
 ```ini
-listen_addresses = '*'       # Required to accept remote replication
-wal_level = replica          # Required for standby nodes
-wal_log_hints = on           # Required for pg_rewind self-healing
-max_wal_senders = 10
-max_replication_slots = 10
-```
+[cluster]
+# P2P Mesh hash for cluster control and leader election
+my_pub_hash = +I9IQuXYW8I=
+# Public hash of the administrator or monitoring system to receive health reports
+admin_pub_hash = zpPVK9fbEqo=
+# Total number of nodes in the cluster (used to calculate majority quorum)
+quorum_total_nodes = 3
+# Unique cluster identifier used for log isolation and status file naming
+cluster_id = pg_prod_5432 
+# List of cluster members in IP:PORT format (comma-separated)
+# If PORT does not match the PostgreSQL port, the node is treated as a WITNESS.
+quorum_nodes = 192.168.1.170:5432, 192.168.1.171:5432, 192.168.1.172:7777
 
-#### 4. Allow Access (`pg_hba.conf`)
-Modify `pg_hba.conf` for **each** instance to allow your cluster subnet:
-```text
-host    replication     repuser         192.168.1.0/24          scram-sha-256
-host    postgres        repuser         192.168.1.0/24          scram-sha-256
+[postgresql]
+# Systemd service name (e.g., postgresql@17-main)
+service_name = postgresql@17-main
+# PostgreSQL version and instance name for pg_ctlcluster commands
+pg_version = 17
+pg_instance_name = main
+# Database port used for health checks and psql connections
+port = 5432
+
+[timings]
+# Frequency (in seconds) of leader heartbeat broadcasts
+heartbeat_interval = 15
+# Maximum number of missed heartbeats before a leader is considered failed
+max_missing_heartbeats = 3
+# Frequency (in seconds) of sending MONITOR telemetry to the admin mesh
+monitor_interval = 300
+# TTL (Time To Live) in seconds for heartbeat messages in the mesh
+heartbeat_ttl = 45
+# TTL (Time To Live) in seconds for important audit events (EVENT|...)
+event_ttl = 86400
+# Default TTL for standard mesh messages
+default_ttl = 3600
+
+[paths]
+# Base directory for configuration and key storage
+base_dir = /etc/gorgona
+# Path to the Gorgona mesh binary
+gorgona_bin = /usr/bin/gorgona
+# Path to the psql utility
+psql_bin = /usr/bin/psql
+# Path to the pg_ctlcluster wrapper (standard for Debian/Ubuntu)
+pg_ctl_bin = /usr/bin/pg_ctlcluster
+# Path to the automated database recovery/rebuild script
+rebuild_script = /usr/local/bin/gfm_rebuild.sh
 ```
-*After changes, always restart the specific instance:* `systemctl restart postgresql@17-prod2`
 
 ---
 
-### Architecture & Failover Logic
+### Quorum & Split-Brain Protection
 
-#### 1. Template-Based Orchestration
-GFM uses Systemd template units (`gfm@.service`). This allows `gfm@prod1` and `gfm@prod2` to coexist on the same node. Each instance maintains its own status file: `/etc/gorgona/status_CLUSTER_ID.json` and a unique lock file in `/tmp/` to prevent monitoring collisions.
+GFM implements strict **Network Quorum** logic to ensure data integrity:
 
-#### 2. Conflict Resolution (Fencing)
-If two nodes claim to be Master, GFM resolves the conflict:
-1. **Higher LSN wins.**
-2. **If LSN is equal, the lower hostname wins.**
-The losing node performs **Hard Fencing** (stops its Postgres service) and triggers an **Auto-Rebuild** to rejoin as a replica.
-
-#### 3. Smart Rebuild
-The `gfm_rebuild.sh` script automatically:
-- Attempts `pg_rewind` first to synchronize data with minimal traffic.
-- Falls back to `pg_basebackup` with automated replication slot creation.
-- **Multi-port aware:** Dynamically configures `primary_conninfo` with the correct port for the specific cluster.
+1. **Election Quorum:** A node cannot initiate an election or promote itself to `CANDIDATE` status unless it can reach at least `(N/2)+1` nodes from the `quorum_nodes` list via TCP.
+2. **Leader Fencing:** The active Leader checks the availability of its peers in every cycle (5 seconds). If the Leader becomes isolated (loses quorum), it immediately triggers a `demote` action—stopping the PostgreSQL service to prevent "split-brain" writes.
+3. **Witness (Arbitrator):** A Witness node does not host a database but provides a vital "vote" to reach a majority. GFM verifies the Witness via the specified port (Gorgonad port).
 
 ---
 
@@ -149,14 +117,57 @@ graph TD
 
 ---
 
-### Operational Commands
+### Deployment & Installation
 
-| Command | Action |
-| :--- | :--- |
-| `gfm_health <conf>` | Detailed report: Role, LSN, Replication Lag (bytes & time). |
-| `gfm_status <conf>` | Returns raw JSON cluster state. |
-| `gfm_switchover <conf>` | Graceful role reversal: Master steps down. |
-| `gfm_control <conf> <act>`| Service control: `start`, `stop`, `promote`. |
+The installer automates cluster provisioning across all nodes defined in the `quorum_nodes` list.
+
+#### 1. Run the Installer
+Launch the installer by pointing it to your configuration file:
+```bash
+chmod +x install.sh
+./install.sh ./gfm_prod_5432.conf
+```
+*The installer creates the Postgres instance (via `pg_createcluster`), configures `/etc/hosts` for local resolution, and starts the `gfm@pg_prod_5432` template service.*
+
+#### 2. Uninstallation
+```bash
+# To delete everything including Postgres data:
+./uninstall.sh ./gfm.conf
+
+# To remove GFM but keep the Postgres data (services will be stopped):
+./uninstall.sh ./gfm.conf --exclude-db
+```
+
+---
+
+### Post-Installation Checklist
+
+Since GFM manages the failover orchestration, you must ensure PostgreSQL is manually configured for network replication:
+
+1. **Create Replication User (On each Master node):**
+   ```sql
+   CREATE USER repuser WITH REPLICATION PASSWORD 'your_secure_password';
+   ```
+2. **Configure Authentication (`.pgpass`):**
+   The `gfm_rebuild.sh` script requires a `.pgpass` file in the postgres home directory (chmod `0600`):
+   ```text
+   *:5432:*:repuser:your_secure_password
+   ```
+3. **Enable Replication (`postgresql.conf`):**
+   Ensure `wal_level = replica` and `wal_log_hints = on` (required for `pg_rewind` self-healing).
+4. **Allow Network Access (`pg_hba.conf`):**
+   Allow your cluster subnet to connect for replication:
+   ```text
+   host replication repuser 192.168.1.0/24 scram-sha-256
+   ```
+
+---
+
+### Architecture Logic
+
+- **Smart Rebuild:** The `gfm_rebuild.sh` script automatically attempts `pg_rewind` first (to save bandwidth by rolling back diverged timelines) or falls back to `pg_basebackup` if the local database is empty or corrupted.
+- **Conflict Resolution:** If two nodes claim leadership, the one with the higher LSN wins. If LSNs are equal, the node with the lower alphabetical hostname wins. The "loser" is automatically fenced (stopped) and rebuilt as a standby.
+- **Decentralized Signaling:** All status updates (`LEADER_STATUS`) and election requests (`CANDIDATE`) are encrypted and broadcasted via the Gorgona P2P Mesh.
 
 ---
 
@@ -165,20 +176,4 @@ graph TD
 - **GFM Daemon Logs:** `journalctl -u gfm@CLUSTER_ID -f`
 - **Rebuild History:** `/var/log/gorgona/rebuild_CLUSTER_ID.log`
 - **Postgres Logs:** `journalctl -u postgresql@VERSION-INSTANCE -f`
-- **Network Check:** `nc -zv <MASTER_IP> <PORT>` (Verify if Master is listening).
-    
-### Uninstall / Cleanup
-```bash
-chmod +x uninstall.sh
-```
-#### To delete everything including Postgres data:
-```bash
-./uninstall.sh ./gfm.conf
-```
-
-#### To remove GFM but keep the Postgres data (services will be stopped):
-```bash
-./uninstall.sh ./gfm.conf --exclude-db
-```
-The uninstaller stops the gfm@CLUSTER_ID service and removes instance-specific configurations. By default, it also drops the PostgreSQL cluster instance. 
-Using --exclude-db will preserve your database files while only stopping the services.
+- **Real-time Status:** `cat /etc/gorgona/status_CLUSTER_ID.json` (Raw cluster state for UI or monitoring integrations).

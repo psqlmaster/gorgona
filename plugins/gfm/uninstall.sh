@@ -1,5 +1,5 @@
 #!/bin/bash
-# GFM Cluster Instance Uninstaller (with DB preservation option)
+# GFM Cluster Instance Uninstaller (Config-based)
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -10,18 +10,13 @@ NC='\033[0m'
 
 CONF_SRC=""
 EXCLUDE_DB=false
-NODES_FILE="nodes.list"
 
 usage() {
     echo -e "${YELLOW}GFM Instance Uninstaller${NC}"
     echo -e "Использование: $0 ${GREEN}<путь_к_конфигу>${NC} [опции]"
     echo -e ""
     echo -e "Опции:"
-    echo -e "  ${BLUE}--exclude-db${NC}    Остановить базу данных, но НЕ удалять её (сохранить данные)."
-    echo -e "  -h, --help      Показать эту справку."
-    echo -e ""
-    echo -e "Пример:"
-    echo -e "  $0 ./gfm_prod_5432.conf --exclude-db"
+    echo -e "  ${BLUE}--exclude-db${NC}    Остановить БД, но НЕ удалять её (сохранить данные)."
     exit 1
 }
 
@@ -35,11 +30,10 @@ for arg in "$@"; do
 done
 
 if [ -z "$CONF_SRC" ] || [ ! -f "$CONF_SRC" ]; then
-    echo -e "${RED}Ошибка: Файл конфигурации не указан или не найден!${NC}"
+    echo -e "${RED}Ошибка: Файл конфигурации не найден!${NC}"
     usage
 fi
 
-# Функция чтения конфига
 get_val() {
     local section=$1
     local key=$2
@@ -48,88 +42,79 @@ get_val() {
 }
 
 CLUSTER_ID=$(get_val "cluster" "cluster_id")
+RAW_NODES=$(get_val "cluster" "quorum_nodes")
 PG_VER=$(get_val "postgresql" "pg_version")
 PG_INST=$(get_val "postgresql" "pg_instance_name")
 PG_SVC=$(get_val "postgresql" "service_name")
+PG_PORT=$(get_val "postgresql" "port")
 
-if [ -z "$CLUSTER_ID" ]; then
-    echo -e "${RED}Error: Could not find cluster_id in $CONF_SRC${NC}"
-    exit 1
-fi
+if [ -z "$CLUSTER_ID" ]; then echo -e "${RED}Error: cluster_id not found!${NC}"; exit 1; fi
+
+IFS=',' read -ra ADDR_ARRAY <<< "$RAW_NODES"
 
 echo -e "${RED}--- GFM Uninstallation Started ---${NC}"
 echo -e "Target Cluster ID : ${YELLOW}$CLUSTER_ID${NC}"
 
 if [ "$EXCLUDE_DB" = true ]; then
-    echo -e "PostgreSQL Action : ${BLUE}STOP ONLY${NC} (Data will be preserved)"
-    echo -ne "Confirm GFM removal? (y/N): "
+    echo -e "PostgreSQL Action : ${BLUE}STOP ONLY${NC} (Data preserved)"
 else
-    echo -e "PostgreSQL Action : ${RED}DROP CLUSTER${NC} (All data will be DELETED)"
-    echo -ne "Confirm ${RED}TOTAL DESTRUCTION${NC} of instance and its DATA? (y/N): "
+    echo -e "PostgreSQL Action : ${RED}DROP CLUSTER${NC} (Data will be DELETED)"
 fi
 
+echo -ne "Confirm uninstallation? (y/N): "
 read -r confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     echo "Aborted."
     exit 0
 fi
 
-if [ ! -f "$NODES_FILE" ]; then
-    echo -e "${RED}Ошибка: Файл '$NODES_FILE' не найден!${NC}"
-    exit 1
-fi
+for entry in "${ADDR_ARRAY[@]}"; do
+    entry=$(echo $entry | xargs)
+    IP=$(echo $entry | cut -d':' -f1)
+    PORT=$(echo $entry | cut -d':' -f2)
 
-while read -r IP ROLE <&3; do
-    echo -e "${BLUE}>>> Processing Node: $IP ($ROLE)${NC}"
+    [ "$PORT" == "$PG_PORT" ] && ROLE="database" || ROLE="witness"
+
+    echo -e "${BLUE}>>> Cleaning Node: $IP ($ROLE)${NC}"
     
     ssh -n -o StrictHostKeyChecking=no root@$IP "
-        # 1. Останавливаем и отключаем GFM инстанс
+        # 1. Остановка GFM
         systemctl stop gfm@${CLUSTER_ID} 2>/dev/null
         systemctl disable gfm@${CLUSTER_ID} 2>/dev/null
         
-        # 2. Работа с PostgreSQL (кроме Witness)
-        if [ \"$ROLE\" != \"witness\" ]; then
+        # 2. Работа с Postgres
+        if [ \"$ROLE\" == \"database\" ]; then
             if [ \"$EXCLUDE_DB\" = true ]; then
-                echo 'Stopping PostgreSQL service ${PG_SVC} (preserving data)...'
+                echo 'Stopping service...'
                 systemctl stop ${PG_SVC} 2>/dev/null
             else
-                echo 'Dropping PostgreSQL cluster ${PG_VER} ${PG_INST}...'
+                echo 'Dropping data...'
                 pg_dropcluster --stop ${PG_VER} ${PG_INST} 2>/dev/null
             fi
         fi
 
-        # 3. Удаляем файлы конфигурации, статуса и логи инстанса
+        # 3. Удаление специфичных для инстанса файлов
         rm -f /etc/gorgona/gfm_${CLUSTER_ID}.conf
         rm -f /etc/gorgona/status_${CLUSTER_ID}.json
-        rm -f /etc/gorgona/node_type_${CLUSTER_ID}
-        rm -f /var/log/gorgona/*_${CLUSTER_ID}.log
+        rm -f /var/log/gorgona/rebuild_${CLUSTER_ID}.log
 
-        # 4. Очистка заглушки psql для Witness
-        if [ \"$ROLE\" == \"witness\" ]; then
-            if [ -L /usr/bin/psql ] && [ \"\$(readlink /usr/bin/psql)\" == \"/usr/bin/true\" ]; then
-                if ! ls /etc/gorgona/gfm_*.conf >/dev/null 2>&1; then
-                    rm -f /usr/bin/psql
-                fi
-            fi
-        fi
-
-        # 5. Удаление общих скриптов (только если это последний GFM)
+        # 4. Если это был последний GFM инстанс на этой ноде — полная зачистка бинарников
         if ! ls /etc/gorgona/gfm_*.conf >/dev/null 2>&1; then
-            echo 'No other GFM instances found. Removing shared binaries and templates...'
+            echo 'No other GFM instances. Removing binaries and shared services...'
             rm -f /usr/local/bin/gfm.py
             rm -f /usr/local/bin/gfm_rebuild.sh
-            rm -f /usr/local/bin/gfm_health.sh
-            rm -f /usr/local/bin/gfm_switchover.sh
-            rm -f /usr/local/bin/gfm_control.sh
             rm -f /etc/systemd/system/gfm@.service
             
             systemctl stop gfm-remote 2>/dev/null
             systemctl disable gfm-remote 2>/dev/null
             rm -f /etc/systemd/system/gfm-remote.service
+            
+            # Удаляем заглушку psql если она осталась от witness
+            [ -L /usr/bin/psql ] && [ \"\$(readlink /usr/bin/psql)\" == \"/usr/bin/true\" ] && rm -f /usr/bin/psql
         fi
         
         systemctl daemon-reload
     "
-done 3< <(grep -v '^#' "$NODES_FILE" | grep -v '^$')
+done
 
-echo -e "${GREEN}Cleanup of '$CLUSTER_ID' complete.${NC}"
+echo -e "${GREEN}Uninstall of '$CLUSTER_ID' complete.${NC}"
