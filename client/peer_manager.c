@@ -22,9 +22,21 @@ void trim_string(char *str);
 
 static PeerAddr known_peers[MAX_PEER_TARGETS];
 static char penalty_ips[MAX_PEER_TARGETS][INET_ADDRSTRLEN];
-static time_t penalty_times[MAX_PEER_TARGETS];
+static time_t penalty_until[MAX_PEER_TARGETS]; 
+static int penalty_fails[MAX_PEER_TARGETS]; 
 static int penalty_count = 0;
 int peer_count = 0;
+
+static bool is_penalized(const char *ip) {
+    time_t now = time(NULL);
+    for (int i = 0; i < penalty_count; i++) {
+        if (strcmp(penalty_ips[i], ip) == 0) {
+            if (now < penalty_until[i]) return true;
+            return false;
+        }
+    }
+    return false;
+}
 
 /**
  * Helper to add unique peer addresses and prevent duplicates.
@@ -100,20 +112,31 @@ void peer_manager_load_cache(Config *config) {
 }
 
 /**
- * High-performance connection selector with Migration Intelligence.
+ * Сброс счетчика ошибок при успешном подключении.
+ */
+static void reset_penalty(const char *ip) {
+    for (int i = 0; i < penalty_count; i++) {
+        if (strcmp(penalty_ips[i], ip) == 0) {
+            penalty_fails[i] = 0;
+            penalty_until[i] = 0;
+            break;
+        }
+    }
+}
+/**
+ * High-performance connection selector.
  * 
  * Logic:
- * 1. Checks if a 'Sticky' node exists.
- * 2. Compares the Sticky node with the current Top Priority candidate from Mesh.
- * 3. If they differ, the Sticky cache is ignored to allow 'migration' to a 
- *    better performing node discovered via PEX.
+ * 1. Пытается подключиться к 'Sticky' ноде (последней успешной).
+ * 2. Если 'Sticky' нет или она недоступна, перебирает кандидатов из Mesh/Config.
+ * 3. Пропускает ноды, находящиеся под "штрафом" (Penalty Box).
  */
 int peer_manager_get_best_connection(void) {
     char sticky_ip[INET_ADDRSTRLEN] = "";
     int sticky_port = 0;
     bool has_sticky = false;
 
-    /* Read current sticky node metadata without connecting yet */
+    /* 1. Читаем данные Sticky-ноды */
     int s_fd = open(STICKY_NODE_PATH, O_RDONLY);
     if (s_fd >= 0) {
         char buf[64];
@@ -126,88 +149,65 @@ int peer_manager_get_best_connection(void) {
                 *colon = '\0';
                 strncpy(sticky_ip, buf, INET_ADDRSTRLEN - 1);
                 sticky_port = atoi(colon + 1);
-                has_sticky = true;
+                /* Если нода не в бане — пометим как рабочую */
+                if (!is_penalized(sticky_ip)) {
+                    has_sticky = true;
+                }
             }
         }
     }
 
     /* 
-     * MIGRATION CHECK:
-     * If we have mesh candidates and the Top Priority node (Head) is 
-     * different from our Sticky node, we trigger a fresh probe cycle.
+     * FAST PATH:
+     * Пробуем Sticky-ноду в первую очередь. 
+     * Мы НЕ делаем Migration Check здесь, чтобы не тратить время на мертвые приоритетные ноды.
      */
-    if (has_sticky && peer_count > 0) {
-        if (strcmp(sticky_ip, known_peers[0].ip) != 0) {
-            if (verbose) {
-                printf("Mesh: Migration triggered. Better candidate [%s] found (Current sticky: %s)\n", 
-                       known_peers[0].ip, sticky_ip);
-            }
-            has_sticky = false; /* Ignore sticky to force the loop below */
-        }
-    }
-
-    /* Fast path: Use sticky node only if it's still our best choice */
     if (has_sticky) {
-        if (verbose) printf("Mesh: Using sticky node [%s:%d]\n", sticky_ip, sticky_port);
+        if (verbose) printf("Mesh: Trying sticky node [%s:%d]\n", sticky_ip, sticky_port);
         int sd = connect_with_timeout(sticky_ip, sticky_port, PROBE_TIMEOUT_MS);
-        if (sd >= 0) return sd;
+        if (sd >= 0) {
+            reset_penalty(sticky_ip);
+            return sd;
+        }
+        /* Sticky подвела — наказываем её */
+        peer_manager_mark_bad(sticky_ip);
     }
 
-    /* Slow path: Standard Probing Cycle */
-    time_t now = time(NULL);
+    /* 
+     * SLOW PATH: 
+     * Перебор кандидатов (здесь и происходит Migration или Fallback)
+     */
     if (peer_count == 0) return -1;
 
     for (int i = 0; i < peer_count; i++) {
-        /* 1. Skip nodes currently in the Penalty Box */
-        bool punished = false;
-        for (int p = 0; p < penalty_count; p++) {
-            if (strcmp(known_peers[i].ip, penalty_ips[p]) == 0) {
-                if (now - penalty_times[p] < 300) { punished = true; break; }
-            }
+        /* Пропускаем тех, кто в Penalty Box */
+        if (is_penalized(known_peers[i].ip)) {
+            continue;
         }
-        if (punished) continue;
 
-        int sd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sd < 0) continue;
-
-        int flags = fcntl(sd, F_GETFL, 0);
-        fcntl(sd, F_SETFL, flags | O_NONBLOCK);
-
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(known_peers[i].port);
-        inet_pton(AF_INET, known_peers[i].ip, &addr.sin_addr);
+        /* Пропускаем ту же sticky, которую мы только что проверили и она упала */
+        if (strcmp(known_peers[i].ip, sticky_ip) == 0) {
+            continue;
+        }
 
         if (verbose) {
-            printf("  -> Probing: %s:%d... ", known_peers[i].ip, known_peers[i].port);
+            printf("Mesh: Probing candidate [%s:%d]... ", known_peers[i].ip, known_peers[i].port);
             fflush(stdout);
         }
 
-        int res = connect(sd, (struct sockaddr *)&addr, sizeof(addr));
-        if (res < 0 && errno == EINPROGRESS) {
-            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 }; // 1s timeout for migration probe
-            fd_set wfds; FD_ZERO(&wfds); FD_SET(sd, &wfds);
-            res = select(sd + 1, NULL, &wfds, NULL, &tv);
-            if (res > 0) {
-                int error = 0; socklen_t len = sizeof(error);
-                getsockopt(sd, SOL_SOCKET, SO_ERROR, &error, &len);
-                res = (error == 0) ? 0 : -1;
-            } else res = -1;
-        }
-
-        if (res == 0) {
+        /* Используем короткий таймаут (1 сек) для перебора */
+        int sd = connect_with_timeout(known_peers[i].ip, known_peers[i].port, 1000);
+        
+        if (sd >= 0) {
             if (verbose) printf("CONNECTED\n");
-            int f = fcntl(sd, F_GETFL, 0);
-            fcntl(sd, F_SETFL, f & ~O_NONBLOCK);
-            
-            /* Update sticky memory to the new best peer */
+            reset_penalty(known_peers[i].ip);
+            /* Сохраняем новую успешную ноду как Sticky */
             save_sticky_node(known_peers[i].ip, known_peers[i].port);
             return sd; 
         }
 
-        if (verbose) printf("FAILED (%s)\n", strerror(errno));
-        close(sd);
+        if (verbose) printf("FAILED\n");
+        peer_manager_mark_bad(known_peers[i].ip);
     }
 
     return -1;
@@ -259,17 +259,31 @@ void peer_manager_mark_bad(const char *ip) {
     if (!ip) return;
     time_t now = time(NULL);
     
+    int idx = -1;
     for (int i = 0; i < penalty_count; i++) {
         if (strcmp(penalty_ips[i], ip) == 0) {
-            penalty_times[i] = now;
-            return;
+            idx = i; break;
         }
     }
 
-    if (penalty_count < MAX_PEER_TARGETS) {
-        strncpy(penalty_ips[penalty_count], ip, INET_ADDRSTRLEN - 1);
-        penalty_times[penalty_count] = now;
-        penalty_count++;
-        if (verbose) printf("Mesh: Applied 5m penalty to node %s\n", ip);
+    if (idx == -1 && penalty_count < MAX_PEER_TARGETS) {
+        idx = penalty_count++;
+        strncpy(penalty_ips[idx], ip, INET_ADDRSTRLEN - 1);
+        penalty_fails[idx] = 0;
     }
+
+    if (idx != -1) {
+        penalty_fails[idx]++;
+        // Экспоненциальный рост: 30с * 2^(fails-1)
+        // 1 раз: 30с, 2 раза: 60с, 3 раза: 120с, 4 раза: 240с...
+        int delay = 30 * (1 << (penalty_fails[idx] - 1));
+        if (delay > 3600) delay = 3600; // Максимум 1 час бана
+
+        penalty_until[idx] = now + delay;
+        if (verbose) {
+            printf("Mesh: Node %s penalized for %d seconds (fail count: %d)\n", 
+                   ip, delay, penalty_fails[idx]);
+        }
+    }
+    invalidate_sticky_node(); 
 }
