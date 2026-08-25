@@ -194,3 +194,37 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
 - **Rebuild History:** `/var/log/gorgona/rebuild_CLUSTER_ID.log`
 - **Postgres Logs:** `journalctl -u postgresql@VERSION-INSTANCE -f`
 - **Real-time Status:** `cat /etc/gorgona/status_CLUSTER_ID.json` (Raw cluster state for UI or monitoring integrations).
+    
+### Failover and Resilience Testing
+
+To verify the cluster's high-availability logic and split-brain prevention, you can simulate a network partition (isolation) on the Master node.
+
+### 1. Simulating Master Node Isolation
+Run the following command on the **Master node**. It blocks all traffic except SSH for 5 minutes, then automatically restores connectivity:
+
+```bash
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT && \
+iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT && \
+iptables -P INPUT DROP && \
+iptables -P OUTPUT DROP && \
+echo "Node isolated. Rollback in 300s" && \
+sleep 300 && \
+iptables -P INPUT ACCEPT && \
+iptables -P OUTPUT ACCEPT && \
+iptables -F && \
+echo "Network restored"
+```
+
+### 2. Monitoring Cluster Status
+While the test is running, monitor the real-time state of the cluster on any node:
+
+```bash
+# Replace 'pg_prod_5432' with your actual Cluster ID
+watch -n 1 "cat /etc/gorgona/status_pg_prod_5432.json"
+```
+
+### Expected Behavior
+1. **Master Node**: Within seconds of isolation, the GFM log will report `QUORUM LOST`. The node will initiate "Self-Fencing" by stopping the PostgreSQL service to prevent data inconsistency.
+2. **Standby Nodes**: After the `election_timeout` expires, the healthy nodes will detect the missing leader, verify quorum among themselves, and elect a new Master.
+3. **Recovery**: Once the 300s timer expires and network is restored, the old Master will detect the new leader and automatically trigger the `gfm_rebuild.sh` script to resync its data.
+```   
