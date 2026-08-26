@@ -49,40 +49,33 @@ static int mesh_cmp_nodes(const void *a, const void *b) {
 void mesh_recalculate_scores() {
     time_t now = time(NULL);
     extern int sync_interval;
-
     for (int i = 0; i < cluster_node_count; i++) {
         MeshNode *n = &cluster_nodes[i];
-        
-        /* [DEAD NODE PROTECTION] 
-         * If the node is offline or has not responded for more than 2 sync_interval cycles - Score = 0 */
+        /* [DEAD NODE PROTECTION] */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
             n->metrics.gorgona_score = 0.0;
             continue;
         }
-
         /* Speed Score: Reference 10 MB/s */
         double s_score = n->metrics.rolling_avg_speed / (10.0 * 1024.0 * 1024.0);
         if (s_score > 1.0) s_score = 1.0;
-
-        /* [FIXED] Latency Score: 
-         * If RTT is undefined (0), the latency score is 0, not 1.0 */
+        /* Latency Score */
         double l_score = 0.0;
         if (n->metrics.last_rtt > 0.1) {
             l_score = exp(-n->metrics.last_rtt / 100.0);
         }
-
-        n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY);
-        /* Sort nodes so the most reliable/fastest appear at the top of the array */
-        if (cluster_node_count > 1) {
-            qsort(cluster_nodes, cluster_node_count, sizeof(MeshNode), mesh_cmp_nodes);
-        }
+        /* SEED Node Priority (Backbone) */
+        double seed_bonus = n->is_seed ? 0.2 : 0.0;
+        n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY) + seed_bonus;
+    }
+    if (cluster_node_count > 1) {
+        qsort(cluster_nodes, cluster_node_count, sizeof(MeshNode), mesh_cmp_nodes);
     }
 }
 
 void mesh_update_speed(const char *ip, size_t bytes, double seconds) {
     if (seconds < 0.001) return;
     double sample = (double)bytes / seconds;
-
     for (int i = 0; i < cluster_node_count; i++) {
         if (strcmp(cluster_nodes[i].ip, ip) == 0) {
             MeshMetrics *m = &cluster_nodes[i].metrics;
@@ -111,9 +104,7 @@ void mesh_update_rtt(const char *ip, double rtt_ms) {
 void mesh_run_garbage_collector() {
     time_t now = time(NULL);
     extern int sync_interval;
-
     mesh_recalculate_scores();
-
     for (int i = 0; i < cluster_node_count; ) {
         MeshNode *n = &cluster_nodes[i];
         bool evict = false;
@@ -296,13 +287,49 @@ uint8_t* mesh_decrypt(const uint8_t *cipher, int len, const uint8_t *iv, const u
     return out;
 }
 
+/* Error logging function (to be called if connect/auth fails) */
+void mesh_mark_node_bad(const char *ip) {
+    for (int i = 0; i < cluster_node_count; i++) {
+        if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+            cluster_nodes[i].status = PEER_STATUS_OFFLINE;
+            cluster_nodes[i].consecutive_fails++;
+            /* Exponential backoff: 30 seconds, 60 seconds, 120 seconds... up to 1 hour */
+            int delay = 30 * (1 << (cluster_nodes[i].consecutive_fails - 1));
+            if (delay > 3600) delay = 3600; 
+            cluster_nodes[i].penalty_until = time(NULL) + delay;
+            if (verbose) {
+                printf("Mesh: Node %s penalized for %d seconds (Fail #%d)\n", 
+                       ip, delay, cluster_nodes[i].consecutive_fails);
+            }
+            return;
+        }
+    }
+}
+
+/* Penalty Waived in Case of Success */
+void mesh_mark_node_good(const char *ip) {
+    for (int i = 0; i < cluster_node_count; i++) {
+        if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+            cluster_nodes[i].consecutive_fails = 0;
+            cluster_nodes[i].penalty_until = 0;
+            cluster_nodes[i].status = PEER_STATUS_AUTHENTICATED;
+            return;
+        }
+    }
+}
+
+/* Choosing the Best Node */
 const char* mesh_get_best_peer_ip() {
     double top_score = -1.0;
     int best_idx = -1;
+    time_t now = time(NULL);
     mesh_recalculate_scores(); 
-
     for (int i = 0; i < cluster_node_count; i++) {
-        if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED) {
+        /* Noda shouldn't be in the ban */
+        if (cluster_nodes[i].penalty_until > now) continue;
+        /* For the server, we can try to bring back nodes that are OFFLINE once the penalty time has expired */ 
+        if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED || 
+            cluster_nodes[i].status == PEER_STATUS_OFFLINE) {
             if (cluster_nodes[i].metrics.gorgona_score > top_score) {
                 top_score = cluster_nodes[i].metrics.gorgona_score;
                 best_idx = i;

@@ -60,6 +60,8 @@ typedef struct MeshNode {
     MeshMetrics metrics;
     time_t discovered_at;
     time_t last_seen;
+    time_t penalty_until;       /* The time until the node is “in the bath” */
+    int consecutive_fails;      /* Calculator for Exponential Penalty Growth */
     uint8_t remote_nonce[CHALLENGE_LEN];
 } MeshNode;
 
