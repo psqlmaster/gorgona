@@ -11,11 +11,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
+#include <sys/stat.h> 
 #include <time.h>
+
+#define PENALTY_SHM_PATH "/dev/shm/gorgona_penalties"
+#define INITIAL_PENALTY_SEC 30
+#define MAX_PENALTY_SEC 3600
 
 extern int verbose;
 void trim_string(char *str); 
@@ -26,6 +30,46 @@ static time_t penalty_until[MAX_PEER_TARGETS];
 static int penalty_fails[MAX_PEER_TARGETS]; 
 static int penalty_count = 0;
 int peer_count = 0;
+
+/**
+ * Сохранение таблицы штрафов в файл (в /dev/shm)
+ */
+static void save_penalties() {
+    FILE *fp = fopen(PENALTY_SHM_PATH, "w");
+    if (!fp) return;
+    for (int i = 0; i < penalty_count; i++) {
+        fprintf(fp, "%s %ld %d\n", penalty_ips[i], (long)penalty_until[i], penalty_fails[i]);
+    }
+    fclose(fp);
+    chmod(PENALTY_SHM_PATH, 0666);
+}
+
+/**
+ * Загрузка таблицы штрафов из файла
+ */
+static void load_penalties() {
+    FILE *fp = fopen(PENALTY_SHM_PATH, "r");
+    if (!fp) {
+        penalty_count = 0; // Если файла нет, сбрасываем счетчик в текущей памяти
+        return;
+    }
+    
+    int count = 0;
+    char ip_buf[INET_ADDRSTRLEN];
+    long until_val;
+    int fails_val;
+
+    while (count < MAX_PEER_TARGETS && 
+           fscanf(fp, "%15s %ld %d", ip_buf, &until_val, &fails_val) == 3) {
+        strncpy(penalty_ips[count], ip_buf, INET_ADDRSTRLEN - 1);
+        penalty_ips[count][INET_ADDRSTRLEN - 1] = '\0';
+        penalty_until[count] = (time_t)until_val;
+        penalty_fails[count] = fails_val;
+        count++;
+    }
+    penalty_count = count;
+    fclose(fp);
+}
 
 static bool is_penalized(const char *ip) {
     time_t now = time(NULL);
@@ -59,30 +103,19 @@ static void add_peer(const char *ip, int port) {
     peer_count++;
 }
 
-/**
- * Populates the internal candidate table with prioritized endpoints.
- * 
- * Logic workflow for Smart Mesh mode:
- * 1. MESH CACHE: Highest priority. Proven peers discovered via Gossip/PEX are 
- *    probed first to leverage network proximity and performance scores.
- * 2. STATIC CONFIG: Secondary priority. Serves as a fallback if the dynamic 
- *    cache is empty or all cached nodes are unreachable.
- * @param config Pointer to the initialized client configuration.
- */
 void peer_manager_load_cache(Config *config) {
     peer_count = 0;
     memset(known_peers, 0, sizeof(known_peers));
-
-    /* Case A: Legacy mode fallback when Layer 2 (PSK) is not defined */
+    /* КРИТИЧНО: Загружаем штрафы из SHM сразу при старте */
+    load_penalties();
+    /* Case A: Legacy mode fallback */
     if (config->sync_psk[0] == '\0') {
         if (config->server_ip[0] != '\0') {
             add_peer(config->server_ip, config->server_port);
         }
         return; 
     }
-
-    /* Case B: Smart Mesh mode connectivity logic */
-
+    /* Case B: Smart Mesh mode */
     /* PRIORITY 1: Distributed Intelligence (Gossip Cache) */
     FILE *fp = fopen(PEERS_CACHE_PATH, "r");
     if (fp) {
@@ -92,19 +125,15 @@ void peer_manager_load_cache(Config *config) {
             char *colon = strchr(line, ':');
             if (colon) {
                 *colon = '\0';
-                /* Add dynamic peer. Due to sorting on the server side, 
-                   high-score peers appear early in the file. */
                 add_peer(line, atoi(colon + 1));
             }
         }
         fclose(fp);
     }
-
-    /* PRIORITY 2: Administrative Bootstrap (Static IP from gorgona.conf) */
+    /* PRIORITY 2: Administrative Bootstrap (Static IP из конфига) */
     if (config->server_ip[0] != '\0') {
         add_peer(config->server_ip, config->server_port);
     }
-    
     if (verbose) {
         printf("Mesh Status: Orchestration candidates loaded (Count: %d, Head: %s)\n", 
                peer_count, peer_count > 0 ? known_peers[0].ip : "None");
@@ -115,14 +144,20 @@ void peer_manager_load_cache(Config *config) {
  * Сброс счетчика ошибок при успешном подключении.
  */
 static void reset_penalty(const char *ip) {
+    bool changed = false;
     for (int i = 0; i < penalty_count; i++) {
         if (strcmp(penalty_ips[i], ip) == 0) {
-            penalty_fails[i] = 0;
-            penalty_until[i] = 0;
+            if (penalty_fails[i] > 0) {
+                penalty_fails[i] = 0;
+                penalty_until[i] = 0;
+                changed = true;
+            }
             break;
         }
     }
+    if (changed) save_penalties();
 }
+
 /**
  * High-performance connection selector.
  * 
@@ -257,13 +292,12 @@ void peer_manager_update_cache(const char *payload) {
  */
 void peer_manager_mark_bad(const char *ip) {
     if (!ip) return;
-    time_t now = time(NULL);
+    load_penalties(); /* Обновляем данные перед изменением */
     
+    time_t now = time(NULL);
     int idx = -1;
     for (int i = 0; i < penalty_count; i++) {
-        if (strcmp(penalty_ips[i], ip) == 0) {
-            idx = i; break;
-        }
+        if (strcmp(penalty_ips[i], ip) == 0) { idx = i; break; }
     }
 
     if (idx == -1 && penalty_count < MAX_PEER_TARGETS) {
@@ -274,16 +308,13 @@ void peer_manager_mark_bad(const char *ip) {
 
     if (idx != -1) {
         penalty_fails[idx]++;
-        // Экспоненциальный рост: 30с * 2^(fails-1)
-        // 1 раз: 30с, 2 раза: 60с, 3 раза: 120с, 4 раза: 240с...
-        int delay = 30 * (1 << (penalty_fails[idx] - 1));
-        if (delay > 3600) delay = 3600; // Максимум 1 час бана
+        int delay = INITIAL_PENALTY_SEC * (1 << (penalty_fails[idx] - 1));
+        if (delay > MAX_PENALTY_SEC) delay = MAX_PENALTY_SEC;
 
         penalty_until[idx] = now + delay;
-        if (verbose) {
-            printf("Mesh: Node %s penalized for %d seconds (fail count: %d)\n", 
-                   ip, delay, penalty_fails[idx]);
-        }
+        save_penalties(); /* Сразу сохраняем */
+        
+        if (verbose) printf("Mesh: Applied %ds penalty to %s\n", delay, ip);
     }
-    invalidate_sticky_node(); 
+    invalidate_sticky_node();
 }
