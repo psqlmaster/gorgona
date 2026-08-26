@@ -7,7 +7,7 @@
 
 #ifndef CONFIG_H
 #define CONFIG_H
-#define DEFAULT_SERVER_IP "192.168.1.200"
+#define DEFAULT_SERVER_IP ""
 #define DEFAULT_SERVER_PORT 7777
 #define MAX_EXEC_COMMANDS 100 
 #define STICKY_NODE_PATH "/dev/shm/gorgona_sticky_node"
@@ -32,5 +32,4 @@ int connect_with_timeout(const char *ip, int port, int timeout_ms);
 int try_sticky_node(int verbose);
 void save_sticky_node(const char *ip, int port);
 void invalidate_sticky_node();
-int perform_l2_auth(int sock, const char *psk, int verbose);
 #endif

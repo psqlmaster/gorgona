@@ -2,6 +2,34 @@
 * client/peer_manager.c - Autonomous Connectivity Engine Implementation
 * BSD 3-Clause License
 * Copyright (c) 2025, Alexander Shcheglov
+*
+* Autonomous Connectivity & Node Selection Logic
+* ----------------------------------------------
+* This module implements a prioritized, high-performance connectivity engine 
+* designed for distributed mesh networks. It ensures near-instantaneous 
+* reconnection by following a tiered selection strategy:
+*
+* 1. FAST PATH (Sticky Node):
+*    The engine first attempts to connect to the last successfully used node 
+*    stored in /dev/shm/gorgona_sticky_node. This bypasses discovery delays 
+*    and ensures session continuity with proven endpoints.
+*
+* 2. DISTRIBUTED PATH (Mesh Cache / PEX):
+*    If the sticky node is unavailable, the engine probes peers learned via 
+*    Peer Exchange (Gossip/PEX) stored in peers.cache. This facilitates 
+*    load balancing and leverages network proximity scores.
+*
+* 3. FALLBACK PATH (Administrative Bootstrap):
+*    The static IP/Port defined in /etc/gorgona/gorgona.conf acts as the 
+*    final "safety net." It is used only when dynamic caches are empty 
+*    or unreachable, serving as an entry point into the network.
+*
+* PENALTY & RESILIENCE ENGINE:
+* To prevent CLI hangs during node failures, a persistent Exponential Backoff 
+* system is implemented. Failed nodes are recorded in /dev/shm/gorgona_penalties. 
+* Successive failures increase the "black-box" time (30s, 60s, 120s... up to 1hr), 
+* ensuring that subsequent client calls skip dead nodes instantly without 
+* waiting for socket timeouts.
 */
 
 #define _GNU_SOURCE
