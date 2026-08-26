@@ -385,7 +385,7 @@ class GFM:
 
     def send_event(self, event_description):
         """Отправляет важное событие в Аудит-лог меша ( Audit Log )"""
-        msg = "EVENT|" + str(self.node_name) + "|" + str(event_description)
+        msg = "EVENT|" + str(self.cluster_id) + "|" + str(self.node_name) + "|" + str(event_description)
         # События живут долго (event_ttl), чтобы админ мог прочитать их спустя часы
         self.gorgona_send(msg, ttl_sec_override=self.event_ttl)
         self.log("AUDIT: " + str(event_description))
@@ -652,8 +652,9 @@ class GFM:
             # 5. MONITOR телеметрия
             if (now - self.last_monitor_sent) > self.monitor_interval:
                 repl_status = self.get_replication_status()
-                monitor_msg = ("MONITOR|" + str(self.node_name) + "|" + str(self.role) +
-                               "|" + str(self.current_lsn) + "|" + repl_status)
+                # Добавлен self.cluster_id вторым полем
+                monitor_msg = ("MONITOR|" + str(self.cluster_id) + "|" + str(self.node_name) + "|" + 
+                               str(self.role) + "|" + str(self.current_lsn) + "|" + repl_status)
                 self.gorgona_send(monitor_msg)
                 self.last_monitor_sent = now
             
@@ -675,7 +676,7 @@ class GFM:
         self.send_event("INITIATING ELECTION. Local LSN: " + str(lsn_at_election))
         
         # Заявка живет 20 секунд
-        self.gorgona_send("CANDIDATE|" + str(self.node_name) + "|" + str(lsn_at_election), ttl_sec_override=20)
+        self.gorgona_send(f"CANDIDATE|{self.cluster_id}|{self.node_name}|{lsn_at_election}", ttl_sec_override=20)
         
         # Окно ожидания для оспорений (10 секунд)
         time.sleep(10)
