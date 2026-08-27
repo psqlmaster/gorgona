@@ -48,6 +48,8 @@ typedef struct {
     double gorgona_score;        /* Health metric 0.0 to 1.0 */
     uint32_t fail_count;
     time_t last_success;
+    size_t window_bytes;
+    double window_time;
 } MeshMetrics;
 
 /* Shared Mesh Node structure */

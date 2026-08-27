@@ -51,20 +51,26 @@ void mesh_recalculate_scores() {
     extern int sync_interval;
     for (int i = 0; i < cluster_node_count; i++) {
         MeshNode *n = &cluster_nodes[i];
-        /* [DEAD NODE PROTECTION] */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
             n->metrics.gorgona_score = 0.0;
             continue;
         }
-        /* Speed Score: Reference 10 MB/s */
-        double s_score = n->metrics.rolling_avg_speed / (10.0 * 1024.0 * 1024.0);
+        /* --- Calculating the Speed Score with Decay --- */
+        double effective_speed = n->metrics.rolling_avg_speed;
+        time_t idle_time = now - n->metrics.last_success;
+        /* If no data has been received for more than 30 seconds, we begin to reduce the effective speed */
+        if (idle_time > 30) {
+            /* If no data has been received for more than 30 seconds, we begin to reduce the effective speed */
+            effective_speed *= exp(-(double)(idle_time - 30) / 60.0);
+        }
+        /* Reference speed of 10 MB/s for rating 1.0 */
+        double s_score = effective_speed / (10.0 * 1024.0 * 1024.0);
         if (s_score > 1.0) s_score = 1.0;
-        /* Latency Score */
+        /* --- Latency Score --- */
         double l_score = 0.0;
         if (n->metrics.last_rtt > 0.1) {
             l_score = exp(-n->metrics.last_rtt / 100.0);
         }
-        /* SEED Node Priority (Backbone) */
         double seed_bonus = n->is_seed ? 0.2 : 0.0;
         n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY) + seed_bonus;
     }
@@ -74,14 +80,24 @@ void mesh_recalculate_scores() {
 }
 
 void mesh_update_speed(const char *ip, size_t bytes, double seconds) {
-    if (seconds < 0.001) return;
-    double sample = (double)bytes / seconds;
+    if (seconds < 0.000001) seconds = 0.000001;
     for (int i = 0; i < cluster_node_count; i++) {
         if (strcmp(cluster_nodes[i].ip, ip) == 0) {
             MeshMetrics *m = &cluster_nodes[i].metrics;
-            m->rolling_avg_speed = (m->rolling_avg_speed < 1.0) ? sample : (m->rolling_avg_speed * 0.7 + sample * 0.3);
-            m->last_success = time(NULL);
+            m->window_bytes += bytes;
+            m->window_time += seconds;
+            if (m->window_bytes >= 262144 || m->window_time >= 0.5) {
+                double current_sample = (double)m->window_bytes / m->window_time;
+                if (m->rolling_avg_speed < 1.0) {
+                    m->rolling_avg_speed = current_sample;
+                } else {
+                    m->rolling_avg_speed = (m->rolling_avg_speed * 0.7) + (current_sample * 0.3);
+                }
+                m->window_bytes = 0;
+                m->window_time = 0;
+            }
             cluster_nodes[i].last_seen = time(NULL);
+            m->last_success = time(NULL);
             return;
         }
     }
