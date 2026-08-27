@@ -21,6 +21,9 @@
 #include "admin_mesh.h"
 #include "metrics.h"
 
+int client_sockets[MAX_CLIENTS];
+Subscriber subscribers[MAX_CLIENTS];
+int max_clients;
 int verbose = 0;
 int port;  
 int sync_interval = DEFAULT_SYNC_INTERVAL; 
@@ -157,7 +160,12 @@ int main(int argc, char *argv[]) {
     max_alerts = max_alerts_config;
     max_alert_ttl = max_ttl_config;
     vacuum_threshold = vacuum_threshold_config;
-    max_clients = max_clients_config;
+    max_clients = (max_clients_config > MAX_CLIENTS) ? MAX_CLIENTS : max_clients_config;
+    if (max_clients_config > MAX_CLIENTS) {
+        printf("WARNING: Config max_clients %d exceeds limit. Capping to %d\n", 
+                max_clients_config, MAX_CLIENTS);
+    }
+
     max_log_size = max_log_size_config;
     max_message_size = max_message_size_config;
     use_disk_db = use_disk_db_config;
@@ -167,7 +175,7 @@ int main(int argc, char *argv[]) {
     recipient_count = 0;
     recipient_capacity = 0;
 
-    for (int i = 0; i < max_clients; i++) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
         client_sockets[i] = 0;
         subscribers[i].sock = 0;
         subscribers[i].mode = 0;

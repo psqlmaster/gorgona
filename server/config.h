@@ -8,7 +8,7 @@
 #define CONFIG_H
 #include <stddef.h>
 #define DEFAULT_MAX_ALERTS 1000
-#define MAX_CLIENTS 100
+#define MAX_CLIENTS 1024
 #define DEFAULT_SERVER_PORT 5555
 #define DEFAULT_MAX_LOG_SIZE (10 * 1024 * 1024) /* 10 MB */
 #define DEFAULT_LOG_LEVEL "info" 
