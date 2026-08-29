@@ -165,6 +165,17 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
    ```sql
    CREATE USER repuser WITH REPLICATION PASSWORD 'your_secure_password';
    ```
+   `REPLICATION` alone is enough for `pg_basebackup`, but `pg_rewind` connects as
+   the same user and additionally needs to read files on the source node. Without
+   these grants every `pg_rewind` fails with
+   `permission denied for function pg_read_binary_file` and `gfm_rebuild.sh`
+   silently falls back to a full `pg_basebackup`:
+   ```sql
+   GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO repuser;
+   GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean) TO repuser;
+   GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO repuser;
+   GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO repuser;
+   ```
 2. **Configure Authentication (`.pgpass`):**
    The `gfm_rebuild.sh` script requires a `.pgpass` file in the postgres home directory (chmod `0600`):
    ```text

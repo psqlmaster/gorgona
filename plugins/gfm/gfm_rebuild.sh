@@ -100,7 +100,9 @@ if [ -f "$PG_DATA/global/pg_control" ]; then
         log_msg "SUCCESS: pg_rewind completed."
         REWIND_OK=1
     else
-        log_msg "NOTICE: pg_rewind failed (this is normal if timelines diverged too much)."
+        log_msg "NOTICE: pg_rewind failed, falling back to full pg_basebackup."
+        log_msg "HINT: if it says 'permission denied for function pg_read_binary_file',"
+        log_msg "HINT: user $USER is missing the pg_rewind GRANTs (see plugin readme)."
     fi
 fi
 
@@ -131,6 +133,28 @@ fi
 # В современных версиях PG (12+) standby.signal создается автоматически ключом -R в pg_basebackup,
 # но мы подстрахуемся для надежности.
 sudo -u postgres touch "$PG_DATA/standby.signal"
+
+# После pg_rewind каталог данных сохраняет postgresql.auto.conf источника,
+# а вместе с ним primary_conninfo и primary_slot_name прежнего мастера.
+# На ветке pg_basebackup эти параметры переписывает ключ -R, здесь их нужно
+# проставить самим, иначе нода уйдет стримить не туда (например, сама на себя).
+if [ $REWIND_OK -eq 1 ]; then
+    log_msg "Writing recovery configuration for master $MASTER_HOST..."
+    AUTO_CONF="$PG_DATA/postgresql.auto.conf"
+    sudo -u postgres touch "$AUTO_CONF"
+    sudo -u postgres sed -i '/^primary_conninfo/d; /^primary_slot_name/d' "$AUTO_CONF"
+    printf "primary_conninfo = 'host=%s port=%s user=%s application_name=%s'\nprimary_slot_name = '%s'\n" \
+        "$MASTER_HOST" "$PG_PORT" "$USER" "$MY_NAME" "$SLOT_NAME" \
+        | sudo -u postgres tee -a "$AUTO_CONF" > /dev/null
+
+    # Слот на мастере заводит только pg_basebackup --create-slot, на этой ветке его нет.
+    log_msg "Ensuring replication slot $SLOT_NAME on $MASTER_HOST..."
+    sudo -u postgres "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -tAc \
+        "SELECT pg_create_physical_replication_slot('$SLOT_NAME') WHERE NOT EXISTS \
+         (SELECT 1 FROM pg_replication_slots WHERE slot_name = '$SLOT_NAME');" \
+        >> "$LOG_FILE" 2>&1 || log_msg "WARNING: could not create slot $SLOT_NAME (may already exist)."
+fi
+
 chown -R postgres:postgres "$PG_DATA"
 
 # Перед запуском проверяем, что конфиг в /etc смотрит на правильный порт
