@@ -439,25 +439,28 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     /* 6. PERSISTENCE */
     if (use_disk_db) {
-        if (is_backfill) {
-            /* Sync (Vacuum) is required to save updated hashes of the whole chain */
-            alert_db_sync(rec); 
-        } else {
-            /* Normal append for fresh data */
-            alert_db_save_alert(rec, alert);
+        /* 
+         * Always use append-only save for performance during high-load sync.
+         * The chain on disk will be sorted and healed during the next 
+         * global maintenance (Vacuum) cycle.
+         */
+        if (alert_db_save_alert(rec, alert) != 0) {
+            log_event("ERROR", client_fd, client_ip, client_port, "Persistence failed");
         }
     } else {
         alert->is_mmaped = false;
     }
 
-    /* Clean up temporary tag buffer */
     free(decoded_tag); 
 
+    /* ИСПОЛЬЗУЕМ is_backfill ЗДЕСЬ, чтобы убрать предупреждение и улучшить логи */
     log_event("DEBUG", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added to chain at pos %d [Hash: 0x%016" PRIx64 "]", 
-              alert->id, insert_pos, alert->curr_hash); 
+              "Alert %" PRIu64 " added to chain at pos %d [%s] [Hash: 0x%016" PRIx64 "]", 
+              alert->id, insert_pos, 
+              is_backfill ? "BACKFILL" : "APPEND", 
+              alert->curr_hash); 
 
-    return insert_pos; 
+    return insert_pos;
 
 duplicate_cleanup:
     free(decoded_text); free(decoded_key); free(decoded_iv); free(decoded_tag);

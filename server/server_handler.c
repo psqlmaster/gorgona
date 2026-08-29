@@ -249,6 +249,7 @@ void free_out_queue(int sub_index) {
  * 
  * This function iterates through the global cluster_nodes table,
  * identifies offline neighbors, and establishes non-blocking connections.
+ * Updated: Strict pre-connection check to prevent redundant outgoing links.
  */
 void try_connect_peers() {
     static time_t last_check = 0;
@@ -271,34 +272,41 @@ void try_connect_peers() {
 
         /* 2. Port Validation: Don't connect if the listener port is unknown yet */
         if (node->port <= 0) {
-            if (verbose) {
-                log_event("DEBUG", -1, node->ip, 0, "Mesh: Skipping node %s - listener port not yet discovered", node->ip);
-            }
             continue;
         }
 
         /* 3. Anti-Loopback: Avoid connecting to loopback interface */
         if (strcmp(node->ip, "127.0.0.1") == 0 || strcmp(node->ip, "localhost") == 0) {
-            node->status = PEER_STATUS_BANNED; // Mark as unusable in mesh table
+            node->status = PEER_STATUS_BANNED; 
             continue;
         }
 
-        /* 4. Duplicate Check: Check if we already have an active socket with this IP */
-        bool already_active = false;
+        /* 
+         * 4. STRICT DUPLICATE CHECK (The Fix)
+         * Before creating a socket, check if we already have ANY connection 
+         * with this IP (either an established one or an incoming one).
+         */
+        bool already_linked = false;
         for (int i = 0; i < max_clients; i++) {
             if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, node->ip) == 0) {
-                already_active = true;
-                /* Sync mesh table status with actual socket state */
+                /* 
+                 * If we find a socket with this IP, we don't start a new outgoing connection.
+                 * We also sync the Mesh Table status to reflect reality.
+                 */
+                already_linked = true;
                 if (subscribers[i].auth_state == AUTH_OK) {
                     node->status = PEER_STATUS_AUTHENTICATED;
                 }
                 break;
             }
         }
-        if (already_active) continue;
+        
+        if (already_linked) {
+            continue; 
+        }
 
-        /* 5. Health Check: Skip unstable nodes until they are cleared by GC */
-        if (node->metrics.fail_count >= PEER_MAX_FAILURES) {
+        /* 5. Penalty Check: Skip unstable nodes until they are cleared by GC or penalty expires */
+        if (node->penalty_until > now || node->metrics.fail_count >= PEER_MAX_FAILURES) {
             continue;
         }
 
@@ -321,7 +329,6 @@ void try_connect_peers() {
         addr.sin_port = htons(node->port);
         
         if (inet_pton(AF_INET, node->ip, &addr.sin_addr) <= 0) {
-            log_event("ERROR", -1, node->ip, node->port, "Mesh: Invalid IP format in table");
             close(sd);
             continue;
         }
@@ -329,12 +336,8 @@ void try_connect_peers() {
         /* 7. Initiate Connection (Non-blocking) */
         if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno != EINPROGRESS) {
-                /* [IMMEDIATE PENALTY] 
-                 * Нода отклонила соединение (Connection refused) - гасим Score сразу */
                 node->metrics.fail_count++;
                 node->status = PEER_STATUS_OFFLINE;
-                node->metrics.gorgona_score = 0.0;
-                node->metrics.last_rtt = 0.0;
                 close(sd);
                 continue;
             }
@@ -356,37 +359,32 @@ void try_connect_peers() {
                 sub->auth_state = AUTH_SENT;
                 sub->close_after_send = false;
                 
-                /* Reset protocol state machine for this slot */
+                /* Reset protocol state machine */
                 sub->read_state = READ_LEN;
                 sub->expected_msg_len = 0;
                 sub->in_pos = 0;
                 if (sub->in_buffer) free(sub->in_buffer);
                 sub->in_buffer = NULL;
-                /* Mark node as pending in Mesh Table */
+
+                /* Mark node as pending handshake in Mesh Table */
                 node->status = PEER_STATUS_HANDSHAKE;
-                /* Backward Compatibility: Sync with legacy remote_peers array if applicable */
-                for (int r = 0; r < remote_peer_count; r++) {
-                    if (strcmp(remote_peers[r].ip, node->ip) == 0) {
-                        remote_peers[r].sd = sd;
-                        remote_peers[r].active = true;
-                        break;
-                    }
-                }
+
                 /* 9. Send Handshake: L1 PSK Authentication */
                 extern int port; 
                 char auth_msg[256];
                 int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d|%d", 
-                        sync_psk, max_alerts, max_alert_ttl, port);
+                                        sync_psk, max_alerts, max_alert_ttl, port);
                 enqueue_message(i, auth_msg, (size_t)auth_len);
-                log_event("INFO", sd, sub->ip_address, sub->port, 
-                          "Mesh: Connecting to %s node (Score: %.2f)", 
-                          node->is_seed ? "Seed" : "PEX", node->metrics.gorgona_score);
+                
+                if (verbose) {
+                    log_event("DEBUG", sd, sub->ip_address, sub->port, 
+                              "Mesh: Initiating outgoing connection to %s", node->ip);
+                }
                 break;
             }
         }
 
         if (i == max_clients) {
-            log_event("WARN", sd, node->ip, node->port, "Mesh: Out of client slots (max_clients reached)");
             close(sd);
         }
     }

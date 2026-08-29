@@ -519,7 +519,7 @@ static void process_auth(int i, char *buffer) {
 
 /**
  * Handles the "REPL|" command for alert replication between peers.
- * Updated to support Hash Chain backfilling and precise index notification.
+ * FIXED: Prevents gossip storms by only broadcasting NEW (append-only) alerts.
  */
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
@@ -528,10 +528,10 @@ static void process_repl(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     if (sub->auth_state != AUTH_OK) return;
 
-    size_t raw_len = strlen(buffer);
     char *rest = strdup(buffer + 5); 
     if (!rest) return;
 
+    /* Tokenization */
     char *id_str      = strtok(rest, "|");
     char *create_str  = strtok(NULL, "|");
     char *unlock_str  = strtok(NULL, "|");
@@ -547,59 +547,68 @@ static void process_repl(int i, char *buffer) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
         time_t u_at = (time_t)atol(unlock_str);
-        time_t e_at = (time_t)atol(expire_str ? expire_str : "0"); 
+        time_t e_at = (time_t)atol(expire_str);
         int is_active = atoi(active_str);
 
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
 
         if (ph && h_len == PUBKEY_HASH_LEN) {
-            /* Capture the insertion index (res >= 0) or error status */
+            /* add_alert returns the insertion index */
             int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
                                 sub->sock, original_id, c_at);
             
             Recipient *rec = find_recipient(ph);
-            
-            /* Logic for new alerts (res >= 0) and duplicates (res == -4) */
-            if (rec) {
-                if (res >= 0 && res < rec->count) {
-                    /* CASE 1: New alert ingested (possibly into the middle of the chain) */
-                    Alert *inserted_a = &rec->alerts[res];
-                    
-                    gettimeofday(&end_tv, NULL);
-                    double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
-                                   (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
-                    mesh_update_speed(sub->ip_address, raw_len, delta);
+            if (rec && res >= 0) {
+                Alert *inserted_a = &rec->alerts[res];
+                
+                /* Update metrics for successful ingestion */
+                gettimeofday(&end_tv, NULL);
+                double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
+                               (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
+                mesh_update_speed(sub->ip_address, strlen(buffer), delta);
 
-                    /* Gossip only if it's active and fresh */
+                /* 1. Notify local connected clients (they always want to know) */
+                notify_subscribers(ph, inserted_a);
+
+                /* 
+                 * 2. STRATEGIC GOSSIP (Anti-Storm):
+                 * ONLY broadcast to other peers if:
+                 * - This was an APPEND (inserted at the very end of our list).
+                 * - The alert is not ancient (freshness check).
+                 * 
+                 * If res < rec->count - 1, it's a BACKFILL. 
+                 * We do NOT broadcast backfills because it causes infinite loops 
+                 * during mesh synchronization.
+                 */
+                if (res == (rec->count - 1)) {
                     time_t now = time(NULL);
                     if (is_active && (now - c_at) < STALE_THRESHOLD_SEC) {
-                        notify_subscribers(ph, inserted_a);
                         broadcast_replication(ph, inserted_a, sub->sock);
                     }
-                } 
-                
-                /* CASE 2: Always sync 'active' status, even for duplicates */
-                if (res >= 0 || res == -4) {
-                    for (int j = 0; j < rec->count; j++) {
-                        if (rec->alerts[j].id == original_id) {
-                            if (!is_active && rec->alerts[j].active) {
-                                alert_db_deactivate_alert(&rec->alerts[j]);
-                                rec->waste_count++;
-                                
-                                /* Notify local clients about the revocation */
-                                char revoke_msg[64];
-                                int r_len = snprintf(revoke_msg, sizeof(revoke_msg), "REVOKE|%" PRIu64, original_id);
-                                for (int s = 0; s < max_clients; s++) {
-                                    if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
-                                        if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
-                                            enqueue_message(s, revoke_msg, (size_t)r_len);
-                                        }
+                }
+            } 
+            
+            /* CASE 3: Sync 'active' status for revocations (even if already exists) */
+            if (rec && (res >= 0 || res == -4)) {
+                for (int j = 0; j < rec->count; j++) {
+                    if (rec->alerts[j].id == original_id) {
+                        if (!is_active && rec->alerts[j].active) {
+                            alert_db_deactivate_alert(&rec->alerts[j]);
+                            rec->waste_count++;
+                            
+                            /* Relay revocation */
+                            char notify_cmd[64];
+                            snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, original_id);
+                            for (int s = 0; s < max_clients; s++) {
+                                if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
+                                    if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                                        enqueue_message(s, notify_cmd, strlen(notify_cmd));
                                     }
                                 }
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }

@@ -1,6 +1,22 @@
 # cat /etc/gorgona/gorgona.conf
 
 [server]
-ip = 192.168.1.172
+ip = 192.168.1.200
 port = 7777
-#sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key (optionally)
+#sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3
+
+[exec_commands:zpPVK9fbEqo=]
+# Управление кластером pg_prod_5432
+pg_cluster_start   = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf start
+pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf stop
+pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf status
+gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf restart_gfm
+
+[exec_commands:GU2eTmaMW0E=]
+# Управление кластером pg_prod2_5433
+pg_cluster_start   = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf start
+pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf stop
+pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf status
+gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf restart_gfm
+
+
