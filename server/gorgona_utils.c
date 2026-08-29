@@ -277,41 +277,37 @@ void remove_oldest_alert(Recipient *rec) {
 /**
  * Adds a new encrypted alert to the recipient's record with XXH3-64 Hash Chaining.
  * 
- * Supports both locally generated alerts (from clients via SEND) and 
- * replicated alerts (from peers via REPL/SYNC).
- * 
  * Logic flow:
- * 1. Time Synchronization: Derives cluster-wide logical time from the Snowflake pulse.
- * 2. Pre-check & Deduplication: Decodes payload and checks for ID or Content duplicates.
- * 3. Sliding Window: Rejects historical data that exceeds the current active window.
- * 4. Housekeeping: Synchronous cleanup using logical time.
- * 5. Chronological Insertion: Finds the correct position in the array to maintain ID order.
- * 6. XXH3 Chaining: Calculates content_hash, links to prev_hash, and generates curr_hash.
- * 7. Re-chaining: If inserted in the middle, updates all subsequent hashes in the chain.
- * 8. Persistence: Saves/updates data in mmap-backed storage.
+ * 1. Recipient Management: Find or create the recipient record.
+ * 2. Logical Time: Derive cluster-wide time from Snowflake pulse to prevent drift.
+ * 3. Housekeeping (CRITICAL): Clean expired and oldest alerts FIRST to ensure 
+ *    accurate array indexing and respect max_alerts limit.
+ * 4. Deduplication: Prevent duplicate IDs or identical payloads.
+ * 5. Insertion: Find chronological position and perform Re-chaining if backfilling.
+ * 6. Persistence: Atomic file rewrite for backfills, or append for new alerts.
  * 
- * @return 0 on success, 1 if duplicate, -1 if stale, -2 if replay attack, -3 on error.
+ * @return insertion index on success, negative values on error.
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
                int client_fd, uint64_t forced_id, time_t forced_create_at) {
     
-    /* 1. Recipient Management: Find or create the recipient record in memory */
+    /* 1. Recipient Management */
     Recipient *rec = find_recipient(pubkey_hash);
     if (!rec) rec = add_recipient(pubkey_hash);
     if (!rec) return -3;
 
-    /* 2. Logical Time Derivation: Use Snowflake pulse to prevent P2P drift */
+    /* 2. Logical Time Derivation */
     uint64_t current_max = get_max_alert_id();
     time_t cluster_now = (current_max > 0) ? snowflake_to_timestamp(current_max) : time(NULL);
 
-    /* --- TTL POLICY ENFORCEMENT --- */
+    /* Enforce TTL Policy */
     time_t local_ttl_limit = cluster_now + max_alert_ttl;
     if (expire_at > local_ttl_limit) {
         expire_at = local_ttl_limit;
     }
 
-    /* 3. Metadata: Source identification */
+    /* Source identification for logging */
     const char *client_ip = NULL;
     int client_port = 0;
     for (int i = 0; i < max_clients; i++) {
@@ -322,13 +318,20 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* --- ANTI-REPLAY LAYER 1: Staleness Check (Local clients only) --- */
+    /* 3. DETERMINISTIC HOUSEKEEPING (Moved to front)
+     * We must shrink the array BEFORE calculating insertion positions. */
+    clean_expired_alerts_logic(rec, cluster_now);
+    while (rec->count >= max_alerts && rec->count > 0) {
+        remove_oldest_alert(rec);
+    }
+
+    /* Anti-Replay Layer 1: Staleness Check (Local clients only) */
     if (forced_id == 0 && unlock_at < (cluster_now - STALE_THRESHOLD_SEC)) {
         log_event("WARN", client_fd, client_ip, client_port, "Rejected stale alert");
         return -1;
     }
 
-    /* 4. Payload Decoding & Content Hash Preparation */
+    /* 4. Payload Decoding */
     size_t new_text_len;
     unsigned char *decoded_text = base64_decode(base64_text, &new_text_len);
     if (!decoded_text) return -3;
@@ -346,64 +349,39 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         return -3;
     }
 
-    /* --- ANTI-REPLAY LAYER 2: Deduplication --- */
-    uint64_t target_id = (forced_id > 0) ? forced_id : 0; /* Will be generated later if 0 */
-    
+    /* Identity Assignment */
+    uint64_t final_id = (forced_id > 0) ? forced_id : generate_snowflake_id();
+    time_t final_create_at = (forced_id > 0) ? forced_create_at : time(NULL);
+
+    /* Anti-Replay Layer 2: Deduplication (Check against cleaned array) */
     for (int j = 0; j < rec->count; j++) {
-        if (target_id > 0 && rec->alerts[j].id == target_id) {
-            goto duplicate_cleanup;
-        }
+        if (rec->alerts[j].id == final_id) goto duplicate_cleanup;
         if (rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
-                log_event("WARN", client_fd, client_ip, client_port, "Replay attack detected");
+                log_event("WARN", client_fd, client_ip, client_port, "Replay attack: Duplicate payload");
                 goto replay_cleanup;
             }
         }
     }
 
-    /* --- SLIDING WINDOW PROTECTION --- */
-    if (forced_id > 0 && rec->count >= max_alerts) {
-        uint64_t min_active_id = 0xFFFFFFFFFFFFFFFFULL;
-        bool has_active = false;
-        for (int j = 0; j < rec->count; j++) {
-            if (rec->alerts[j].active && rec->alerts[j].id < min_active_id) {
-                min_active_id = rec->alerts[j].id;
-                has_active = true;
-            }
-        }
-        if (has_active && forced_id < min_active_id) {
-            goto duplicate_cleanup;
-        }
-    }
-
-    /* --- DETERMINISTIC HOUSEKEEPING --- */
-    clean_expired_alerts_logic(rec, cluster_now);
-    while (rec->count >= max_alerts && rec->count > 0) {
-        remove_oldest_alert(rec);
-    }
-
-    /* --- IDENTITY ASSIGNMENT --- */
-    uint64_t final_id = (forced_id > 0) ? forced_id : generate_snowflake_id();
-    time_t final_create_at = (forced_id > 0) ? forced_create_at : time(NULL);
-
-    /* --- CHRONOLOGICAL INSERTION --- */
+    /* 5. Chronological Insertion Logic */
     int insert_pos = rec->count;
     bool is_backfill = false;
     for (int i = 0; i < rec->count; i++) {
         if (rec->alerts[i].id > final_id) {
             insert_pos = i;
-            is_backfill = true; // Помечаем, что вставляем в прошлое
+            is_backfill = true;
             break;
         }
     }
 
-    /* Make room for the new alert if it's not at the end */
+    /* Shift memory to accommodate the new alert */
     if (insert_pos < rec->count) {
         memmove(&rec->alerts[insert_pos + 1], &rec->alerts[insert_pos], 
                 sizeof(Alert) * (rec->count - insert_pos));
     }
 
-    /* --- INITIALIZATION --- */
+    /* Initialize the new Alert slot */
     Alert *alert = &rec->alerts[insert_pos];
     memset(alert, 0, sizeof(Alert));
     
@@ -417,12 +395,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->encrypted_key_len = new_key_len;
     alert->iv = decoded_iv;
     alert->iv_len = new_iv_len;
-    
-    /* Копируем тег и НЕ удаляем decoded_tag здесь, чтобы избежать double-free */
     memcpy(alert->tag, decoded_tag, (new_tag_len < 16) ? new_tag_len : 16);
     alert->active = 1;
 
-    /* --- XXH3 HASH CHAINING --- */
+    /* XXH3 Hash Chaining */
     XXH3_state_t state;
     XXH3_64bits_reset(&state);
     XXH3_64bits_update(&state, alert->text, alert->text_len);
@@ -432,7 +408,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->content_hash = XXH3_64bits_digest(&state);
 
     if (insert_pos == 0) {
-        alert->prev_hash = 0;
+        alert->prev_hash = 0; /* Window start */
     } else {
         alert->prev_hash = rec->alerts[insert_pos - 1].curr_hash;
     }
@@ -440,7 +416,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     uint64_t link_data[3] = { alert->id, alert->prev_hash, alert->content_hash };
     alert->curr_hash = XXH3_64bits_withSeed(link_data, sizeof(link_data), 0);
 
-    /* --- RE-CHAINING --- */
+    /* RE-CHAINING: Update hashes for all subsequent alerts in the array */
     uint64_t running_prev_hash = alert->curr_hash;
     for (int k = insert_pos + 1; k <= rec->count; k++) {
         Alert *next = &rec->alerts[k];
@@ -454,25 +430,27 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
+    /* Finalize State */
     rec->count++;
     rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
 
-    /* Добавляем в кольцо и обновляем MaxID */
     add_to_repl_ring(alert->id, pubkey_hash);
     if (alert->id > global_max_alert_id) global_max_alert_id = alert->id;
 
-    /* --- PERSISTENCE --- */
+    /* 6. PERSISTENCE */
     if (use_disk_db) {
         if (is_backfill) {
-            alert_db_sync(rec); // Перезаписывает всё с новыми хешами
+            /* Sync (Vacuum) is required to save updated hashes of the whole chain */
+            alert_db_sync(rec); 
         } else {
-            alert_db_save_alert(rec, alert); // Просто дописывает в конец
+            /* Normal append for fresh data */
+            alert_db_save_alert(rec, alert);
         }
     } else {
         alert->is_mmaped = false;
     }
 
-    /* Освобождаем временный буфер тега только ОДИН раз в конце успешного пути */
+    /* Clean up temporary tag buffer */
     free(decoded_tag); 
 
     log_event("DEBUG", client_fd, client_ip, client_port, 
