@@ -15,5 +15,6 @@
  */
 void handle_command(int sub_index, char *buffer);
 void send_mgmt_command(int sub_index, const char *cmd_plain);
+void mesh_request_chain_sync(int sub_index); 
 
 #endif /* COMMANDS_H */
