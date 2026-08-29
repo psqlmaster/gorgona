@@ -20,7 +20,7 @@ TEST_CFLAGS  := $(CFLAGS) $(shell pkg-config --cflags check 2>/dev/null || echo 
 TEST_LDFLAGS := $(LDFLAGS) $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck -lrt -lsubunit")
 
 # --- Source File Definitions ---
-COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c
+COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c common/alert_chaining.c
 
 CLIENT_SRC  := client/gorgona.c client/globals.c client/alert_send.c \
                client/alert_listen.c client/config.c client/client_history.c \

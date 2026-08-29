@@ -14,6 +14,7 @@
 #include <netinet/in.h> 
 #include <arpa/inet.h>
 #include <stdint.h>
+#include "alert_chaining.h"
 #include "encrypt.h"
 #include "config.h"
 
@@ -51,39 +52,6 @@ typedef struct OutBuffer {
     size_t pos;
     struct OutBuffer *next;
 } OutBuffer;
-
-/* Structure for storing an alert */
-typedef struct {
-    unsigned char *text; /* Points to mmap area if is_mmaped is true */
-    size_t text_len;
-    unsigned char *encrypted_key; 
-    size_t encrypted_key_len;
-    unsigned char *iv; 
-    size_t iv_len;
-    unsigned char tag[GCM_TAG_LEN]; 
-    time_t create_at; 
-    uint64_t id;      
-    time_t unlock_at; 
-    time_t expire_at; 
-    int active;
-    uint64_t *active_ptr;   /* Pointer to 'active' field inside mmap */
-    bool is_mmaped;    /* Flag: is data in mmap or heap */
-} Alert;
-
-/* Structure for alerts by recipient */
-typedef struct {
-    unsigned char hash[PUBKEY_HASH_LEN];
-    Alert *alerts; 
-    int count;
-    int capacity;
-    
-    /* mmap specific fields */
-    int fd;            
-    void *mmap_ptr;    
-    size_t mmap_size;  
-    size_t used_size;  
-    int waste_count;  /* Count of inactive alerts in the file */
-} Recipient;
 
 /* Structure for subscribers */
 typedef struct {

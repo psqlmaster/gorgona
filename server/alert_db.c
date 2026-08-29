@@ -131,8 +131,11 @@ void alert_db_deactivate_alert(Alert *alert) {
 }
 
 int alert_db_save_alert(Recipient *rec, Alert *alert) {
-    /* Header layout (Fixed 64 bytes): ID(8)+C(8)+U(8)+E(8)+ACT(8)+TL(8)+KL(8)+IL(8) */
-    size_t record_size = 64 + alert->text_len + alert->encrypted_key_len + alert->iv_len + GCM_TAG_LEN + 4;
+    /* New Header layout (88 bytes): 
+     * ID(8)+C(8)+U(8)+E(8)+ACT(8)+TL(8)+KL(8)+IL(8) [64 bytes]
+     * + ContentH(8) + PrevH(8) + CurrH(8) [24 bytes] 
+     */
+    size_t record_size = 88 + alert->text_len + alert->encrypted_key_len + alert->iv_len + GCM_TAG_LEN + 4;
 
     if (ensure_mmap_capacity(rec, record_size) != 0) return -1;
     flock(rec->fd, LOCK_EX);
@@ -153,6 +156,12 @@ int alert_db_save_alert(Recipient *rec, Alert *alert) {
     v64 = (uint64_t)alert->encrypted_key_len; memcpy(p, &v64, 8); p += 8;
     v64 = (uint64_t)alert->iv_len; memcpy(p, &v64, 8); p += 8;
 
+    /* --- ADDING HASHES TO DISK --- */
+    memcpy(p, &alert->content_hash, 8); p += 8;
+    memcpy(p, &alert->prev_hash, 8); p += 8;
+    memcpy(p, &alert->curr_hash, 8); p += 8;
+
+    /* Payload */
     memcpy(p, alert->text, alert->text_len); p += alert->text_len;
     memcpy(p, alert->encrypted_key, alert->encrypted_key_len); p += alert->encrypted_key_len;
     memcpy(p, alert->iv, alert->iv_len); p += alert->iv_len;
@@ -165,7 +174,7 @@ int alert_db_save_alert(Recipient *rec, Alert *alert) {
         free(alert->text); free(alert->encrypted_key); free(alert->iv);
     }
 
-    alert->text = base + 64;
+    alert->text = base + 88; // Offset updated to 88
     alert->encrypted_key = alert->text + alert->text_len;
     alert->iv = alert->encrypted_key + alert->encrypted_key_len;
     alert->is_mmaped = true;
@@ -192,7 +201,8 @@ int alert_db_load_recipients(void) {
             memcpy(hash, raw, (dlen < PUBKEY_HASH_LEN) ? dlen : PUBKEY_HASH_LEN);
             free(raw);
             Recipient *rec = add_recipient(hash);
-            /* Important: Map the existing file WITHOUT changing its size */
+            
+            /* Mapping the existing file */
             if (!rec || ensure_mmap_capacity(rec, 0) != 0 || !rec->mmap_ptr) continue;
 
             struct stat st; fstat(rec->fd, &st);
@@ -200,10 +210,12 @@ int alert_db_load_recipients(void) {
             size_t offset = 0;
             int corrupted = 0;
 
-            while (offset + 64 <= (size_t)st.st_size) {
+            /* New header size is 88 bytes (64 baseline + 24 hashes) */
+            while (offset + 88 <= (size_t)st.st_size) {
                 unsigned char *p = base + offset;
                 uint64_t id; memcpy(&id, p, 8);
                 if (id == 0) break; 
+                
                 if (id > global_max_alert_id) global_max_alert_id = id;
                 if (rec->count >= rec->capacity) {
                     rec->capacity += 128;
@@ -213,31 +225,51 @@ int alert_db_load_recipients(void) {
                 Alert *a = &rec->alerts[rec->count];
                 memset(a, 0, sizeof(Alert));
                 a->id = id; p += 8;
+                
                 uint64_t t64;
                 memcpy(&t64, p, 8); a->create_at = (time_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->unlock_at = (time_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->expire_at = (time_t)t64; p += 8;
+                
                 a->active_ptr = (uint64_t *)p;
                 memcpy(&t64, p, 8); a->active = (int)t64; p += 8;
+                
                 memcpy(&t64, p, 8); a->text_len = (size_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->encrypted_key_len = (size_t)t64; p += 8;
                 memcpy(&t64, p, 8); a->iv_len = (size_t)t64; p += 8;
 
-                size_t payload = a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + 4;
-                if (offset + 64 + payload > (size_t)st.st_size) { corrupted = 1; break; }
+                /* --- Loading XXH3 Hashes (24 bytes) --- */
+                memcpy(&a->content_hash, p, 8); p += 8;
+                memcpy(&a->prev_hash, p, 8); p += 8;
+                memcpy(&a->curr_hash, p, 8); p += 8;
 
-                a->text = base + offset + 64;
+                size_t payload = a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + 4;
+                if (offset + 88 + payload > (size_t)st.st_size) { corrupted = 1; break; }
+
+                /* Pointers now point past the 88-byte header */
+                a->text = base + offset + 88;
                 a->encrypted_key = a->text + a->text_len;
                 a->iv = a->encrypted_key + a->encrypted_key_len;
+                
                 memcpy(a->tag, a->iv + a->iv_len, GCM_TAG_LEN);
-                uint32_t del; memcpy(&del, a->iv + a->iv_len + GCM_TAG_LEN, 4);
+                
+                uint32_t del; 
+                memcpy(&del, a->iv + a->iv_len + GCM_TAG_LEN, 4);
 
                 if (del != ALERT_RECORD_DELIMITER) { corrupted = 1; break; }
-                a->is_mmaped = true; rec->count++; offset += (64 + payload);
+                
+                a->is_mmaped = true; 
+                rec->count++; 
+                offset += (88 + payload);
+                
+                /* Update the tip of the chain for the recipient */
+                rec->last_hash = a->curr_hash;
             }
+            
             rec->used_size = offset;
+            
             if (corrupted) {
-                if (verbose) fprintf(stderr, "Auto-healing corrupted database: %s\n", b64);
+                if (verbose) fprintf(stderr, "Auto-healing corrupted database (88-byte format): %s\n", b64);
                 alert_db_sync(rec);
             }
         }
@@ -247,143 +279,130 @@ int alert_db_load_recipients(void) {
 }
 
 /**
- * Performs a "Full Vacuum" (Compaction) on the recipient's database.
- * It rebuilds the file from scratch using only active alerts, effectively 
- * eliminating bloat and reclaiming disk space. 
- *
- * Logic:
- * 1. Calculate the exact size needed for active alerts only.
- * 2. Write active alerts to a temporary file.
- * 3. Atomic swap (rename) the temporary file to the original path.
- * 4. Truncate the file to the exact required size (killing the bloat).
- * 5. Re-map the clean, compacted file into memory.
+ * Performs database compaction (Vacuum).
+ * Removes only physically expired alerts while preserving deactivated ones (tombstones)
+ * to maintain hash chain integrity across the P2P network.
  * 
- * @return 1 if file was deleted (no active alerts), 0 on success, -1 on error.
+ * @param rec Pointer to the recipient structure.
+ * @return 1 if file was deleted, 0 on success, -1 on error.
  */
 int alert_db_sync(Recipient *rec) {
     char filename[512], tmp[512];
     char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
-    
+    if (!hash_b64) return -1;
+
     snprintf(filename, sizeof(filename), "%s%s.alerts", ALERT_DB_DIR, hash_b64);
     snprintf(tmp, sizeof(tmp), "%s%s.alerts.tmp", ALERT_DB_DIR, hash_b64);
 
-    /* 1. Preliminary check: count active alerts */
-    int active_count = 0;
-    for (int i = 0; i < rec->count; i++) {
-        if (rec->alerts[i].active) active_count++;
-    }
-
-    /* 2. EMERGENCY CLEANUP: If no alerts are active, wipe the file and free resources */
-    if (active_count == 0) {
-        if (verbose) {
-            log_event("INFO", -1, NULL, 0, "Vacuum: No active alerts. Deleting storage for recipient.");
-        }
-        if (rec->mmap_ptr) {
-            munmap(rec->mmap_ptr, rec->mmap_size);
-            rec->mmap_ptr = NULL;
-        }
-        if (rec->fd >= 0) {
-            close(rec->fd);
-            rec->fd = -1;
-        }
-        unlink(filename); 
-        unlink(tmp);      
-        rec->count = 0;
-        rec->used_size = 0;
-        rec->waste_count = 0;
-        return 1; 
-    }
-
-    /* 3. COMPACTION: Open temporary file for clean write */
+    time_t now = time(NULL);
     int t_fd = open(tmp, O_RDWR | O_CREAT | O_TRUNC, 0600);
-    if (t_fd < 0) return -1;
+    if (t_fd < 0) {
+        free(hash_b64);
+        return -1;
+    }
 
     size_t packed_size = 0;
-    /* Write only valid, active alerts sequentially to eliminate sparse gaps */
+    int j = 0;
+
+    /* Filter expired records; keep deactivated ones to preserve chain continuity */
     for (int i = 0; i < rec->count; i++) {
         Alert *a = &rec->alerts[i];
-        if (!a->active) continue;
+
+        /* Physical removal criteria: expiry time reached */
+        if (a->expire_at <= now && a->expire_at != 0) {
+            if (!a->is_mmaped) {
+                free(a->text); free(a->encrypted_key); free(a->iv);
+            }
+            continue; 
+        }
+
+        /* Shift valid records in memory array */
+        if (i != j) rec->alerts[j] = rec->alerts[i];
         
         uint64_t v64;
-        /* Fixed Header (64 bytes) */
+        /* Write 88-byte fixed header */
         v64 = a->id; write(t_fd, &v64, 8);
         v64 = (uint64_t)a->create_at; write(t_fd, &v64, 8);
         v64 = (uint64_t)a->unlock_at; write(t_fd, &v64, 8);
         v64 = (uint64_t)a->expire_at; write(t_fd, &v64, 8);
-        v64 = (uint64_t)a->active; write(t_fd, &v64, 8);
-        v64 = (uint64_t)a->text_len; write(t_fd, &v64, 8);
+        v64 = (uint64_t)a->active;    write(t_fd, &v64, 8);
+        v64 = (uint64_t)a->text_len;   write(t_fd, &v64, 8);
         v64 = (uint64_t)a->encrypted_key_len; write(t_fd, &v64, 8);
-        v64 = (uint64_t)a->iv_len; write(t_fd, &v64, 8);
+        v64 = (uint64_t)a->iv_len;     write(t_fd, &v64, 8);
+        
+        /* Persistent hash chain links */
+        v64 = a->content_hash; write(t_fd, &v64, 8);
+        v64 = a->prev_hash;    write(t_fd, &v64, 8);
+        v64 = a->curr_hash;    write(t_fd, &v64, 8);
 
-        /* Variable Payload */
+        /* Write variable payload */
         write(t_fd, a->text, a->text_len);
         write(t_fd, a->encrypted_key, a->encrypted_key_len);
         write(t_fd, a->iv, a->iv_len);
-        write(t_fd, a->tag, GCM_TAG_LEN);
-        uint32_t del = ALERT_RECORD_DELIMITER; write(t_fd, &del, 4);
+        write(t_fd, a->tag, 16);
+        
+        uint32_t del = ALERT_RECORD_DELIMITER; 
+        write(t_fd, &del, 4);
 
-        packed_size += (64 + a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + 4);
+        packed_size += (88 + a->text_len + a->encrypted_key_len + a->iv_len + 16 + 4);
+        j++;
     }
 
-    fsync(t_fd); 
+    rec->count = j;
+    rec->waste_count = 0;
+    fsync(t_fd);
     close(t_fd);
 
-    /* 4. ATOMIC SWAP: Replace the old bloated file with the new compacted one */
+    /* Handle empty recipient storage */
+    if (rec->count == 0) {
+        if (rec->mmap_ptr) munmap(rec->mmap_ptr, rec->mmap_size);
+        if (rec->fd >= 0) close(rec->fd);
+        unlink(filename); unlink(tmp);
+        rec->used_size = 0;
+        free(hash_b64);
+        return 1;
+    }
+
+    /* Atomic swap of the database file */
     if (rec->mmap_ptr) munmap(rec->mmap_ptr, rec->mmap_size);
     if (rec->fd >= 0) close(rec->fd);
-
     if (rename(tmp, filename) != 0) {
-        log_event("ERROR", -1, NULL, 0, "Vacuum: Critical failure during atomic swap (rename)");
+        free(hash_b64);
         return -1;
     }
 
-    /* 5. RE-MAP: Initialize the new file handle and set the correct disk size */
+    /* Re-establish memory mapping */
     rec->fd = open(filename, O_RDWR, 0600);
-    if (rec->fd < 0) return -1;
-
-    /* KILL THE BLOAT: Truncate file to exact packed size. 
-     * No more 11MB files if they only contain 3MB of data. */
-    if (ftruncate(rec->fd, packed_size) != 0) return -1;
-    fsync(rec->fd);
-
-    /* Allocate memory-map exactly for the new content */
+    if (rec->fd < 0) {
+        free(hash_b64);
+        return -1;
+    }
+    ftruncate(rec->fd, packed_size);
+    
     rec->used_size = packed_size;
     rec->mmap_size = packed_size; 
     rec->mmap_ptr = mmap(NULL, rec->mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, rec->fd, 0);
     
     if (rec->mmap_ptr == MAP_FAILED) {
         rec->mmap_ptr = NULL;
+        free(hash_b64);
         return -1;
     }
     
-    /* 6. POINTER RELINKING: Update memory structures to point to new mmap addresses */
-    size_t off = 0; 
-    int j = 0;
+    /* Relink memory structures to the new mmap region */
     unsigned char *base = (unsigned char *)rec->mmap_ptr;
-    
+    size_t off = 0; 
     for (int i = 0; i < rec->count; i++) {
-        if (!rec->alerts[i].active) continue;
-        
-        /* Shift alerts in the array to keep them contiguous */
-        Alert *a = &rec->alerts[j]; 
-        if (i != j) *a = rec->alerts[i];
-        
+        Alert *a = &rec->alerts[i];
         unsigned char *p = base + off;
-        a->active_ptr = (uint64_t *)(p + 32); /* Point to 'active' field in mmap */
-        a->text = p + 64;
+        
+        a->active_ptr = (uint64_t *)(p + 32); 
+        a->text = p + 88;
         a->encrypted_key = a->text + a->text_len;
         a->iv = a->encrypted_key + a->encrypted_key_len;
         a->is_mmaped = true;
         
-        off += (64 + a->text_len + a->encrypted_key_len + a->iv_len + GCM_TAG_LEN + 4);
-        j++;
-    }
-    
-    rec->count = j;
-    rec->waste_count = 0; 
-    
-    if (verbose) {
-        log_event("DEBUG", -1, NULL, 0, "Vacuum: Compaction finished. Reclaimed storage for %s", hash_b64);
+        off += (88 + a->text_len + a->encrypted_key_len + a->iv_len + 16 + 4);
     }
     
     free(hash_b64);

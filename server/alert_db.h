@@ -8,6 +8,7 @@
 #define ALERT_DB_H
 
 #include "gorgona_utils.h"
+#include "alert_chaining.h"
 #include <stdint.h>
 #include <sys/file.h>
 #include <sys/mman.h>

@@ -15,10 +15,194 @@
 #include "admin_mesh.h"
 #include "alert_db.h"
 
-/* Helpers for command processing */
+static void process_get_chain_sample(int i, char *buffer) {
+    char *copy = strdup(buffer + 17); /* Skip "GET_CHAIN_SAMPLE|" */
+    char *hash_b64 = strtok(copy, "|");
+    char *offset_str = strtok(NULL, "|");
+    char *limit_str = strtok(NULL, "|");
+
+    if (!hash_b64 || !offset_str || !limit_str) { free(copy); return; }
+
+    int offset = atoi(offset_str);
+    int limit = atoi(limit_str);
+    size_t hlen;
+    unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
+    Recipient *rec = find_recipient(raw_hash);
+
+    if (rec && rec->count > 0) {
+        char resp[4096]; /* 4 KB is enough for ~100 hashes */
+        int pos = snprintf(resp, sizeof(resp), "CHAIN_SAMPLE|%s|%d|%d|", hash_b64, offset, limit);
+        
+        int end_idx = rec->count - 1 - offset;
+        int start_idx = end_idx - limit + 1;
+        if (start_idx < 0) start_idx = 0;
+
+        for (int j = end_idx; j >= start_idx; j--) {
+            if (pos > (int)sizeof(resp) - 64) break;
+            pos += snprintf(resp + pos, sizeof(resp) - pos, "%" PRIu64 ":%" PRIx64 "|", 
+                           rec->alerts[j].id, rec->alerts[j].curr_hash);
+        }
+        enqueue_message(i, resp, (size_t)pos);
+    }
+    free(raw_hash); free(copy);
+}
+
+static void process_chain_sample(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    char *rest = strdup(buffer + 13);
+    if (!rest) return;
+
+    char *hash_b64 = strtok(rest, "|");
+    char *offset_str = strtok(NULL, "|");
+    char *limit_str = strtok(NULL, "|");
+    
+    if (!hash_b64 || !offset_str || !limit_str) { free(rest); return; }
+    int current_offset = atoi(offset_str);
+    int current_limit = atoi(limit_str);
+
+    size_t hlen;
+    unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
+    Recipient *rec = find_recipient(raw_hash);
+    if (!rec) { 
+        if (raw_hash) free(raw_hash); 
+        free(rest); 
+        return; 
+    }
+
+    uint64_t ancestor_id = 0;
+    char *pair;
+    /* Let's go through the list ID:HASH|ID:HASH... */
+    while ((pair = strtok(NULL, "|")) != NULL) {
+        char *colon = strchr(pair, ':');
+        if (!colon) continue;
+        *colon = '\0';
+        uint64_t r_id = strtoull(pair, NULL, 10);
+        uint64_t r_hash = strtoull(colon + 1, NULL, 16);
+
+        /* We look for this ID in our system and check to see if the hash matches */
+        for (int j = rec->count - 1; j >= 0; j--) {
+            if (rec->alerts[j].id == r_id) {
+                if (rec->alerts[j].curr_hash == r_hash) {
+                    ancestor_id = r_id;
+                    goto found;
+                }
+            }
+        }
+    }
+
+found:
+    if (ancestor_id > 0) {
+        /* COMMON ANCESTOR FOUND! Please provide only the delta. */
+        char req[512];
+        snprintf(req, sizeof(req), "SYNC_RANGE|%s|%" PRIu64, hash_b64, ancestor_id);
+        enqueue_message(i, req, strlen(req));
+        
+        if (verbose) {
+            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                      "Chain Sync: Ancestor found at ID %" PRIu64 ". Requesting Range Sync.", ancestor_id);
+        }
+    } else {
+        /* NO ANCESTOR FOUND in the current window. Let's expand the search. */
+        int next_offset = current_offset + current_limit;
+        int next_limit = current_limit * 5; 
+
+        if (next_offset < rec->count && next_limit <= 500) {
+            char req[512];
+            snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|%d|%d", hash_b64, next_offset, next_limit);
+            enqueue_message(i, req, strlen(req));
+            
+            if (verbose) {
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                          "Chain Sync: Ancestor not found. Widening search (offset %d, limit %d)", 
+                          next_offset, next_limit);
+            }
+        } else {
+            /* The gap is too big. Let's give up and download everything. */
+            char req[512];
+            snprintf(req, sizeof(req), "SYNC_REC|%s", hash_b64);
+            enqueue_message(i, req, strlen(req));
+            
+            log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                      "Chain Sync: Divergence too deep for %s. Falling back to Full Sync.", hash_b64);
+        }
+    }
+    
+    if (raw_hash) free(raw_hash);
+    free(rest);
+}
+
+static void process_sync_range(int i, char *buffer) {
+    char *rest = strdup(buffer + 11);
+    char *hash_b64 = strtok(rest, "|");
+    char *id_str = strtok(NULL, "|");
+    if (!hash_b64 || !id_str) { free(rest); return; }
+
+    uint64_t start_id = strtoull(id_str, NULL, 10);
+    size_t hlen;
+    unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
+    Recipient *rec = find_recipient(raw_hash);
+
+    if (rec) {
+        int sent = 0;
+        for (int j = 0; j < rec->count; j++) {
+            if (rec->alerts[j].id > start_id) {
+                send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
+                sent++;
+            }
+        }
+        if (verbose) log_event("DEBUG", -1, NULL, 0, "Range Sync: Sent %d alerts after ID %" PRIu64, sent, start_id);
+    }
+    free(raw_hash); free(rest);
+}
+
+/**
+ * Sends all alerts for a specific recipient.
+ * Used for chain healing when a fork/gap is detected.
+ */
+static void process_sync_rec(int i, char *buffer) {
+    char *hash_b64 = buffer + 9; /* Skip "SYNC_REC|" */
+    if (!hash_b64) return;
+    size_t hlen;
+    unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
+    if (!raw_hash) return;
+    Recipient *rec = find_recipient(raw_hash);
+    if (rec) {
+        for (int j = 0; j < rec->count; j++) {
+            send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
+        }
+    }
+    free(raw_hash);
+}
+
+void mesh_request_chain_sync(int sub_index) {
+    for (int r = 0; r < recipient_count; r++) {
+        Recipient *rec = &recipients[r];
+        if (rec->count == 0) continue;
+
+        char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
+        if (!hash_b64) continue;
+
+        char sync_cmd[512];
+        /* We're sending the top of our feast chain */
+        int len = snprintf(sync_cmd, sizeof(sync_cmd), "SYNC_CHAIN|%s|%" PRIu64 "|%" PRIu64,
+                           hash_b64, 
+                           rec->alerts[rec->count - 1].id, 
+                           rec->last_hash);
+        
+        enqueue_message(sub_index, sync_cmd, (size_t)len);
+        free(hash_b64);
+    }
+    
+    /* Global MaxID Nudge for Empty Nodes */
+    uint64_t my_max = get_max_alert_id();
+    char nudge[64];
+    int n_len = snprintf(nudge, sizeof(nudge), "SYNC|%" PRIu64, my_max);
+    enqueue_message(sub_index, nudge, (size_t)n_len);
+}
 
 /*
- * Handles the "SEND|" command logic
+ * Handles the "SEND|" command logic.
+ * Updated to use the insertion index from add_alert for precise notification.
  */
 static void process_send(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
@@ -42,22 +226,12 @@ static void process_send(int i, char *buffer) {
     if (!pubkey_hash_b64 || !unlock_at_str || !expire_at_str || !base64_text || !base64_encrypted_key || !base64_iv || !base64_tag) {
         char *error_msg = "Error: Incomplete data in SEND";
         enqueue_message(i, error_msg, strlen(error_msg));
-        
-        /* Log error using the new centralized logging system */
         log_event("WARN", sd, sub->ip_address, sub->port, "Incomplete SEND data received");
-        
         free(rest);
         return;
     }
 
     trim_string(pubkey_hash_b64);
-    if (strlen(pubkey_hash_b64) == 0) {
-        char *error_msg = "Error: Empty pubkey hash in SEND";
-        enqueue_message(i, error_msg, strlen(error_msg));
-        free(rest);
-        return;
-    }
-
     size_t pubkey_hash_len;
     unsigned char *pubkey_hash = base64_decode(pubkey_hash_b64, &pubkey_hash_len);
     if (!pubkey_hash || pubkey_hash_len != PUBKEY_HASH_LEN) {
@@ -68,34 +242,30 @@ static void process_send(int i, char *buffer) {
         return;
     }
 
-    log_event("DEBUG", sd, sub->ip_address, sub->port, 
-              "Parsed SEND: Hash=%s, Unlock=%s, Expire=%s", 
-              pubkey_hash_b64, unlock_at_str, expire_at_str);
-
     time_t unlock_at = atol(unlock_at_str);
     time_t expire_at = atol(expire_at_str);
 
-    /* Add alert to database and catch the return value */
-    int result = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, 
+    /* Capture insertion index (res >= 0) */
+    int res = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, 
                        base64_encrypted_key, base64_iv, base64_tag, sd, 0, 0); 
 
-    if (result == 0) {
+    if (res >= 0) {
         Recipient *rec = find_recipient(pubkey_hash);
-        if (rec && rec->count > 0) {
-            Alert *new_a = &rec->alerts[rec->count - 1];
+        if (rec && res < rec->count) {
+            Alert *new_a = &rec->alerts[res];
             uint64_t assigned_id = new_a->id;
 
-            /* Create a detailed message with the ID */
+            /* 1. Confirm to sender */
             char success_msg[128];
             int s_len = snprintf(success_msg, sizeof(success_msg), 
                                  "Alert ID: %" PRIu64 " added successfully", assigned_id);
-            
             enqueue_message(i, success_msg, (size_t)s_len);
             
+            /* 2. Notify other subscribers and peers using the CORRECT index */
             notify_subscribers(pubkey_hash, new_a);
             broadcast_replication(pubkey_hash, new_a, sd);
 
-            /* INSTANT NOTIFICATION (Anti-Entropy Push) */
+            /* 3. Anti-Entropy Push (Nudge) */
             uint64_t my_new_max = get_max_alert_id();
             char nudge[64];
             snprintf(nudge, sizeof(nudge), "MAXID_NUDGE|%" PRIu64, my_new_max);
@@ -108,16 +278,15 @@ static void process_send(int i, char *buffer) {
                     send_mgmt_command(p, nudge);
                 }
             }
-        } else {
-            /* A fallback option if the record cannot be found (which shouldn't happen) */
-            char *fallback_msg = "Alert added successfully";
-            enqueue_message(i, fallback_msg, strlen(fallback_msg));
         }
-    } else if (result == -1) {
+    } else if (res == -1) {
         char *err = "Error: Stale alert (unlock_at time is too old)";
         enqueue_message(i, err, strlen(err));
-    } else if (result == -2) {
+    } else if (res == -2) {
         char *err = "Error: Replay attack detected (duplicate payload)";
+        enqueue_message(i, err, strlen(err));
+    } else if (res == -4) {
+        char *err = "Error: Alert already exists (Duplicate ID)";
         enqueue_message(i, err, strlen(err));
     } else {
         char *err = "Error: Failed to add alert";
@@ -262,7 +431,7 @@ static void process_subscribe(int i, char *buffer) {
 /**
  * Processes the AUTH|psk handshake command.
  * Called when a remote entity (Client or Peer) attempts to join the Mesh.
- * Strict Protocol: Requires [psk|max_alerts|max_alert_ttl|port]
+ * Updated to trigger Hash Chain Sync immediately for Peers.
  */
 static void process_auth(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
@@ -306,7 +475,6 @@ static void process_auth(int i, char *buffer) {
             /* Standard Binary Client */
             sub->type = SUB_TYPE_CLIENT;
             
-            /* Use mesh table port if IP is known, otherwise fallback to connection port */
             if (sub->node_ptr && sub->node_ptr->port > 0) {
                 sub->port = sub->node_ptr->port;
             }
@@ -322,12 +490,17 @@ static void process_auth(int i, char *buffer) {
                 }
             }
 
-            /* Log TTL policy divergence for administrative awareness */
             if (peer_max_ttl != max_alert_ttl) {
                 log_event("INFO", sub->sock, sub->ip_address, sub->port, 
                           "Policy Notice: Peer TTL (%d) differs from Local TTL (%d)", 
                           peer_max_ttl, max_alert_ttl);
             }
+
+            /* 
+             * Если к нам подключился пир, мы должны ТУТ ЖЕ инициировать 
+             * проверку хеш-цепочек со своей стороны.
+             */
+            mesh_request_chain_sync(i);
         }
         
         sub->auth_state = AUTH_OK;
@@ -346,7 +519,7 @@ static void process_auth(int i, char *buffer) {
 
 /**
  * Handles the "REPL|" command for alert replication between peers.
- * Now parses the 'active' status and applies it to the local DB.
+ * Updated to support Hash Chain backfilling and precise index notification.
  */
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
@@ -374,44 +547,59 @@ static void process_repl(int i, char *buffer) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
         time_t u_at = (time_t)atol(unlock_str);
-        time_t e_at = (time_t)atol(expire_str);
+        time_t e_at = (time_t)atol(expire_str ? expire_str : "0"); 
         int is_active = atoi(active_str);
 
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
 
         if (ph && h_len == PUBKEY_HASH_LEN) {
+            /* Capture the insertion index (res >= 0) or error status */
             int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
                                 sub->sock, original_id, c_at);
             
-            if (res == 0 || res == 1) {
-                /* If alert was added or already exists, ensure the 'active' status matches the mesh */
-                Recipient *rec = find_recipient(ph);
-                if (rec) {
-                    for (int j = 0; j < rec->count; j++) {
-                        if (rec->alerts[j].id == original_id) {
-                            /* If mesh says it's inactive but we have it as active -> Kill it */
-                            if (!is_active && rec->alerts[j].active) {
-                                alert_db_deactivate_alert(&rec->alerts[j]);
-                                rec->waste_count++;
-                            }
-                            break;
-                        }
-                    }
-                }
-                
-                if (res == 0) {
+            Recipient *rec = find_recipient(ph);
+            
+            /* Logic for new alerts (res >= 0) and duplicates (res == -4) */
+            if (rec) {
+                if (res >= 0 && res < rec->count) {
+                    /* CASE 1: New alert ingested (possibly into the middle of the chain) */
+                    Alert *inserted_a = &rec->alerts[res];
+                    
                     gettimeofday(&end_tv, NULL);
                     double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
                                    (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
                     mesh_update_speed(sub->ip_address, raw_len, delta);
 
-                    /* Gossip only fresh active events */
+                    /* Gossip only if it's active and fresh */
                     time_t now = time(NULL);
                     if (is_active && (now - c_at) < STALE_THRESHOLD_SEC) {
-                        Recipient *rec_ptr = find_recipient(ph);
-                        if (rec_ptr) notify_subscribers(ph, &rec_ptr->alerts[rec_ptr->count - 1]);
-                        broadcast_replication(ph, &rec_ptr->alerts[rec_ptr->count - 1], sub->sock);
+                        notify_subscribers(ph, inserted_a);
+                        broadcast_replication(ph, inserted_a, sub->sock);
+                    }
+                } 
+                
+                /* CASE 2: Always sync 'active' status, even for duplicates */
+                if (res >= 0 || res == -4) {
+                    for (int j = 0; j < rec->count; j++) {
+                        if (rec->alerts[j].id == original_id) {
+                            if (!is_active && rec->alerts[j].active) {
+                                alert_db_deactivate_alert(&rec->alerts[j]);
+                                rec->waste_count++;
+                                
+                                /* Notify local clients about the revocation */
+                                char revoke_msg[64];
+                                int r_len = snprintf(revoke_msg, sizeof(revoke_msg), "REVOKE|%" PRIu64, original_id);
+                                for (int s = 0; s < max_clients; s++) {
+                                    if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
+                                        if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                                            enqueue_message(s, revoke_msg, (size_t)r_len);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -767,45 +955,88 @@ static void process_revoke_push(int i, char *buffer) {
 }
 
 /**
+ * Processes incoming SYNC_CHAIN command.
+ * Analyzes the Tip of the remote chain.
+ */
+static void process_sync_chain(int i, char *buffer) {
+    Subscriber *sub = &subscribers[i];
+    char *rest = strdup(buffer + 11);
+    if (!rest) return;
+
+    char *hash_b64 = strtok(rest, "|");
+    char *id_str = strtok(NULL, "|");
+    char *hash_str = strtok(NULL, "|");
+
+    if (!hash_b64 || !id_str || !hash_str) { 
+        free(rest); 
+        return; 
+    }
+
+    size_t hlen;
+    unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
+    if (!raw_hash) {
+        free(rest);
+        return;
+    }
+
+    uint64_t remote_last_id = strtoull(id_str, NULL, 10);
+    uint64_t remote_last_hash = strtoull(hash_str, NULL, 10);
+
+    Recipient *rec = find_recipient(raw_hash);
+    if (rec && rec->count > 0) {
+        /* Check if we are already in sync */
+        if (rec->alerts[rec->count - 1].id == remote_last_id && 
+            rec->alerts[rec->count - 1].curr_hash == remote_last_hash) {
+            free(raw_hash);
+            free(rest);
+            return;
+        }
+
+        /* Hash mismatch: Request Level 1 sample (last 20) */
+        char req[512];
+        snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|20", hash_b64);
+        enqueue_message(i, req, strlen(req));
+        
+        if (verbose) {
+            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                      "Chain mismatch for %s. Level 1 search (20 nodes).", hash_b64);
+        }
+    } else {
+        /* We are empty: request full history */
+        char heal_cmd[512];
+        snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
+        enqueue_message(i, heal_cmd, strlen(heal_cmd));
+    }
+    
+    free(raw_hash);
+    free(rest);
+}
+
+/**
  * THE DISPATCHER
  * Routes received messages to appropriate command handlers.
- * Updated to synchronize Layer 1 (Protocol) and Layer 2 (Mesh) states.
+ * FIXED: Combined all conditions into a single if-else-if chain.
  */
 void handle_command(int sub_index, char *buffer) {
     Subscriber *sub = &subscribers[sub_index];
 
-    /* 0. MGMT DISPATCHER (Layer 2 High Priority) 
-     * Encapsulated GCM frames are decrypted here. 
-     */
+    /* 0. MGMT DISPATCHER (Layer 2 High Priority) */
     if (strncmp(buffer, "MGMT|", 5) == 0) {
         process_mgmt_frame(sub_index, buffer + 5);
         return;
     }
 
-    /* 1. PEER RESPONSES 
-     * Handling messages from other servers in the cluster.
-     */
-
-    /* Event: A remote peer accepted our AUTH request */
+    /* 1. PEER RESPONSES */
     if (strncmp(buffer, "AUTH_SUCCESS|", 13) == 0) {
         int peer_max = atoi(buffer + 13);
-        
         if (peer_max != max_alerts) {
-            log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
-                      "Cluster capacity mismatch during handshake! Local: %d, Remote: %d", 
-                      max_alerts, peer_max);
+            log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Cluster capacity mismatch!");
             cleanup_subscriber(sub_index);
             return;
         }
-
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed authentication");
-        
-        /* Layer 1 State */
+        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed auth");
         sub->auth_state = AUTH_OK;
         
-        /* [MESH SYNCHRONIZATION] 
-         * Notify Layer 2 that this peer is now a trusted mesh member.
-         */
         for (int n = 0; n < cluster_node_count; n++) {
             if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
                 cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
@@ -813,61 +1044,55 @@ void handle_command(int sub_index, char *buffer) {
                 break;
             }
         }
-        
-        /* Initial Catch-up: Request missing history from this reliable node */
-        uint64_t my_max = get_max_alert_id();
-        char sync_req[64];
-        int len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max);
-        enqueue_message(sub_index, sync_req, (size_t)len);
+        mesh_request_chain_sync(sub_index); 
         return; 
     }
     
-    /* Event: Authentication rejected */
     if (strcmp(buffer, "AUTH_FAILED") == 0) {
-        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Remote peer rejected our PSK!");
+        log_event("ERROR", sub->sock, sub->ip_address, sub->port, "Remote peer rejected PSK!");
         cleanup_subscriber(sub_index);
         return;
     }
 
-    /* Event: Log specific error messages from peers */
     if (strncmp(buffer, "Error:", 6) == 0) {
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "Peer returned: %s", buffer);
         return; 
     }
 
-    /* Event: Noise filtering (Ignore success confirmations from standard commands) */
     if (strncmp(buffer, "Alert added successfully", 24) == 0 || 
         strncmp(buffer, "Subscribed to", 13) == 0 ||
         strncmp(buffer, "Subscription updated", 20) == 0) {
         return;
     }
 
-    /* 2. INBOUND COMMANDS 
-     * Parsing commands from clients or peers.
-     */
+    /* 2. INBOUND COMMANDS - Consolidated Chain */
     if (verbose) {
         log_event("DEBUG", sub->sock, sub->ip_address, sub->port, "Processing command: %.32s...", buffer);
     }
 
-    if (strncmp(buffer, "SEND|", 5) == 0) {
-        process_send(sub_index, buffer);
-    } 
-    else if (strncmp(buffer, "REVOKE|", 7) == 0) { 
-        process_revoke(sub_index, buffer);
+    if (strncmp(buffer, "SYNC_CHAIN|", 11) == 0) {
+        process_sync_chain(sub_index, buffer);
     }
-    else if (strncmp(buffer, "REVOKE_PUSH|", 12) == 0) {
-        process_revoke_push(sub_index, buffer);
+    else if (strncmp(buffer, "GET_CHAIN_SAMPLE|", 17) == 0) {
+        process_get_chain_sample(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "CHAIN_SAMPLE|", 13) == 0) {
+        process_chain_sample(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "SYNC_RANGE|", 11) == 0) {
+        process_sync_range(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "SYNC_REC|", 9) == 0) {
+        process_sync_rec(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "SYNC|", 5) == 0) {
+        process_sync(sub_index, buffer);
     }
     else if (strncmp(buffer, "REPL|", 5) == 0) {
         process_repl(sub_index, buffer);
     }
     else if (strncmp(buffer, "AUTH|", 5) == 0) {
-        /* [MESH INTEGRATION]
-         * After process_auth succeeds, it should ideally set sub->auth_state = AUTH_OK.
-         * We ensure that the mesh table is aware of this IP as well.
-         */
         process_auth(sub_index, buffer);
-        
         if (sub->auth_state == AUTH_OK) {
             for (int n = 0; n < cluster_node_count; n++) {
                 if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
@@ -877,8 +1102,14 @@ void handle_command(int sub_index, char *buffer) {
             }
         }
     }
-    else if (strncmp(buffer, "SYNC|", 5) == 0) {
-        process_sync(sub_index, buffer);
+    else if (strncmp(buffer, "SEND|", 5) == 0) {
+        process_send(sub_index, buffer);
+    } 
+    else if (strncmp(buffer, "REVOKE|", 7) == 0) { 
+        process_revoke(sub_index, buffer);
+    }
+    else if (strncmp(buffer, "REVOKE_PUSH|", 12) == 0) {
+        process_revoke_push(sub_index, buffer);
     }
     else if (strncmp(buffer, "LISTEN|", 7) == 0) {
         process_listen(sub_index, buffer);
@@ -887,7 +1118,7 @@ void handle_command(int sub_index, char *buffer) {
         process_subscribe(sub_index, buffer);
     } 
     else {
-        /* Protocol Violation: Unknown payload type */
+        /* Protocol Violation */
         char *error_msg = "Error: Unknown command";
         enqueue_message(sub_index, error_msg, strlen(error_msg));
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command: %.64s", buffer);
