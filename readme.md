@@ -47,7 +47,7 @@
 `gorgona` is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, `gorgona` ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing, telemetry transport.).
 The project includes an **Autonomous Intelligent Client** (`gorgona`) that features self-healing connectivity, parallel peer probing (Happy Eyeballs), and a local execution history to guarantee exactly-once processing across a distributed mesh.
 
-The project includes a client (`gorgona`) for key generation, sending messages, and listening for alerts, and a server (`gorgonad`) for securely storing and delivering them.
+The project includes a client (`gorgona`) for generating keys, sending messages, and receiving notifications; a Docker container named `gorgona_stheno` with a web UI; and a server (`gorgonad`) for securely storing and delivering them. It also includes a number of plugins for integration and other purposes.
 
 #### Features
 
