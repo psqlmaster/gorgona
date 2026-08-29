@@ -51,6 +51,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 #### Features
 
+- **Immutable Hash Chaining**: Every alert is cryptographically linked to its predecessor using the **XXH3-64** algorithm. This creates a verifiable ledger of messages where any alteration of historical data (even directly in the `mmap` files) is immediately detected and rejected by the mesh.
 - **Dual-Layer Cryptography**: Total security isolation.
     - **Layer 1 (Command Plane)**: End-to-End security using RSA-OAEP for key transport and AES-256-GCM for content. The server acts as a "blind carrier" and never sees raw data.
     - **Layer 2 (Management Plane)**: Administrative traffic (PEX, Sync, Heartbeats) is encapsulated in a secondary AES-256-GCM layer keyed by a cluster-wide PSK.
@@ -60,13 +61,15 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
     - **Legacy Mode**: Active when `sync_psk` is omitted or commented out. The client acts as a traditional point-to-point utility, connecting strictly to the single IP/Port defined in the configuration.
 - **Execution Sovereignty**: Uses a memory-mapped persistent history log (`/var/lib/gorgona/history.log`) to ensure that even if the client jumps between different servers, a unique Snowflake command is executed exactly once.
 - **Performance-Based Routing (Gorgona Score)**: Real-time health monitoring using RTT latency and rolling-average throughput. The system autonomously prioritizes high-performance paths and suppresses "toxic" (slow or unstable) nodes.
-- **Continuous Anti-Entropy**: Aggressive MaxID synchronization. Nodes continuously gossip their database state, triggering immediate delta-syncs to ensure 100% data consistency across the cluster even after network partitions.
+- **Continuous Anti-Entropy (Exponential Tail Sampling)**: Nodes don't just sync by MaxID; they perform a recursive "Common Ancestor" search using hash samples. This allows the system to autonomously "heal" gaps in history and reconcile divergent branches (forks) with minimal network traffic.
 - **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Encrypted payloads are strictly time-bound: they unlock exactly at `unlock_at` and are automatically purged after `expire_at`.
 - **Autonomous Self-Healing**: Built-in persistence for active peers via `/var/lib/gorgona/peers.cache`. Nodes can bootstrap themselves and rebuild the entire mesh map even if the primary seed nodes are permanently unavailable.
 - **Anti-Replay Protection**: Integrated defense against network packet re-injection using cryptographic Proof-of-Knowledge handshakes, staleness filters, and sliding-window deduplication.
 - **Hybrid Protocol Sniffer**: A versatile engine that detects and handles binary length-prefixed packets (for high-speed data) and plain-text commands (for interactive diagnostics and health checks).
 - **Flexible & Efficient Storage**: High-speed In-Memory mode or `mmap`-backed disk persistence. Features automatic ring-buffer management and "Vacuum" auto-compaction to keep the database lean and fast.
+    - **Resilient Mmap Persistence**: Uses a robust 88-byte header format to store metadata and XXH3 hashes. Features automatic **Re-chaining** logic: if an alert is "backfilled" from the past, the system automatically recalculates and re-signs all subsequent hashes to maintain ledger continuity.
 - **Fast & Lightweight**: Zero-dependency implementation in pure C99/C11 with OpenSSL. Engineered for high concurrency, low latency, and a minimal resource footprint in critical infrastructure.
+    - **XXH3-64 Integration**: Chaining logic uses the ultra-fast XXH3 hashing algorithm (30+ GB/s), ensuring that mathematical integrity checks add zero measurable latency to alert ingestion and replication.
 - **Authorized Message Revocation**: Scheduled tasks can be cancelled before they unlock. The revocation process uses RSA digital signatures to prove ownership to the mesh nodes. Since servers are "blind carriers", only the holder of the private key can authorized the deletion of a message across the entire P2P network.
 
 #### plugins    
