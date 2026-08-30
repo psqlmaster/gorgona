@@ -162,50 +162,49 @@ chmod +x install.sh
 Since GFM manages the failover orchestration, you must ensure PostgreSQL is manually configured for network replication:
 
 1. **Create Replication User (On each Master node):**
-   ```sql
-   CREATE USER repuser WITH REPLICATION PASSWORD 'your_secure_password';
-   ```
-   `REPLICATION` alone is enough for `pg_basebackup`, but `pg_rewind` connects as
-   the same user and additionally needs to read files on the source node. Without
-   these grants every `pg_rewind` fails with
-   `permission denied for function pg_read_binary_file` and `gfm_rebuild.sh`
-   silently falls back to a full `pg_basebackup`:
-   ```sql
-   GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO repuser;
-   GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean) TO repuser;
-   GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO repuser;
-   GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO repuser;
-   ```
+    ```sql
+    CREATE USER repuser WITH REPLICATION PASSWORD 'your_secure_password';
+    ```
+    `REPLICATION` alone is enough for `pg_basebackup`, but `pg_rewind` connects as
+    the same user and additionally needs to read files on the source node. Without
+    these grants every `pg_rewind` fails with
+    `permission denied for function pg_read_binary_file` and `gfm_rebuild.sh`
+    silently falls back to a full `pg_basebackup`:
+    ```sql
+    GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO repuser;
+    GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean) TO repuser;
+    GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO repuser;
+    GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO repuser;
+    ```
 2. **Configure Authentication (`.pgpass`):**
-   The `gfm_rebuild.sh` script requires a `.pgpass` file in the postgres home directory (chmod `0600`):
-   ```text
-   *:5432:*:repuser:your_secure_password
-   ```
+    The `gfm_rebuild.sh` script requires a `.pgpass` file in the postgres home directory (chmod `0600`):
+    ```text
+    *:5432:*:repuser:your_secure_password
+    ```
 3. **Enable Replication (`postgresql.conf`):**
-   Ensure `wal_level = replica` and `wal_log_hints = on` (required for `pg_rewind` self-healing).
+    Ensure `wal_level = replica` and `wal_log_hints = on` (required for `pg_rewind` self-healing).
 4. **Allow Network Access (`pg_hba.conf`):**
    For pg_rewind (cluster self-healing) to succeed, the user “repuser” needs two entries in pg_hba.conf: 
-   ```text
+    ```text
     # Access for pg_rewind to a regular database (SQL) 
     host    postgres        repuser         192.168.1.0/24          scram-sha-256
     # Streaming Access 
     host    replication     repuser         192.168.1.0/24          scram-sha-256
-   ```
-   To confirm
-   ```sql
+    ```
+    To confirm
+    ```sql
     SELECT pg_reload_conf();
-   ```    
-5.
-
-# Add settings for extensions here
-```text
-listen_addresses = '*'
-port = 5433
-wal_level = replica
-max_wal_senders = 10
-max_replication_slots = 10
-wal_log_hints = on
-```
+    ```    
+5. **Add the main settings to the end of the postgres.conf file**
+    ```text
+    # Add the settings for the extensions here 
+    listen_addresses = '*'
+    port = 5433
+    wal_level = replica
+    max_wal_senders = 10
+    max_replication_slots = 10
+    wal_log_hints = on
+    ```
 
 ---
 
@@ -228,32 +227,33 @@ wal_log_hints = on
 
 To verify the cluster's high-availability logic and split-brain prevention, you can simulate a network partition (isolation) on the Master node.
 
-### 1. Simulating Master Node Isolation
+#### 1. Simulating Master Node Isolation
 Run the following command on the **Master node**. It blocks all traffic except SSH for 5 minutes, then automatically restores connectivity:
 
-```bash
-iptables -A INPUT -p tcp --dport 22 -j ACCEPT && \
-iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT && \
-iptables -P INPUT DROP && \
-iptables -P OUTPUT DROP && \
-echo "Node isolated. Rollback in 300s" && \
-sleep 300 && \
-iptables -P INPUT ACCEPT && \
-iptables -P OUTPUT ACCEPT && \
-iptables -F && \
-echo "Network restored"
-```
+    ```bash
+    iptables -A INPUT -p tcp --dport 22 -j ACCEPT && \
+    iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT && \
+    iptables -P INPUT DROP && \
+    iptables -P OUTPUT DROP && \
+    echo "Node isolated. Rollback in 300s" && \
+    sleep 300 && \
+    iptables -P INPUT ACCEPT && \
+    iptables -P OUTPUT ACCEPT && \
+    iptables -F && \
+    echo "Network restored"
+    ```
 
-### 2. Monitoring Cluster Status
+#### 2. Monitoring Cluster Status
 While the test is running, monitor the real-time state of the cluster on any node:
 
-```bash
-# Replace 'pg_prod_5432' with your actual Cluster ID
-watch -n 1 "cat /etc/gorgona/status_pg_prod_5432.json"
-```
+    ```bash
+    # Replace 'pg_prod_5432' with your actual Cluster ID
+    watch -n 1 "cat /etc/gorgona/status_pg_prod_5432.json"
+    ```
 
 ### Expected Behavior
 1. **Master Node**: Within seconds of isolation, the GFM log will report `QUORUM LOST`. The node will initiate "Self-Fencing" by stopping the PostgreSQL service to prevent data inconsistency.
 2. **Standby Nodes**: After the `election_timeout` expires, the healthy nodes will detect the missing leader, verify quorum among themselves, and elect a new Master.
 3. **Recovery**: Once the 300s timer expires and network is restored, the old Master will detect the new leader and automatically trigger the `gfm_rebuild.sh` script to resync its data.
-```   
+```
+
