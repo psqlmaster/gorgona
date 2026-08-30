@@ -47,7 +47,7 @@
 `gorgona` is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, `gorgona` ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing, telemetry transport.).
 The project includes an **Autonomous Intelligent Client** (`gorgona`) that features self-healing connectivity, parallel peer probing (Happy Eyeballs), and a local execution history to guarantee exactly-once processing across a distributed mesh.
 
-The project includes a client (`gorgona`) for generating keys, sending messages, and receiving notifications; a Docker container named `gorgona_stheno` with a web UI; and a server (`gorgonad`) for securely storing and delivering them. It also includes a number of plugins for integration and other purposes.
+The project includes a client (`gorgona`) for key generation, sending messages, and listening for alerts, and a server (`gorgonad`) for securely storing and delivering them.
 
 #### Features
 
@@ -222,7 +222,7 @@ max_clients = 100                                     # Concurrent client connec
 max_log_size = 10                                     # Log rotation size in MB
 log_level = info                                      # info, error, or debug
 max_message_size = 5                                  # Max message size in MB
-use_disk_db = true                                    # Enable mmap-backed persistent storage
+use_disk_db = true                                    # Enable persistent storage (true - tested for production, false - experimental, requires debugging) 
 vacuum_threshold_percent = 50                         # Auto-cleanup threshold for deleted records
 
 [replication]
@@ -1119,4 +1119,5 @@ stop greenplum  = /bin/systemctl stop greenplum
 ---
 
 The end
+
 
