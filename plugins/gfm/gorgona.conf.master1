@@ -5,15 +5,15 @@ port = 7777
 
 [exec_commands:zpPVK9fbEqo=]
 # Управление кластером pg_prod_5432
-pg_cluster_start   = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf start
-pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf stop
-pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf status
-pg_cluster_promote = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf promote
-gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf restart_gfm
-gfm_cluster_health   = /usr/local/bin/gfm_health.sh /etc/gorgona/gfm_pg_prod_5432.conf
-gfm_cluster_switch   = /usr/local/bin/gfm_switchover.sh /etc/gorgona/gfm_pg_prod_5432.conf
+pg_cluster_start   = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf start
+pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf stop
+pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf status
+pg_cluster_promote = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf promote
+gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf restart_gfm
+gfm_cluster_health   = /usr/local/bin/gfm_health.sh /etc/gorgona/gfm_pg_prod1_5432.conf
+gfm_cluster_switch   = /usr/local/bin/gfm_switchover.sh /etc/gorgona/gfm_pg_prod1_5432.conf
 # умный rebuild реплики ip второй ноды необязательный параметр, нужен для начального ребилда
-gfm_cluster_rebuild = /usr/local/bin/gfm_rebuild.sh /etc/gorgona/gfm_pg_prod_5432.conf 192.168.1.171
+gfm_cluster_rebuild = /usr/local/bin/gfm_rebuild.sh /etc/gorgona/gfm_pg_prod1_5432.conf 192.168.1.171
 
 [exec_commands:GU2eTmaMW0E=]
 # Управление кластером pg_prod2_5433

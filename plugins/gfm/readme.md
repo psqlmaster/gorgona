@@ -184,10 +184,28 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
 3. **Enable Replication (`postgresql.conf`):**
    Ensure `wal_level = replica` and `wal_log_hints = on` (required for `pg_rewind` self-healing).
 4. **Allow Network Access (`pg_hba.conf`):**
-   Allow your cluster subnet to connect for replication:
+   For pg_rewind (cluster self-healing) to succeed, the user “repuser” needs two entries in pg_hba.conf: 
    ```text
-   host replication repuser 192.168.1.0/24 scram-sha-256
+    # Access for pg_rewind to a regular database (SQL) 
+    host    postgres        repuser         192.168.1.0/24          scram-sha-256
+    # Streaming Access 
+    host    replication     repuser         192.168.1.0/24          scram-sha-256
    ```
+   To confirm
+   ```sql
+    SELECT pg_reload_conf();
+   ```    
+5.
+
+# Add settings for extensions here
+```text
+listen_addresses = '*'
+port = 5433
+wal_level = replica
+max_wal_senders = 10
+max_replication_slots = 10
+wal_log_hints = on
+```
 
 ---
 
