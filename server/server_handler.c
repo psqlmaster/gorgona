@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <fcntl.h>
+#include <netdb.h>
 
 extern int verbose;
 extern FILE *log_file;
@@ -64,8 +65,8 @@ void cleanup_subscriber(int index) {
     /* [LAYER 2 INTEGRATION] 
      * Identify the peer IP before clearing metadata.
      */
-    char disconnected_ip[INET_ADDRSTRLEN];
-    strncpy(disconnected_ip, subscribers[index].ip_address, INET_ADDRSTRLEN - 1);
+    char disconnected_ip[64];
+    strncpy(disconnected_ip, subscribers[index].ip_address, sizeof(disconnected_ip) - 1);
 
     /* If it was an outgoing party, mark it as inactive in the global list */
     for (int p = 0; p < remote_peer_count; p++) {
@@ -81,7 +82,7 @@ void cleanup_subscriber(int index) {
      * This ensures the Score/Status updates immediately.
      */
     for (int n = 0; n < cluster_node_count; n++) {
-        if (strcmp(cluster_nodes[n].ip, disconnected_ip) == 0) {
+        if (mesh_addr_compare(&cluster_nodes[n], disconnected_ip)) {
             cluster_nodes[n].status = PEER_STATUS_OFFLINE;
             /* Reset volatile metrics so it doesn't stay in priority routing */
             cluster_nodes[n].metrics.gorgona_score = 0.0;
@@ -244,149 +245,83 @@ void free_out_queue(int sub_index) {
     subscribers[sub_index].out_tail = NULL;
 }
 
-/**
- * Dynamic Peer Connector (Progressive Layer 2 Mesh Engine)
- * 
- * This function iterates through the global cluster_nodes table,
- * identifies offline neighbors, and establishes non-blocking connections.
- * Updated: Strict pre-connection check to prevent redundant outgoing links.
- */
 void try_connect_peers() {
     static time_t last_check = 0;
     time_t now = time(NULL);
-
-    /* Enforce reconnection interval to prevent CPU spikes and socket exhaustion */
-    if (now - last_check < PEER_RECONNECT_INTERVAL) {
-        return;
-    }
+    if (now - last_check < PEER_RECONNECT_INTERVAL) return;
     last_check = now;
-
-    /* Loop through ALL known nodes in the Mesh Table (Seeds + PEX discovered) */
     for (int p = 0; p < cluster_node_count; p++) {
         MeshNode *node = &cluster_nodes[p];
-
-        /* 1. Filtering: Skip banned, already connecting, or self-nodes */
-        if (node->status == PEER_STATUS_BANNED || node->status == PEER_STATUS_HANDSHAKE) {
-            continue;
-        }
-
-        /* 2. Port Validation: Don't connect if the listener port is unknown yet */
-        if (node->port <= 0) {
-            continue;
-        }
-
-        /* 3. Anti-Loopback: Avoid connecting to loopback interface */
-        if (strcmp(node->ip, "127.0.0.1") == 0 || strcmp(node->ip, "localhost") == 0) {
-            node->status = PEER_STATUS_BANNED; 
-            continue;
-        }
-
-        /* 
-         * 4. STRICT DUPLICATE CHECK (The Fix)
-         * Before creating a socket, check if we already have ANY connection 
-         * with this IP (either an established one or an incoming one).
-         */
-        bool already_linked = false;
-        for (int i = 0; i < max_clients; i++) {
-            if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, node->ip) == 0) {
-                /* 
-                 * If we find a socket with this IP, we don't start a new outgoing connection.
-                 * We also sync the Mesh Table status to reflect reality.
-                 */
-                already_linked = true;
-                if (subscribers[i].auth_state == AUTH_OK) {
-                    node->status = PEER_STATUS_AUTHENTICATED;
-                }
-                break;
-            }
-        }
-        
-        if (already_linked) {
+        if (node->status == PEER_STATUS_BANNED || node->status == PEER_STATUS_HANDSHAKE) continue;
+        if (node->port <= 0 || node->penalty_until > now) continue;
+        /* --- DNS RESOLUTION & CONNECTION --- */
+        struct addrinfo hints, *res, *rp;
+        char port_str[10];
+        snprintf(port_str, sizeof(port_str), "%d", node->port);
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;       /* Force IPv4 for current core compatibility */
+        hints.ai_socktype = SOCK_STREAM;
+        /* `getaddrinfo` resolves both “gorgon-service.default.svc” and “1.2.3.4” */
+        if (getaddrinfo(node->addr, port_str, &hints, &res) != 0) {
+            node->metrics.fail_count++;
             continue; 
         }
-
-        /* 5. Penalty Check: Skip unstable nodes until they are cleared by GC or penalty expires */
-        if (node->penalty_until > now || node->metrics.fail_count >= PEER_MAX_FAILURES) {
-            continue;
-        }
-
-        /* 6. Socket Initialization */
-        int sd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sd < 0) continue;
-
-        /* Setup Keepalive and Non-blocking mode */
-        set_tcp_keepalive(sd);
-        int flags = fcntl(sd, F_GETFL, 0);
-        if (flags == -1 || fcntl(sd, F_SETFL, flags | O_NONBLOCK) == -1) {
-            close(sd);
-            continue;
-        }
-
-        /* Prepare network address */
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(node->port);
-        
-        if (inet_pton(AF_INET, node->ip, &addr.sin_addr) <= 0) {
-            close(sd);
-            continue;
-        }
-
-        /* 7. Initiate Connection (Non-blocking) */
-        if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            if (errno != EINPROGRESS) {
-                node->metrics.fail_count++;
-                node->status = PEER_STATUS_OFFLINE;
+        int sd = -1;
+        for (rp = res; rp != NULL; rp = rp->ai_next) {
+            sd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+            if (sd == -1) continue;
+            set_tcp_keepalive(sd);
+            fcntl(sd, F_SETFL, fcntl(sd, F_GETFL, 0) | O_NONBLOCK);
+            if (connect(sd, rp->ai_addr, rp->ai_addrlen) < 0) {
+                if (errno != EINPROGRESS) {
+                    close(sd);
+                    sd = -1;
+                    continue;
+                }
+            }
+            /* In fact, the connection was successfully established */
+            char resolved_ip[64];
+            getnameinfo(rp->ai_addr, rp->ai_addrlen, resolved_ip, sizeof(resolved_ip), NULL, 0, NI_NUMERICHOST);
+            /* STRICT DUPLICATE CHECK по резолвленному IP */
+            bool already_linked = false;
+            for (int i = 0; i < max_clients; i++) {
+                if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, resolved_ip) == 0) {
+                    already_linked = true;
+                    break;
+                }
+            }
+            if (already_linked) {
                 close(sd);
+                sd = -1;
                 continue;
             }
-        }
-
-        /* 8. Slot Allocation: Link the socket to a Subscriber slot */
-        int i;
-        for (i = 0; i < max_clients; i++) {
-            if (client_sockets[i] == 0) {
-                client_sockets[i] = sd;
-                
-                Subscriber *sub = &subscribers[i];
-                sub->sock = sd;
-                strncpy(sub->ip_address, node->ip, INET_ADDRSTRLEN - 1);
-                sub->ip_address[INET_ADDRSTRLEN - 1] = '\0';
-                sub->port = node->port;
-                sub->type = SUB_TYPE_PEER;
-                sub->connect_time = now;
-                sub->auth_state = AUTH_SENT;
-                sub->close_after_send = false;
-                
-                /* Reset protocol state machine */
-                sub->read_state = READ_LEN;
-                sub->expected_msg_len = 0;
-                sub->in_pos = 0;
-                if (sub->in_buffer) free(sub->in_buffer);
-                sub->in_buffer = NULL;
-
-                /* Mark node as pending handshake in Mesh Table */
-                node->status = PEER_STATUS_HANDSHAKE;
-
-                /* 9. Send Handshake: L1 PSK Authentication */
-                extern int port; 
-                char auth_msg[256];
-                int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d|%d", 
-                                        sync_psk, max_alerts, max_alert_ttl, port);
-                enqueue_message(i, auth_msg, (size_t)auth_len);
-                
-                if (verbose) {
-                    log_event("DEBUG", sd, sub->ip_address, sub->port, 
-                              "Mesh: Initiating outgoing connection to %s", node->ip);
+            /* We found a slot and reserved it */
+            int i;
+            for (i = 0; i < max_clients; i++) {
+                if (client_sockets[i] == 0) {
+                    client_sockets[i] = sd;
+                    Subscriber *sub = &subscribers[i];
+                    sub->sock = sd;
+                    /* We specifically retain the numeric IP address for logs and PEX */
+                    strncpy(sub->ip_address, resolved_ip, sizeof(sub->ip_address) - 1);
+                    sub->port = node->port;
+                    sub->type = SUB_TYPE_PEER;
+                    sub->auth_state = AUTH_SENT;
+                    sub->node_ptr = node;
+                    node->status = PEER_STATUS_HANDSHAKE;
+                    /* PSK Handshake */
+                    char auth_msg[256];
+                    extern int port;
+                    int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d|%d", 
+                                            sync_psk, max_alerts, max_alert_ttl, port);
+                    enqueue_message(i, auth_msg, (size_t)auth_len);
+                    break;
                 }
-                break;
             }
+            if (i == max_clients) close(sd);
+            break;
         }
-
-        if (i == max_clients) {
-            close(sd);
-        }
+        freeaddrinfo(res);
     }
 }
 
@@ -481,11 +416,11 @@ void run_server(int server_fd) {
                      * We bind a pointer to the mesh node and take the logical port 
                      */
                     int display_port = ntohs(address.sin_port);
-                    subscribers[i].node_ptr = NULL; // По умолчанию
+                    subscribers[i].node_ptr = NULL; 
                     
                     for (int n = 0; n < cluster_node_count; n++) {
-                        if (strcmp(cluster_nodes[n].ip, subscribers[i].ip_address) == 0) {
-                            subscribers[i].node_ptr = &cluster_nodes[n]; // Линковка
+                        if (mesh_addr_compare(&cluster_nodes[n], subscribers[i].ip_address)) { 
+                            subscribers[i].node_ptr = &cluster_nodes[n]; /* Link the subscriber to the mesh node for future reference */
                             if (cluster_nodes[n].port > 0) {
                                 display_port = cluster_nodes[n].port;
                             }
@@ -800,20 +735,25 @@ void run_server(int server_fd) {
                                             mesh_recalculate_scores(); 
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "--- L2 Cluster Topology (Known nodes: %d) ---\n", cluster_node_count);
-                                            
                                             for (int n = 0; n < cluster_node_count && pos < (int)sizeof(status_msg) - 256; n++) {
                                                 MeshNode *node = &cluster_nodes[n];
+                                                /* Формируем строку: Имя (IP если есть) */
+                                                char display_addr[512];
+                                                if (node->resolved_ip[0] != '\0' && strcmp(node->addr, node->resolved_ip) != 0) {
+                                                    snprintf(display_addr, sizeof(display_addr), "%s (%s)", node->addr, node->resolved_ip);
+                                                } else {
+                                                    strncpy(display_addr, node->addr, sizeof(display_addr)-1);
+                                                }
+
                                                 pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
-                                                    "  [%-15s:%-5d] Score: %.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
-                                                    node->ip, node->port, node->metrics.gorgona_score,
+                                                    "  [%-40s:%-5d] Score: %.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
+                                                    display_addr, node->port, node->metrics.gorgona_score,
                                                     node->metrics.last_rtt, node->metrics.rolling_avg_speed / 1024.0,
                                                     node->is_seed ? "SEED" : (node->is_cached ? "CACHE" : "PEX "),
                                                     (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD"); 
                                             }
-                                            
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "-----------------------------------------------------\n");
-
                                             enqueue_text_only(i, status_msg, pos);
                                         }
                                         sub->close_after_send = true;

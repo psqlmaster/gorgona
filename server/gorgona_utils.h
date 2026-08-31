@@ -17,6 +17,7 @@
 #include "alert_chaining.h"
 #include "encrypt.h"
 #include "config.h"
+#include "admin_mesh.h"
 
 #define MODE_LIVE 1
 #define MODE_ALL 2
@@ -26,7 +27,6 @@
 #define MODE_NEW 6
 #define INITIAL_RECIPIENT_CAPACITY 16
 
-#define MAX_PEERS 8
 #define REPL_RING_SIZE 1000
 #define PEER_RECONNECT_INTERVAL 10
 
@@ -56,7 +56,7 @@ typedef struct OutBuffer {
 /* Structure for subscribers */
 typedef struct {
     int sock;
-    char ip_address[INET_ADDRSTRLEN]; 
+    char ip_address[64];   /* Increased for IPv6/resolved IP safety */ 
     int port;
     char pubkey_hash[64]; 
     int mode; 
@@ -75,7 +75,7 @@ typedef struct {
 } Subscriber;
 
 typedef struct {
-    char ip[INET_ADDRSTRLEN];
+    char addr[256];
     int port;
     int sd;             /* Outgoing connection descriptor */
     time_t last_try;    /* Time of the last reconnection attempt */

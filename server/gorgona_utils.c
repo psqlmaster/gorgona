@@ -864,7 +864,7 @@ void run_global_maintenance(void) {
             if (cluster_nodes[n].status == PEER_STATUS_AUTHENTICATED && cluster_nodes[n].last_seen > (now - 300)) {
                 if (p_len < (int)sizeof(pex_payload) - 64) {
                     p_len += snprintf(pex_payload + p_len, sizeof(pex_payload) - p_len,
-                                     "%s:%d|", cluster_nodes[n].ip, cluster_nodes[n].port);
+                                     "%s:%d|", cluster_nodes[n].addr, cluster_nodes[n].port);
                     neighbors_count++;
                 }
             }

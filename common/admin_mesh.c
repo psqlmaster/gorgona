@@ -23,12 +23,58 @@ MeshNode cluster_nodes[MAX_PEERS * 4];
 int cluster_node_count = 0;
 bool mesh_force_save = false; 
 
+/**
+ * Вспомогательная функция для обновления кэша IP узла.
+ * Вызывается при добавлении узла или периодически.
+ */
+void mesh_resolve_node(MeshNode *n) {
+    if (!n || n->addr[0] == '\0') return;
+
+    /* Очищаем старый кэш */
+    memset(n->resolved_ip, 0, sizeof(n->resolved_ip));
+
+    /* [FIX] inet_pton ОБЯЗАТЕЛЬНО требует буфер для записи результата */
+    struct in_addr tmp_addr;
+    if (inet_pton(AF_INET, n->addr, &tmp_addr) == 1) {
+        /* Если это IP, просто копируем его в кэш и выходим */
+        strncpy(n->resolved_ip, n->addr, sizeof(n->resolved_ip) - 1);
+        return;
+    }
+
+    /* Если это не IP, значит это FQDN (DNS имя) — идем в getaddrinfo */
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(n->addr, NULL, &hints, &res) == 0) {
+        if (res && res->ai_addr) {
+            getnameinfo(res->ai_addr, res->ai_addrlen, n->resolved_ip, 
+                        sizeof(n->resolved_ip), NULL, 0, NI_NUMERICHOST);
+        }
+        freeaddrinfo(res);
+    }
+}
+
+/**
+ * Теперь это МГНОВЕННАЯ функция без сетевых запросов.
+ */
+bool mesh_addr_compare(MeshNode *n, const char *phys_ip) {
+    if (!n || !phys_ip) return false;
+    /* 1. Сравнение с логическим адресом */
+    if (strcmp(n->addr, phys_ip) == 0) return true;
+    /* 2. Сравнение с закэшированным IP */
+    if (n->resolved_ip[0] != '\0' && strcmp(n->resolved_ip, phys_ip) == 0) return true;
+    return false;
+}
+
 void mesh_init(const char *psk) {
     SHA256((const unsigned char*)psk, strlen(psk), mgmt_key);
-    log_event("INFO", -1, NULL, 0, "Layer 2 Mesh: Init successful (Key derived from PSK)");
-    if (verbose) {
-        printf("DEBUG: Mesh key initialized, cluster slots available: %d\n", MAX_PEERS * 4);
+    /* Резолвим все статические ноды из конфига при старте */
+    for (int i = 0; i < cluster_node_count; i++) {
+        mesh_resolve_node(&cluster_nodes[i]);
     }
+    log_event("INFO", -1, NULL, 0, "Layer 2 Mesh: Init successful");
 }
 
 void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac) {
@@ -82,17 +128,15 @@ void mesh_recalculate_scores() {
 void mesh_update_speed(const char *ip, size_t bytes, double seconds) {
     if (seconds < 0.000001) seconds = 0.000001;
     for (int i = 0; i < cluster_node_count; i++) {
-        if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+        /* [FIX] Передаем указатель на узел &cluster_nodes[i] */
+        if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             MeshMetrics *m = &cluster_nodes[i].metrics;
             m->window_bytes += bytes;
             m->window_time += seconds;
             if (m->window_bytes >= 262144 || m->window_time >= 0.5) {
                 double current_sample = (double)m->window_bytes / m->window_time;
-                if (m->rolling_avg_speed < 1.0) {
-                    m->rolling_avg_speed = current_sample;
-                } else {
-                    m->rolling_avg_speed = (m->rolling_avg_speed * 0.7) + (current_sample * 0.3);
-                }
+                m->rolling_avg_speed = (m->rolling_avg_speed < 1.0) ? 
+                                        current_sample : (m->rolling_avg_speed * 0.7) + (current_sample * 0.3);
                 m->window_bytes = 0;
                 m->window_time = 0;
             }
@@ -105,12 +149,12 @@ void mesh_update_speed(const char *ip, size_t bytes, double seconds) {
 
 void mesh_update_rtt(const char *ip, double rtt_ms) {
     for (int i = 0; i < cluster_node_count; i++) {
-        if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+        /* [FIX] Передаем указатель на узел &cluster_nodes[i] */
+        if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             cluster_nodes[i].metrics.last_rtt = rtt_ms;
             cluster_nodes[i].last_seen = time(NULL);
             cluster_nodes[i].metrics.last_success = time(NULL);
             cluster_nodes[i].metrics.fail_count = 0;
-            /* Если мы получили PONG - нода жива и проверена */
             cluster_nodes[i].status = PEER_STATUS_AUTHENTICATED;
             return;
         }
@@ -149,7 +193,7 @@ void mesh_run_garbage_collector() {
             evict = true;
         }
         if (evict) {
-            log_event("INFO", -1, n->ip, n->port, "Layer 2 GC: Removing %s node from memory", 
+            log_event("INFO", -1, n->addr, n->port, "Layer 2 GC: Removing %s node from memory", 
                       n->is_cached ? "stale CACHED" : "unresponsive PEX");
             if (i < cluster_node_count - 1) 
                 memcpy(&cluster_nodes[i], &cluster_nodes[cluster_node_count - 1], sizeof(MeshNode));
@@ -195,83 +239,48 @@ static bool is_local_ip(const char *ip) {
 
 /**
  * Ingests cluster topology lists from neighbors (Peer Exchange - PEX).
- * Enhanced with Self-Filtering to ensure a clean global map.
- * 
- * @param payload The raw string of nodes (IP:PORT|IP:PORT...)
- * @param sender_ip The IP address of the peer who sent this list (used as an extra self-check)
+ * Now fully DNS-aware and FQDN compatible.
  */
 void mesh_discover_nodes(const char *payload, const char *sender_ip) {
     if (!payload) return;
-    
     char *copy = strdup(payload);
     if (!copy) return;
-
     char *token = strtok(copy, "|");
     while (token) {
         char *colon = strchr(token, ':');
-        if (!colon) { 
-            /* This might be the reported port part "PEX_LIST|PORT|...", skip it */
-            token = strtok(NULL, "|"); 
-            continue; 
-        }
+        if (colon) { 
+            *colon = '\0';
+            char *ip = token; 
+            int p = atoi(colon + 1);
 
-        *colon = '\0';
-        char *ip = token; 
-        int p = atoi(colon + 1);
+            if (is_local_ip(ip)) { token = strtok(NULL, "|"); continue; }
+            if (sender_ip && strcmp(ip, sender_ip) == 0) { token = strtok(NULL, "|"); continue; }
 
-        /* --- INTELLIGENT FILTERING --- */
-        
-        /* 1. Skip if it's a loopback or one of our own physical IP addresses */
-        if (is_local_ip(ip)) {
-            token = strtok(NULL, "|");
-            continue;
-        }
-
-        /* 2. Skip if the IP matches how the sender sees us (useful behind NAT) */
-        if (sender_ip && strcmp(ip, sender_ip) == 0) {
-            token = strtok(NULL, "|");
-            continue;
-        }
-
-        /* --- TABLE MANAGEMENT --- */
-        
-        bool found = false;
-        for (int i = 0; i < cluster_node_count; i++) {
-            if (strcmp(cluster_nodes[i].ip, ip) == 0) {
-                /* Found existing entry: Update listener port if it changed */
-                if (cluster_nodes[i].port != p && p > 0) {
-                    cluster_nodes[i].port = p;
+            bool found = false;
+            for (int i = 0; i < cluster_node_count; i++) {
+                /* [FIX] Передаем указатель на узел */
+                if (mesh_addr_compare(&cluster_nodes[i], ip)) {
+                    if (cluster_nodes[i].port != p && p > 0) cluster_nodes[i].port = p;
+                    cluster_nodes[i].last_seen = time(NULL);
+                    found = true; 
+                    break;
                 }
-                /* Update activity timestamp */
-                cluster_nodes[i].last_seen = time(NULL);
-                found = true; 
-                break;
+            }
+
+            if (!found && cluster_node_count < CLUSTER_MAX_NODES) {
+                MeshNode *n = &cluster_nodes[cluster_node_count++];
+                memset(n, 0, sizeof(MeshNode));
+                strncpy(n->addr, ip, sizeof(n->addr) - 1);
+                n->port = p;
+                mesh_resolve_node(n); /* [NEW] Сразу резолвим для кэша IP Pinning */
+                n->discovered_at = time(NULL);
+                n->last_seen = time(NULL);
+                n->status = PEER_STATUS_OFFLINE;
+                if (mesh_force_save) mesh_save_peers_cache();
             }
         }
-
-        /* 3. Add as a new mesh member if not already in the table */
-        if (!found && cluster_node_count < (MAX_PEERS * 4)) {
-            MeshNode *n = &cluster_nodes[cluster_node_count++];
-            memset(n, 0, sizeof(MeshNode));
-            
-            strncpy(n->ip, ip, INET_ADDRSTRLEN - 1);
-            n->ip[INET_ADDRSTRLEN - 1] = '\0';
-            n->port = p;
-            n->discovered_at = time(NULL);
-            n->last_seen = time(NULL);
-            n->status = PEER_STATUS_OFFLINE;
-            n->is_seed = false; /* PEX discovered nodes are dynamic */
-            
-            log_event("INFO", -1, ip, p, "L2 Mesh: New neighbor discovered via gossip");
-
-            if (mesh_force_save) {
-                mesh_save_peers_cache();
-            }
-        }
-
         token = strtok(NULL, "|");
     }
-
     free(copy);
 }
 
@@ -306,17 +315,13 @@ uint8_t* mesh_decrypt(const uint8_t *cipher, int len, const uint8_t *iv, const u
 /* Error logging function (to be called if connect/auth fails) */
 void mesh_mark_node_bad(const char *ip) {
     for (int i = 0; i < cluster_node_count; i++) {
-        if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+        /* [FIX] Используем умное сравнение для согласованности */
+        if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             cluster_nodes[i].status = PEER_STATUS_OFFLINE;
             cluster_nodes[i].consecutive_fails++;
-            /* Exponential backoff: 30 seconds, 60 seconds, 120 seconds... up to 1 hour */
             int delay = 30 * (1 << (cluster_nodes[i].consecutive_fails - 1));
             if (delay > 3600) delay = 3600; 
             cluster_nodes[i].penalty_until = time(NULL) + delay;
-            if (verbose) {
-                printf("Mesh: Node %s penalized for %d seconds (Fail #%d)\n", 
-                       ip, delay, cluster_nodes[i].consecutive_fails);
-            }
             return;
         }
     }
@@ -325,7 +330,7 @@ void mesh_mark_node_bad(const char *ip) {
 /* Penalty Waived in Case of Success */
 void mesh_mark_node_good(const char *ip) {
     for (int i = 0; i < cluster_node_count; i++) {
-        if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+        if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             cluster_nodes[i].consecutive_fails = 0;
             cluster_nodes[i].penalty_until = 0;
             cluster_nodes[i].status = PEER_STATUS_AUTHENTICATED;
@@ -352,7 +357,7 @@ const char* mesh_get_best_peer_ip() {
             }
         }
     }
-    if (best_idx != -1) return cluster_nodes[best_idx].ip;
+    if (best_idx != -1) return cluster_nodes[best_idx].addr;
     return NULL;
 }
 
@@ -406,7 +411,7 @@ void mesh_save_peers_cache() {
         }
 
         if (should_write) {
-            fprintf(fp, "%s:%d\n", n->ip, n->port);
+            fprintf(fp, "%s:%d\n", n->addr, n->port);
             saved++;
         }
     }
@@ -430,7 +435,6 @@ void mesh_load_peers_cache() {
     while (fgets(line, sizeof(line), fp)) {
         trim_string(line);
         if (strlen(line) == 0) continue;
-
         char *colon = strchr(line, ':');
         if (!colon) continue;
         *colon = '\0';
@@ -439,7 +443,7 @@ void mesh_load_peers_cache() {
 
         bool exists = false;
         for (int i = 0; i < cluster_node_count; i++) {
-            if (strcmp(cluster_nodes[i].ip, ip) == 0) {
+            if (mesh_addr_compare(&cluster_nodes[i], ip)) {
                 exists = true; break;
             }
         }
@@ -447,10 +451,9 @@ void mesh_load_peers_cache() {
         if (!exists && cluster_node_count < (MAX_PEERS * 4)) {
             MeshNode *n = &cluster_nodes[cluster_node_count++];
             memset(n, 0, sizeof(MeshNode));
-            strncpy(n->ip, ip, INET_ADDRSTRLEN - 1);
+            strncpy(n->addr, ip, sizeof(n->addr) - 1);
             n->port = port;
-            n->is_seed = false;
-            n->is_cached = true; /* Помечаем как КЭШ */
+            mesh_resolve_node(n);
             n->status = PEER_STATUS_OFFLINE;
             n->last_seen = time(NULL);
             n->discovered_at = time(NULL);
@@ -458,14 +461,11 @@ void mesh_load_peers_cache() {
         }
     }
     fclose(fp);
-    if (loaded > 0) {
-        log_event("INFO", -1, NULL, 0, "Mesh: Bootstrapped from cache (%d nodes as temporary seeds)", loaded);
-    }
 }
 
 int mesh_get_logical_port_by_ip(const char *ip) {
     for (int n = 0; n < cluster_node_count; n++) {
-        if (strcmp(cluster_nodes[n].ip, ip) == 0) {
+        if (mesh_addr_compare(&cluster_nodes[n], ip)) {
             return cluster_nodes[n].port;
         }
     }

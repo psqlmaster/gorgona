@@ -686,116 +686,89 @@ static void process_mgmt_frame(int sub_index, char *frame) {
     uint8_t *plain = mesh_decrypt(payload, (int)p_len, iv, tag, &decrypted_len);
     
     if (plain) {
-        /* [SAFE TOKENIZATION] */
         char *plain_copy = strdup((char*)plain);
+        if (!plain_copy) { free(plain); goto cleanup_dec; }
+
         char *cmd = strtok(plain_copy, "|");
-        char *val1 = strtok(NULL, "|"); // PING/PONG: TS | PEX: reported_port
-        char *val2 = strtok(NULL, "|"); // PING/PONG: reported_port | PEX: first IP:PORT
-        char *val3 = strtok(NULL, "|"); // PING/PONG: remote_max_id 
+        if (!cmd) { free(plain_copy); free(plain); goto cleanup_dec; }
+
+        char *val1 = strtok(NULL, "|");
+        char *val2 = strtok(NULL, "|");
+        char *val3 = strtok(NULL, "|");
 
         int reported_port = 0;
         uint64_t remote_max_id = 0;
 
-        if (cmd) {
-            if (strcmp(cmd, "PING") == 0 || strcmp(cmd, "PONG") == 0) {
-                if (val2) reported_port = atoi(val2);
-                if (val3) remote_max_id = strtoull(val3, NULL, 10);
-            } else if (strcmp(cmd, "PEX_LIST") == 0) {
-                if (val1) reported_port = atoi(val1);
-            }
+        /* [FIX] Правильное распределение полей для разных команд */
+        if (strcmp(cmd, "PING") == 0 || strcmp(cmd, "PONG") == 0) {
+            if (val2) reported_port = atoi(val2);    /* В PING/PONG порт во 2-м поле */
+            if (val3) remote_max_id = strtoull(val3, NULL, 10);
+        } 
+        else if (strcmp(cmd, "PEX_LIST") == 0) {
+            if (val1) reported_port = atoi(val1);    /* В PEX_LIST порт в 1-м поле */
         }
 
-        /* [ANTI-ENTROPY CORE] */
+        /* [ANTI-ENTROPY] */
         uint64_t my_max_id = get_max_alert_id();
-        bool is_fresh_connection = (sub->auth_state == 99);
-
-        if (is_fresh_connection || (remote_max_id > my_max_id)) {
-            if (is_fresh_connection) {
-                sub->auth_state = AUTH_OK;
-                log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [Mesh Peer via L2]");
-            }
-
+        if (remote_max_id > my_max_id) {
             char sync_req[64];
-            int s_len = snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max_id);
-            enqueue_message(sub_index, sync_req, (size_t)s_len);
-            
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                      "Anti-Entropy: %s sync triggered (Remote: %" PRIu64 ", Local: %" PRIu64 ")", 
-                      is_fresh_connection ? "Initial" : "Delta", remote_max_id, my_max_id);
+            snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max_id);
+            enqueue_message(sub_index, sync_req, strlen(sync_req));
         }
 
         /* [MESH TOPOLOGY UPDATE] */
         bool exists = false;
         for (int n = 0; n < cluster_node_count; n++) {
-            if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
+            if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) {
                 exists = true;
+                /* Обновляем порт только если он валидный */
                 if (reported_port > 0 && reported_port < 65535) {
                     cluster_nodes[n].port = reported_port;
-                    /* SYNC PORT IN SUBSCRIBER STRUCT FOR CLEAN LOGS */
                     sub->port = reported_port; 
                 }
                 cluster_nodes[n].last_seen = time(NULL);
                 cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
+                sub->node_ptr = &cluster_nodes[n];
                 break;
             }
         }
 
-        /* Silent Auto-discovery if node is unknown */
-        if (!exists && cluster_node_count < (MAX_PEERS * 4)) {
+        /* Если узла нет — создаем */
+        if (!exists && cluster_node_count < CLUSTER_MAX_NODES) {
             MeshNode *n = &cluster_nodes[cluster_node_count++];
             memset(n, 0, sizeof(MeshNode));
-            strncpy(n->ip, sub->ip_address, INET_ADDRSTRLEN - 1);
+            strncpy(n->addr, sub->ip_address, sizeof(n->addr) - 1);
             n->port = (reported_port > 0) ? reported_port : sub->port;
-            
-            /* SYNC PORT IN SUBSCRIBER STRUCT FOR CLEAN LOGS */
-            if (reported_port > 0) sub->port = reported_port;
-
-            n->discovered_at = time(NULL);
-            n->last_seen = time(NULL);
+            mesh_resolve_node(n);
             n->status = PEER_STATUS_AUTHENTICATED;
-            log_event("INFO", sub->sock, sub->ip_address, sub->port, "L2 Mesh: Dynamic join via encrypted MGMT traffic");
+            n->last_seen = time(NULL);
+            sub->node_ptr = n;
         }
 
-        /* [COMMAND HANDLING] */
-        if (cmd && strcmp(cmd, "PING") == 0) {
-            char pong[128];
-            extern int port;
+        /* [DISPATCH COMMANDS] */
+        if (strcmp(cmd, "PING") == 0) {
+            char pong[128]; extern int port;
             snprintf(pong, sizeof(pong), "PONG|%s|%d|%" PRIu64, val1 ? val1 : "0", port, my_max_id);
             send_mgmt_command(sub_index, pong);
         }
-        else if (cmd && strcmp(cmd, "PONG") == 0) {
-            uint64_t ts = val1 ? strtoull(val1, NULL, 10) : 0;
+        else if (strcmp(cmd, "PONG") == 0 && val1) {
             struct timeval now_tv; gettimeofday(&now_tv, NULL);
             uint64_t now_ms = (uint64_t)now_tv.tv_sec * 1000 + (now_tv.tv_usec / 1000);
-            mesh_update_rtt(sub->ip_address, (double)(now_ms - ts));
+            mesh_update_rtt(sub->ip_address, (double)(now_ms - strtoull(val1, NULL, 10)));
         }
-        else if (cmd && strcmp(cmd, "PEX_LIST") == 0) {
-            char *list_start = strchr((char*)plain + 9, '|');
-            if (list_start) mesh_discover_nodes(list_start + 1, sub->ip_address);
-        }
-
-        if (strncmp((char*)plain, "MAXID_NUDGE|", 12) == 0) {
-            uint64_t remote_max = strtoull((char*)plain + 12, NULL, 10);
-            uint64_t my_local_max = get_max_alert_id();
-
-            if (remote_max > my_local_max) {
-                char sync_req[64];
-                snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_local_max);
-                enqueue_message(sub_index, sync_req, strlen(sync_req));
-                
-                if (verbose) {
-                    log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                              "Event-driven SYNC triggered by NUDGE (Remote ID: %" PRIu64 ")", remote_max);
-                }
-            }
+        else if (strcmp(cmd, "PEX_LIST") == 0) {
+            /* Передаем только часть со списком IP:PORT */
+            /* Т.к. мы уже сделали strtok для cmd и val1, нужно найти начало списка */
+            char *list_ptr = (char*)plain + strlen(cmd) + 1;
+            if (val1) list_ptr += strlen(val1) + 1;
+            mesh_discover_nodes(list_ptr, sub->ip_address);
         }
 
         free(plain_copy);
         free(plain);
-    } else {
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "L2: Management Frame decryption failed");
     }
-    
+
+cleanup_dec:
     if (iv) free(iv);
     if (tag) free(tag);
     if (payload) free(payload);
@@ -1047,9 +1020,10 @@ void handle_command(int sub_index, char *buffer) {
         sub->auth_state = AUTH_OK;
         
         for (int n = 0; n < cluster_node_count; n++) {
-            if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
+            if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) { 
                 cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
                 cluster_nodes[n].last_seen = time(NULL);
+                sub->node_ptr = &cluster_nodes[n];
                 break;
             }
         }
@@ -1104,8 +1078,9 @@ void handle_command(int sub_index, char *buffer) {
         process_auth(sub_index, buffer);
         if (sub->auth_state == AUTH_OK) {
             for (int n = 0; n < cluster_node_count; n++) {
-                if (strcmp(cluster_nodes[n].ip, sub->ip_address) == 0) {
+                if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) { 
                     cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
+                    sub->node_ptr = &cluster_nodes[n];
                     break;
                 }
             }

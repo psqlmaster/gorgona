@@ -54,7 +54,8 @@ typedef struct {
 
 /* Shared Mesh Node structure */
 typedef struct MeshNode {
-    char ip[INET_ADDRSTRLEN];
+    char addr[256];             /* Stores FQDN or IP */ 
+    char resolved_ip[64];
     int port;
     bool is_seed;               /* Hardcoded in config */
     bool is_cached;             /* Loaded from peers.cache */
@@ -81,11 +82,13 @@ extern int verbose;
 
 /* Core Lifecycle */
 void mesh_init(const char *psk);
+void mesh_resolve_node(MeshNode *n);
 void mesh_run_garbage_collector(void);
 void mesh_discover_nodes(const char *payload, const char *sender_ip);
 
 /* Scoring & Performance */
 void mesh_recalculate_scores(void);
+bool mesh_addr_compare(MeshNode *n, const char *phys_ip);
 void mesh_update_speed(const char *ip, size_t bytes, double seconds);
 void mesh_update_rtt(const char *ip, double rtt_ms);
 const char* mesh_get_best_peer_ip(void);

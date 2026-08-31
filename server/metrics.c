@@ -121,10 +121,10 @@ static int build_prometheus_payload(char *buf, size_t max_len) {
             "gorgona_peer_rtt_milliseconds{target=\"%s\"} %.2f\n"
             "gorgona_peer_score{target=\"%s\"} %.2f\n"
             "gorgona_peer_speed_bps{target=\"%s\"} %.0f\n",
-            n->ip, origin, state,
-            n->ip, n->metrics.last_rtt,
-            n->ip, n->metrics.gorgona_score,
-            n->ip, n->metrics.rolling_avg_speed);
+            n->addr, origin, state,
+            n->addr, n->metrics.last_rtt,
+            n->addr, n->metrics.gorgona_score,
+            n->addr, n->metrics.rolling_avg_speed);
         
         /* Response buffer overflow protection */
         if (pos > (int)max_len - 512) break;

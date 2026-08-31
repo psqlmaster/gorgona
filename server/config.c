@@ -162,31 +162,27 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
                 sync_psk[sizeof(sync_psk) - 1] = '\0';
             } 
             else if (strcmp(key, "peer") == 0) {
-                /* Peer format: IP:PORT (e.g., 127.0.0.1:7777) */
                 char *colon = strchr(value, ':');
                 if (colon) {
-                    *colon = '\0'; /* 'value' is now IP, 'colon + 1' is port string */
+                    *colon = '\0'; 
                     int p_port = atoi(colon + 1);
 
-                    /* 1. Initialize node in the Mesh table (Layer 2) */
+                    /* 1. Layer 2 Mesh Table */
                     if (cluster_node_count < (MAX_PEERS * 4)) {
                         MeshNode *n = &cluster_nodes[cluster_node_count++];
                         memset(n, 0, sizeof(MeshNode));
-                        
-                        strncpy(n->ip, value, INET_ADDRSTRLEN - 1);
+                        /* Copy the entire FQDN or IP address */
+                        strncpy(n->addr, value, sizeof(n->addr) - 1);
+                        n->addr[sizeof(n->addr) - 1] = '\0';
                         n->port = p_port;
-                        n->is_seed = true;            /* Seed nodes are the backbone */
+                        n->is_seed = true;
                         n->status = PEER_STATUS_OFFLINE;
                         n->discovered_at = time(NULL); 
                         n->last_seen = time(NULL);
-                        
-                        if (verbose) {
-                            printf("Config: Added seed node %s:%d to Layer 2 table\n", n->ip, n->port);
-                        }
                     }
-                    /* 2. Keep in legacy array for compatibility (older connection loops) */
+                    /* 2. Legacy PeerConfig array */
                     if (remote_peer_count < MAX_PEERS) {
-                        strncpy(remote_peers[remote_peer_count].ip, value, INET_ADDRSTRLEN - 1);
+                        strncpy(remote_peers[remote_peer_count].addr, value, sizeof(remote_peers[remote_peer_count].addr) - 1);
                         remote_peers[remote_peer_count].port = p_port;
                         remote_peers[remote_peer_count].sd = -1;
                         remote_peers[remote_peer_count].active = false;
