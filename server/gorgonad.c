@@ -187,9 +187,9 @@ int main(int argc, char *argv[]) {
      * After opening the file, all subsequent logs must use log_event().
      */
     if (log_file == NULL) {
-        log_file = fopen("gorgonad.log", "a");
+        log_file = fopen(gorgonad_log_path(), "a");
         if (!log_file) {
-            perror("Failed to open gorgonad.log");
+            perror(gorgonad_log_path());
             exit(EXIT_FAILURE);
         } else {
             /* Log rotation is handled internally by log_event() */

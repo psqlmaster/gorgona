@@ -91,6 +91,7 @@ typedef struct {
 
 /* Global variables */
 extern FILE *log_file;
+const char *gorgonad_log_path(void);
 extern Recipient *recipients;
 extern int recipient_count;
 extern int recipient_capacity;
