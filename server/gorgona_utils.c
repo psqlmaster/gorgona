@@ -646,13 +646,27 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
     }
 }
 
+/*
+ * Log destination. Defaults to the historical relative path, so nothing changes
+ * for existing installs; set gorgonad_LOG_FILE to pin it to an absolute path
+ * (mirrors gorgona_LOG_FILE on the client side).
+ */
+const char *gorgonad_log_path(void) {
+    const char *path = getenv("gorgonad_LOG_FILE");
+    return (path && *path) ? path : "gorgonad.log";
+}
+
 void rotate_log() {
     time_t now = time(NULL);
     if (now - last_rotation_check < 5) return;
     last_rotation_check = now;
 
+    const char *path = gorgonad_log_path();
+    char rotated[512];
+    snprintf(rotated, sizeof(rotated), "%s.1", path);
+
     struct stat st;
-    if (stat("gorgonad.log", &st) == 0 && (size_t)st.st_size > max_log_size) {
+    if (stat(path, &st) == 0 && (size_t)st.st_size > max_log_size) {
         if (log_file) {
             char time_str[32];
             get_utc_time_str(time_str, sizeof(time_str));
@@ -660,8 +674,8 @@ void rotate_log() {
             fflush(log_file);
             fclose(log_file);
         }
-        rename("gorgonad.log", "gorgonad.log.1");
-        log_file = fopen("gorgonad.log", "a");
+        rename(path, rotated);
+        log_file = fopen(path, "a");
         if (!log_file) {
             perror("Failed to open new log file");
         }
