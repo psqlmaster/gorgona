@@ -7,8 +7,8 @@
 # --- Version Extraction Logic ---
 # Extracts numeric version from tags. Defaults to 0.0.0 if no tags match.
 # ==============================================================================
-CLIENT_VER := $(shell git describe --tags --match "gorgona-v*" --abbrev=0 2>/dev/null | sed 's/gorgona-v//' || echo "0.0.0")
-SERVER_VER := $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/dev/null | sed 's/gorgonad-v//' || echo "0.0.0")
+CLIENT_VER := $(or $(shell git describe --tags --match "gorgona-v*" --abbrev=0 2>/dev/null | sed 's/gorgona-v//'),0.0.0)
+SERVER_VER := $(or $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/dev/null | sed 's/gorgonad-v//'),0.0.0)
 
 # --- Toolchain & Flags ---
 CC      := gcc
