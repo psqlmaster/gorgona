@@ -45,42 +45,62 @@ int check_key_files(int verbose) {
 /* Generates an RSA key pair and renames them based on their hash */
 int generate_rsa_keys(int verbose) {
     EVP_PKEY *pkey = NULL;
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!ctx || EVP_PKEY_keygen_init(ctx) <= 0) {
-        fprintf(stderr, "Не удалось инициализировать генерацию ключа: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
+    char *pubkey_hash_b64 = NULL;
 
-    if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
-        fprintf(stderr, "Не удалось установить размер ключа RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
+    while (1) {
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+        if (!ctx || EVP_PKEY_keygen_init(ctx) <= 0) {
+            fprintf(stderr, "Failed to initialize key generation: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            if (ctx) EVP_PKEY_CTX_free(ctx);
+            return -1;
+        }
 
-    if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
-        fprintf(stderr, "Не удалось сгенерировать ключ RSA: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        EVP_PKEY_CTX_free(ctx);
-        return -1;
-    }
-    EVP_PKEY_CTX_free(ctx);
+        if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
+            fprintf(stderr, "Unable to determine the RSA key size: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            EVP_PKEY_CTX_free(ctx);
+            return -1;
+        }
 
-    /* Calculating the hash of the public key */
-    size_t hash_len;
-    unsigned char *pubkey_hash = compute_pubkey_hash(pkey, &hash_len, verbose);
-    if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
-        fprintf(stderr, "Не удалось вычислить хеш публичного ключа\n");
-        EVP_PKEY_free(pkey);
+        if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+            fprintf(stderr, "Unable to generate an RSA key: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            EVP_PKEY_CTX_free(ctx);
+            return -1;
+        }
+        EVP_PKEY_CTX_free(ctx);
+
+        /* Calculating the hash of the public key */
+        size_t hash_len;
+        unsigned char *pubkey_hash = compute_pubkey_hash(pkey, &hash_len, verbose);
+        if (!pubkey_hash || hash_len != PUBKEY_HASH_LEN) {
+            fprintf(stderr, "Unable to calculate the hash of the public key\n");
+            free(pubkey_hash);
+            EVP_PKEY_free(pkey);
+            return -1;
+        }
+
+        pubkey_hash_b64 = base64_encode(pubkey_hash, hash_len);
         free(pubkey_hash);
-        return -1;
-    }
+        if (!pubkey_hash_b64) {
+            fprintf(stderr, "Failed to encode the public key hash\n");
+            EVP_PKEY_free(pkey);
+            return -1;
+        }
 
-    char *pubkey_hash_b64 = base64_encode(pubkey_hash, hash_len);
-    free(pubkey_hash);
-    if (!pubkey_hash_b64) {
-        fprintf(stderr, "Не удалось закодировать хеш публичного ключа\n");
-        EVP_PKEY_free(pkey);
-        return -1;
+        /*
+         * Check for characters that are invalid or undesirable in file names.
+         * If the hash contains '/' (path) or '+' (CLI/URL issues), regenerate it.
+         */
+        if (strchr(pubkey_hash_b64, '/') || strchr(pubkey_hash_b64, '+')) {
+            if (verbose) {
+                printf("Hash %s contains invalid characters ('/' or '+'), retrying...\n", pubkey_hash_b64);
+            }
+            free(pubkey_hash_b64);
+            pubkey_hash_b64 = NULL;
+            EVP_PKEY_free(pkey);
+            pkey = NULL;
+            continue;
+        }
+        break;
     }
 
     /* Saving the keys */
