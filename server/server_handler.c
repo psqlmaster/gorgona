@@ -258,7 +258,7 @@ void try_connect_peers() {
         if (node->port <= 0 || node->penalty_until > now) continue;
         /* --- DNS RESOLUTION & CONNECTION --- */
         struct addrinfo hints, *res, *rp;
-        char port_str[10];
+        char port_str[12];
         snprintf(port_str, sizeof(port_str), "%d", node->port);
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;       /* Force IPv4 for current core compatibility */
@@ -769,11 +769,11 @@ void run_server(int server_fd) {
                                             for (int n = 0; n < cluster_node_count && pos < (int)sizeof(status_msg) - 256; n++) {
                                                 MeshNode *node = &cluster_nodes[n];
                                                 /* Формируем строку: Имя (IP если есть) */
-                                                char display_addr[512];
+                                                char display_addr[1024];
                                                 if (node->resolved_ip[0] != '\0' && strcmp(node->addr, node->resolved_ip) != 0) {
-                                                    snprintf(display_addr, sizeof(display_addr), "%s (%s)", node->addr, node->resolved_ip);
+                                                    snprintf(display_addr, sizeof(display_addr), "%.500s (%.500s)", node->addr, node->resolved_ip); 
                                                 } else {
-                                                    strncpy(display_addr, node->addr, sizeof(display_addr)-1);
+                                                    snprintf(display_addr, sizeof(display_addr), "%.1023s", node->addr); 
                                                 }
 
                                                 pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
