@@ -15,6 +15,30 @@
 #include "admin_mesh.h"
 #include "alert_db.h"
 
+/* When an authorization packet (AUTH or AUTH_SUCCESS) arrives, we need to find the best entry in the table for that IP address */
+MeshNode* mesh_find_and_merge(const char *ip) {
+    int seed_idx = -1;
+    int pex_idx = -1;
+    for (int i = 0; i < cluster_node_count; i++) {
+        if (mesh_addr_compare(&cluster_nodes[i], ip)) {
+            if (cluster_nodes[i].is_seed) seed_idx = i;
+            else pex_idx = i;
+        }
+    }
+    /* If you find a SEED, that's the priority */
+    if (seed_idx != -1) {
+        /* If there was a temporary PEX entry, we mark it for deletion (via GC)
+           or simply deactivate it so it doesn't interfere with the status */
+        if (pex_idx != -1) {
+            cluster_nodes[pex_idx].status = PEER_STATUS_BANNED;
+            cluster_nodes[pex_idx].metrics.gorgona_score = -1.0;
+        }
+        return &cluster_nodes[seed_idx];
+    }
+    if (pex_idx != -1) return &cluster_nodes[pex_idx];
+    return NULL;
+}
+
 static void process_get_chain_sample(int i, char *buffer) {
     char *copy = strdup(buffer + 17); /* Skip "GET_CHAIN_SAMPLE|" */
     char *hash_b64 = strtok(copy, "|");
@@ -718,22 +742,20 @@ static void process_mgmt_frame(int sub_index, char *frame) {
 
         /* [MESH TOPOLOGY UPDATE] */
         bool exists = false;
-        for (int n = 0; n < cluster_node_count; n++) {
-            if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) {
-                exists = true;
-                /* Обновляем порт только если он валидный */
-                if (reported_port > 0 && reported_port < 65535) {
-                    cluster_nodes[n].port = reported_port;
-                    sub->port = reported_port; 
-                }
-                cluster_nodes[n].last_seen = time(NULL);
-                cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
-                sub->node_ptr = &cluster_nodes[n];
-                break;
+        /* Let's use smart search with merging */
+        MeshNode *target = mesh_find_and_merge(sub->ip_address);
+        if (target) {
+            exists = true;
+            if (reported_port > 0 && reported_port < 65535) {
+                target->port = reported_port;
+                sub->port = reported_port; 
             }
+            target->last_seen = time(NULL);
+            target->status = PEER_STATUS_AUTHENTICATED;
+            sub->node_ptr = target;
         }
 
-        /* Если узла нет — создаем */
+        /* If the node doesn't exist, create it */
         if (!exists && cluster_node_count < CLUSTER_MAX_NODES) {
             MeshNode *n = &cluster_nodes[cluster_node_count++];
             memset(n, 0, sizeof(MeshNode));
@@ -780,14 +802,12 @@ cleanup_dec:
  */
 static void process_revoke(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    char *rest = strdup(buffer + 7); // Пропускаем "REVOKE|"
+    char *rest = strdup(buffer + 7); /* Skip "REVOKE|" */
     if (!rest) return;
-
     char *id_str = strtok(rest, "|");
     char *hash_b64 = strtok(NULL, "|");
     char *pubkey_b64 = strtok(NULL, "|");
     char *sig_b64 = strtok(NULL, "|");
-
     if (!id_str || !hash_b64 || !pubkey_b64 || !sig_b64) {
         enqueue_message(i, "Error: Incomplete REVOKE data", 28);
         free(rest);
@@ -1018,14 +1038,12 @@ void handle_command(int sub_index, char *buffer) {
         }
         log_event("INFO", sub->sock, sub->ip_address, sub->port, "Remote peer confirmed auth");
         sub->auth_state = AUTH_OK;
-        
-        for (int n = 0; n < cluster_node_count; n++) {
-            if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) { 
-                cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
-                cluster_nodes[n].last_seen = time(NULL);
-                sub->node_ptr = &cluster_nodes[n];
-                break;
-            }
+        /* Let's use smart search with merging */
+        MeshNode *best = mesh_find_and_merge(sub->ip_address);
+        if (best) {
+            best->status = PEER_STATUS_AUTHENTICATED;
+            best->last_seen = time(NULL);
+            sub->node_ptr = best;
         }
         mesh_request_chain_sync(sub_index); 
         return; 

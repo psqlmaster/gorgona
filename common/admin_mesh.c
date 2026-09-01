@@ -95,31 +95,40 @@ static int mesh_cmp_nodes(const void *a, const void *b) {
 void mesh_recalculate_scores() {
     time_t now = time(NULL);
     extern int sync_interval;
+    static time_t last_dns_retry = 0; /* Ограничитель частоты DNS-запросов */
+    bool should_retry_dns = (now - last_dns_retry > 10);
     for (int i = 0; i < cluster_node_count; i++) {
         MeshNode *n = &cluster_nodes[i];
+        /* Lazy resolution for “Cold Start”
+         * If we have a SEED node without an IP address or a node that is offline, we try to update the IP address. This will synchronize the records once DNS is up and running. */
+        if (n->resolved_ip[0] == '\0' || n->status == PEER_STATUS_OFFLINE) {
+            if (should_retry_dns) {
+                mesh_resolve_node(n);
+            }
+        }
+        /* If the node is still offline or has been down for a long time > reset the count */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
             n->metrics.gorgona_score = 0.0;
             continue;
         }
-        /* --- Calculating the Speed Score with Decay --- */
+        /* --- Calculation of Speed Score with Damping --- */
         double effective_speed = n->metrics.rolling_avg_speed;
         time_t idle_time = now - n->metrics.last_success;
-        /* If no data has been received for more than 30 seconds, we begin to reduce the effective speed */
         if (idle_time > 30) {
-            /* If no data has been received for more than 30 seconds, we begin to reduce the effective speed */
             effective_speed *= exp(-(double)(idle_time - 30) / 60.0);
         }
-        /* Reference speed of 10 MB/s for rating 1.0 */
         double s_score = effective_speed / (10.0 * 1024.0 * 1024.0);
         if (s_score > 1.0) s_score = 1.0;
-        /* --- Latency Score --- */
+        /* --- Calculating Latency (Latency Score) --- */
         double l_score = 0.0;
         if (n->metrics.last_rtt > 0.1) {
             l_score = exp(-n->metrics.last_rtt / 100.0);
         }
+        /* SEED Status Bonus from the Config */
         double seed_bonus = n->is_seed ? 0.2 : 0.0;
         n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY) + seed_bonus;
     }
+    if (should_retry_dns) last_dns_retry = now;
     if (cluster_node_count > 1) {
         qsort(cluster_nodes, cluster_node_count, sizeof(MeshNode), mesh_cmp_nodes);
     }
