@@ -234,44 +234,81 @@ bool is_local_ip(const char *ip) {
 
 /**
  * Ingests cluster topology lists from neighbors (Peer Exchange - PEX).
- * Now fully DNS-aware and FQDN compatible.
+ * Enhanced with strict deduplication and IP-pinning awareness to prevent shadowing.
  */
 void mesh_discover_nodes(const char *payload, const char *sender_ip) {
-    if (!payload) return;
+    if (!payload || *payload == '\0') return;
     char *copy = strdup(payload);
     if (!copy) return;
     char *token = strtok(copy, "|");
     while (token) {
         char *colon = strchr(token, ':');
-        if (colon) { 
-            *colon = '\0';
-            char *ip = token; 
-            int p = atoi(colon + 1);
-
-            if (is_local_ip(ip)) { token = strtok(NULL, "|"); continue; }
-            if (sender_ip && strcmp(ip, sender_ip) == 0) { token = strtok(NULL, "|"); continue; }
-
-            bool found = false;
-            for (int i = 0; i < cluster_node_count; i++) {
-                /* [FIX] Передаем указатель на узел */
-                if (mesh_addr_compare(&cluster_nodes[i], ip)) {
-                    if (cluster_nodes[i].port != p && p > 0) cluster_nodes[i].port = p;
-                    cluster_nodes[i].last_seen = time(NULL);
-                    found = true; 
-                    break;
+        if (!colon) { 
+            /* Not a valid ADDR:PORT pair, move to next token */
+            token = strtok(NULL, "|"); 
+            continue; 
+        }
+        *colon = '\0';
+        char *incoming_addr = token; 
+        int incoming_port = atoi(colon + 1);
+        /* 1. Basic Validation */
+        if (incoming_port <= 0 || incoming_port > 65535) {
+            token = strtok(NULL, "|");
+            continue;
+        }
+        /* 2. Intelligent Filtering (Local loopback and own physical IPs) */
+        if (is_local_ip(incoming_addr)) {
+            token = strtok(NULL, "|");
+            continue;
+        }
+        /* 3. NAT/Loopback Check: Skip if the IP matches how the sender sees us */
+        if (sender_ip && strcmp(incoming_addr, sender_ip) == 0) {
+            token = strtok(NULL, "|");
+            continue;
+        }
+        /* 4. Strict Deduplication (The Core Fix) */
+        bool found = false;
+        for (int i = 0; i < cluster_node_count; i++) {
+            /* 
+             * mesh_addr_compare is key here: it checks both n->addr and n->resolved_ip.
+             * This prevents adding "1.2.3.4" if "node.com" is already in the table 
+             * and resolved to "1.2.3.4".
+             */
+            if (mesh_addr_compare(&cluster_nodes[i], incoming_addr)) {
+                /* Node exists, update its activity timestamp */
+                cluster_nodes[i].last_seen = time(NULL);
+                
+                /* Update port if it changed (don't update if it's a seed with fixed config) */
+                if (!cluster_nodes[i].is_seed && cluster_nodes[i].port != incoming_port) {
+                    cluster_nodes[i].port = incoming_port;
                 }
+                
+                found = true; 
+                break;
             }
-
-            if (!found && cluster_node_count < CLUSTER_MAX_NODES) {
-                MeshNode *n = &cluster_nodes[cluster_node_count++];
-                memset(n, 0, sizeof(MeshNode));
-                strncpy(n->addr, ip, sizeof(n->addr) - 1);
-                n->port = p;
-                mesh_resolve_node(n); /* [NEW] Сразу резолвим для кэша IP Pinning */
-                n->discovered_at = time(NULL);
-                n->last_seen = time(NULL);
-                n->status = PEER_STATUS_OFFLINE;
-                if (mesh_force_save) mesh_save_peers_cache();
+        }
+        /* 5. Add as a new mesh member only if unique */
+        if (!found && cluster_node_count < CLUSTER_MAX_NODES) {
+            MeshNode *n = &cluster_nodes[cluster_node_count++];
+            memset(n, 0, sizeof(MeshNode));
+            /* Use safe copy into the 256-byte buffer */
+            strncpy(n->addr, incoming_addr, sizeof(n->addr) - 1);
+            n->addr[sizeof(n->addr) - 1] = '\0';
+            n->port = incoming_port;
+            n->discovered_at = time(NULL);
+            n->last_seen = time(NULL);
+            n->status = PEER_STATUS_OFFLINE;
+            n->is_seed = false; 
+            /* 
+             * CRITICAL: Resolve immediately to populate n->resolved_ip.
+             * This ensures that the NEXT time this node is mentioned by IP 
+             * in a PEX list, it will be correctly identified as a duplicate.
+             */
+            mesh_resolve_node(n);
+            log_event("INFO", -1, n->addr, n->port, "L2 Mesh: New neighbor discovered via gossip");
+            /* Persistence for clients if enabled */
+            if (mesh_force_save) {
+                mesh_save_peers_cache();
             }
         }
         token = strtok(NULL, "|");

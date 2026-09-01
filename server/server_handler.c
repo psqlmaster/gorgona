@@ -289,6 +289,13 @@ void try_connect_peers() {
             for (int i = 0; i < max_clients; i++) {
                 if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, resolved_ip) == 0) {
                     already_linked = true;
+                    /* If this node is in the DEAD table but a socket already exists, then we've found a duplicate. We associate the socket with this entry. */
+                    if (node->status == PEER_STATUS_OFFLINE) {
+                        subscribers[i].node_ptr = node;
+                        if (subscribers[i].auth_state == AUTH_OK) {
+                            node->status = PEER_STATUS_AUTHENTICATED;
+                        }
+                    }
                     break;
                 }
             }
