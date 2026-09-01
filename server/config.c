@@ -30,7 +30,6 @@ typedef enum {
  */
 void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, 
                  char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, int *sync_interval, int *max_ttl) {
-    
     /* Initialize default values in case the config file is missing or incomplete */
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
@@ -41,9 +40,15 @@ void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_s
     *vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
     *sync_interval = DEFAULT_SYNC_INTERVAL;
     *max_ttl = DEFAULT_MAX_ALERT_TTL;
-    
+
+    remote_peer_count = 0; 
+    static bool first_init = true;
+    if (first_init) {
+        remote_peer_count = 0;
+        cluster_node_count = 0;
+        first_init = false;
+    }
     /* Reset replication globals before parsing */
-    remote_peer_count = 0;
     memset(sync_psk, 0, sizeof(sync_psk));
     strncpy(sync_psk, DEFAULT_SYNC_PSK, sizeof(sync_psk) - 1);
 

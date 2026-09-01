@@ -657,29 +657,37 @@ const char *gorgonad_log_path(void) {
 }
 
 void rotate_log() {
+    if (log_file == stdout || log_file == stderr || log_file == NULL) {
+        return;
+    }
+    static bool is_rotating = false;
+    if (is_rotating) return;
+    is_rotating = true;
     time_t now = time(NULL);
-    if (now - last_rotation_check < 5) return;
+    if (now - last_rotation_check < 5) {
+        is_rotating = false;
+        return;
+    }
     last_rotation_check = now;
-
     const char *path = gorgonad_log_path();
-    char rotated[512];
-    snprintf(rotated, sizeof(rotated), "%s.1", path);
-
     struct stat st;
     if (stat(path, &st) == 0 && (size_t)st.st_size > max_log_size) {
-        if (log_file) {
-            char time_str[32];
-            get_utc_time_str(time_str, sizeof(time_str));
-            fprintf(log_file, "%s Rotating log file\n", time_str);
-            fflush(log_file);
-            fclose(log_file);
-        }
+        FILE *old_log = log_file;
+        fclose(old_log);
+        char rotated[512];
+        snprintf(rotated, sizeof(rotated), "%s.1", path);
         rename(path, rotated);
-        log_file = fopen(path, "a");
-        if (!log_file) {
-            perror("Failed to open new log file");
+        FILE *new_log = fopen(path, "a");
+        if (new_log) {
+            log_file = new_log;
+            setvbuf(log_file, NULL, _IOLBF, 0);
+            log_event("INFO", -1, NULL, 0, "Log rotated internally. Limit: %zu MB", max_log_size / (1024*1024));
+        } else {
+            log_file = stdout;
+            fprintf(stderr, "CRITICAL: Failed to reopen log file after rotation!\n");
         }
     }
+    is_rotating = false;
 }
 
 int alert_cmp_asc(const void *a, const void *b) {

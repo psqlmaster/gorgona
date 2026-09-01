@@ -220,7 +220,7 @@ max_alerts = 1000                                     # Max alerts stored per ke
 max_alert_ttl = 7776000                               # (90 days) lifetime in seconds
 max_clients = 100                                     # Concurrent client connections
 max_log_size = 10                                     # Log rotation size in MB
-log_level = info                                      # info, error, or debug
+log_level = info                                      # info, error, or debug (systemctl reload gorgonad)
 max_message_size = 5                                  # Max message size in MB
 use_disk_db = true                                    # Enable persistent storage (true - tested for production, false - experimental, requires debugging) 
 vacuum_threshold_percent = 50                         # Auto-cleanup threshold for deleted records
@@ -280,13 +280,17 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/gorgonad
+User=root
+Group=root
 WorkingDirectory=/var/lib/gorgona
-StandardOutput=append:/var/log/gorgona/gorgonad.log
-StandardError=append:/var/log/gorgona/gorgonad.log
+Environment=gorgonad_LOG_FILE=/var/log/gorgona/gorgonad.log
+ExecStart=/usr/bin/gorgonad
+ExecReload=/bin/kill -HUP $MAINPID
+StandardOutput=journal
+StandardError=journal
+ExecStartPre=/usr/bin/mkdir -p /var/log/gorgona
 Restart=on-failure
-RestartSec=5s
-LimitNOFILE=4096
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target

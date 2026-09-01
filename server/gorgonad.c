@@ -15,33 +15,60 @@
 #include <time.h>
 #include <stdint.h>
 #include <getopt.h>
+#include <fcntl.h>
 #include "config.h"
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include "admin_mesh.h"
 #include "metrics.h"
 
+/* Global flag for configuration reload */
+volatile sig_atomic_t reload_cfg_requested = 0;
+
+/* Global server state */
 int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
 int max_clients;
 int verbose = 0;
 int port;  
 int sync_interval = DEFAULT_SYNC_INTERVAL; 
+int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
 
-/* Shutdown handler for graceful exit */
+/**
+ * Shutdown handler for graceful exit.
+ * Saves mesh state, closes databases and all active sockets.
+ */
 void shutdown_handler(int sig) {
     log_event("INFO", -1, NULL, 0, "Received signal %d, shutting down gracefully", sig);
+    
+    /* Layer 2: Save discovered peers to cache */
     mesh_save_peers_cache();
+    
+    /* Layer 1: Close all database handles */
     alert_db_close_all();
+    
+    /* Close all client and peer connections */
     for (int i = 0; i < max_clients; i++) {
-        if (client_sockets[i] > 0) close(client_sockets[i]);
+        if (client_sockets[i] > 0) {
+            close(client_sockets[i]);
+        }
     }
 
-    if (log_file) {
+    /* Close log file if it's not stdout */
+    if (log_file && log_file != stdout && log_file != stderr) {
         fclose(log_file);
         log_file = NULL;
     }
+    
     exit(0);
+}
+
+/**
+ * SIGHUP handler for Hot Reload.
+ * Just sets a flag to be processed in the main loop.
+ */
+void reload_handler(int sig) {
+    reload_cfg_requested = 1;
 }
 
 void print_server_help(const char *program_name) {
@@ -104,7 +131,6 @@ void print_server_help(const char *program_name) {
     #undef CLR_MAGENTA
     #undef CLR_WHITE_BOLD
 }
-int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -115,60 +141,80 @@ int main(int argc, char *argv[]) {
         {0, 0, 0, 0}
     };
 
-    /* Parse command line arguments */
+    /* 1. Parse command line arguments */
     while ((opt = getopt_long(argc, argv, "vhV", long_options, NULL)) != -1) {
         switch (opt) {
-            case 'v':
-                verbose = 1;
-                break;
-            case 'h':
-                print_server_help(argv[0]);
-                return 0;
-            case 'V':
-                printf("Gorgona Server Version %s\n", VERSION);
-                return 0;
-            case '?':
-                fprintf(stderr, "Unknown option. Use -h for help.\n");
-                return 1;
-            default:
-                return 1;
+            case 'v': verbose = 1; break;
+            case 'h': print_server_help(argv[0]); return 0;
+            case 'V': printf("Gorgona Server Version %s\n", VERSION); return 0;
+            case '?': fprintf(stderr, "Unknown option. Use -h for help.\n"); return 1;
+            default: return 1;
         }
     }
 
-    /* Register signal handlers for graceful shutdown */
-    signal(SIGINT, shutdown_handler);
-    signal(SIGTERM, shutdown_handler);
-    signal(SIGPIPE, SIG_IGN); 
-    signal(SIGCHLD, SIG_IGN);  /* Automatic cleanup of terminated child processes */
+    struct sigaction sa_hup, sa_term;
 
-    /* Load configuration from file or use defaults */
+    /* SIGHUP — hot reload (is NOT reset after being called) */
+    sa_hup.sa_handler = reload_handler;
+    sa_hup.sa_flags = SA_RESTART;       /* Do not interrupt read()/select() */
+    sigemptyset(&sa_hup.sa_mask);
+    sigaction(SIGHUP, &sa_hup, NULL);
+
+    /* SIGINT / SIGTERM — graceful shutdown */
+    sa_term.sa_handler = shutdown_handler;
+    sa_term.sa_flags = SA_RESTART;
+    sigemptyset(&sa_term.sa_mask);
+    sigaction(SIGINT, &sa_term, NULL);
+    sigaction(SIGTERM, &sa_term, NULL);
+
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_IGN);
+
+    /* 3. Initialize Logging System (Upto internal rotation) */
+    const char *target_log = gorgonad_log_path();
+    
+    /* If running under systemd, stdout is usually redirected to journal,
+       but we want internal rotation to work, so we open the file explicitly. */
+    if (!isatty(STDOUT_FILENO)) {
+        log_file = fopen(target_log, "a");
+        if (!log_file) {
+            perror("Failed to open log file, falling back to stdout");
+            log_file = stdout;
+        } else {
+            /* Enable line buffering for immediate log visibility */
+            setvbuf(log_file, NULL, _IOLBF, 0);
+        }
+    } else {
+        /* If started in terminal, log to console */
+        log_file = stdout;
+    }
+
+    /* 4. Load configuration */
     int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config; 
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
 
     read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
                 log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config); 
+    
     sync_interval = sync_interval_tmp;
-    if (verbose) {
-        printf("DEBUG: sync_interval applied: %d seconds\n", sync_interval);
-    }
-    mesh_init(sync_psk);
-    metrics_init_ssl(); 
-    mesh_load_peers_cache();
-    log_event("INFO", -1, NULL, 0, "Layer 2: Management Plane Initialized with PSK fingerprint");
-
     max_alerts = max_alerts_config;
     max_alert_ttl = max_ttl_config;
     vacuum_threshold = vacuum_threshold_config;
     max_clients = (max_clients_config > MAX_CLIENTS) ? MAX_CLIENTS : max_clients_config;
-    if (max_clients_config > MAX_CLIENTS) {
-        printf("WARNING: Config max_clients %d exceeds limit. Capping to %d\n", 
-                max_clients_config, MAX_CLIENTS);
-    }
-
     max_log_size = max_log_size_config;
     max_message_size = max_message_size_config;
     use_disk_db = use_disk_db_config;
+
+    if (verbose) {
+        printf("DEBUG: sync_interval: %d seconds, max_clients: %d\n", sync_interval, max_clients);
+    }
+
+    /* 5. Sub-systems Initialization */
+    mesh_init(sync_psk);
+    metrics_init_ssl(); 
+    mesh_load_peers_cache();
+    log_event("INFO", -1, NULL, 0, "Gorgona Server %s is starting...", VERSION);
 
     /* Initialize internal data structures */
     recipients = NULL;
@@ -180,21 +226,6 @@ int main(int argc, char *argv[]) {
         subscribers[i].sock = 0;
         subscribers[i].mode = 0;
         subscribers[i].pubkey_hash[0] = '\0';
-    }
-
-    /*
-     * Initialize logging system.
-     * After opening the file, all subsequent logs must use log_event().
-     */
-    if (log_file == NULL) {
-        log_file = fopen(gorgonad_log_path(), "a");
-        if (!log_file) {
-            perror(gorgonad_log_path());
-            exit(EXIT_FAILURE);
-        } else {
-            /* Log rotation is handled internally by log_event() */
-            log_event("INFO", -1, NULL, 0, "Gorgona Server %s is starting...", VERSION ? VERSION : "1.0");
-        }
     }
 
     /* Initialize database if disk storage is enabled */
@@ -209,19 +240,16 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Create master TCP socket */
+    /* 6. Network Setup */
     int server_fd;
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         log_event("ERROR", -1, NULL, 0, "Socket creation failed: %s", strerror(errno));
-        perror("socket failed");
         exit(EXIT_FAILURE);
     }
 
-    /* Set socket options: allow immediate reuse of the port after restart */
     int opt_val = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt_val, sizeof(opt_val)) < 0) {
         log_event("ERROR", -1, NULL, 0, "Setsockopt SO_REUSEADDR failed: %s", strerror(errno));
-        perror("setsockopt");
         exit(EXIT_FAILURE);
     }
 
@@ -230,44 +258,27 @@ int main(int argc, char *argv[]) {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
 
-    /* Bind the socket to the specified port */
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         log_event("ERROR", -1, NULL, 0, "Bind failed on port %d: %s", port, strerror(errno));
-        perror("bind failed");
         exit(EXIT_FAILURE);
     }
 
-    /* Start listening for incoming connections */
     if (listen(server_fd, 128) < 0) {
         log_event("ERROR", -1, NULL, 0, "Listen failed: %s", strerror(errno));
-        perror("listen");
         exit(EXIT_FAILURE);
     }
 
-    /* Log successful startup */
     printf("Server running on port %d\n", port);
     log_event("INFO", -1, NULL, 0, "Server is up and listening on port %d", port);
 
-    /* Enter the main server loop (defined in server_handler.c) */
+    /* 7. Enter the main server loop */
     run_server(server_fd);
 
-    /*
-     * Cleanup (this part is normally reached only via shutdown_handler).
-     * Included for completeness and to assist memory leak detectors.
-     */
-    for (int r = 0; r < recipient_count; r++) {
-        for (int j = 0; j < recipients[r].count; j++) {
-            free_alert(&recipients[r].alerts[j]);
-        }
-        free(recipients[r].alerts);
-    }
-    free(recipients);
-
+    /* 8. Final Cleanup (Normally reached only via shutdown_handler) */
     log_event("INFO", -1, NULL, 0, "Server shutting down cleanly");
     
-    if (log_file) {
+    if (log_file && log_file != stdout) {
         fclose(log_file);
-        log_file = NULL;
     }
     close(server_fd);
 

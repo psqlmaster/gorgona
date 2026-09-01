@@ -22,7 +22,9 @@
 #include <fcntl.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <signal.h>
 
+extern volatile sig_atomic_t reload_cfg_requested;
 extern int verbose;
 extern FILE *log_file;
 extern int max_clients;
@@ -341,11 +343,37 @@ void run_server(int server_fd) {
     }
 
     while (1) {
+        /* RELOAD] */
+        if (reload_cfg_requested) {
+            reload_cfg_requested = 0;
+            log_event("INFO", -1, NULL, 0, "SIGHUP received, reloading configuration...");
+            int p_tmp, ma_tmp, mc_tmp, vt_tmp, si_tmp, ttl_tmp, db_tmp;
+            size_t mls_tmp, mms_tmp;
+            char lvl_tmp[32];
+            read_config(&p_tmp, &ma_tmp, &mc_tmp, &mls_tmp, lvl_tmp, &mms_tmp, &db_tmp, &vt_tmp, &si_tmp, &ttl_tmp);
+            max_alerts = ma_tmp;
+            sync_interval = si_tmp;
+            vacuum_threshold = vt_tmp;
+            max_alert_ttl = ttl_tmp;
+            max_log_size = mls_tmp;
+            max_message_size = mms_tmp;
+            strncpy(log_level, lvl_tmp, 31);
+            log_level[31] = '\0';
+            if (mc_tmp > max_clients) {
+                if (mc_tmp > MAX_CLIENTS) mc_tmp = MAX_CLIENTS;
+                max_clients = mc_tmp;
+            }
+            if (db_tmp != use_disk_db) {
+                log_event("WARN", -1, NULL, 0, "use_disk_db change requires full restart. Ignoring.");
+            }
+
+            log_event("INFO", -1, NULL, 0, "Configuration reloaded. Sync interval: %d, Log level: %s", sync_interval, log_level);
+        }
+
         FD_ZERO(&readfds);
         FD_ZERO(&writefds);
         FD_SET(server_fd, &readfds);
         max_sd = server_fd;
-
         for (int i = 0; i < max_clients; i++) {
             sd = client_sockets[i];
             if (sd > 0) {
@@ -358,7 +386,6 @@ void run_server(int server_fd) {
                 if (sd > max_sd) max_sd = sd;
             }
         }
-
         /* Dynamic timeout calculation */
         time_t now = time(NULL);
         static time_t last_maintenance = 0;
@@ -377,18 +404,23 @@ void run_server(int server_fd) {
         try_connect_peers();
         /* Waiting for activity on the sockets or for a timeout */
         activity = select(max_sd + 1, &readfds, &writefds, NULL, &timeout);  
-        /* After the `select` statement, check the time again: is it time for maintenance? */
+        if (activity < 0) {
+            if (errno == EINTR) {
+                /* A signal to reload the configuration has been received; we're going back to the beginning of the `while(1)` loop, where the `reload` block will execute. */
+                continue; 
+            }
+            /* If this is a real socket error, log it */
+            log_event("ERROR", -1, NULL, 0, "Select error: %s", strerror(errno));
+            continue;
+        }
+
+        /* Checking the timeout and service */
         now = time(NULL);
         if (activity == 0 || (now - last_maintenance) >= sync_interval) {
             run_global_maintenance();
             last_maintenance = now; 
             continue;
         } 
-
-        if ((activity < 0) && (errno != EINTR)) {
-            log_event("ERROR", -1, NULL, 0, "Select error: %s", strerror(errno));
-            continue;
-        }
 
         /* Handle new incoming connection */
         if (FD_ISSET(server_fd, &readfds)) {
@@ -428,7 +460,6 @@ void run_server(int server_fd) {
                         }
                     }
                     subscribers[i].port = display_port;
-
                     subscribers[i].connect_time = time(NULL);
                     subscribers[i].out_head = NULL;
                     subscribers[i].out_tail = NULL;
