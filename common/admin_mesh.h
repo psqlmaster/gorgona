@@ -81,6 +81,7 @@ extern int verbose;
 /* --- API Prototypes --- */
 
 /* Core Lifecycle */
+bool is_local_ip(const char *ip);
 void mesh_init(const char *psk);
 void mesh_resolve_node(MeshNode *n);
 void mesh_run_garbage_collector(void);

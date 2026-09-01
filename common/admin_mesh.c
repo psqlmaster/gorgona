@@ -208,31 +208,26 @@ void mesh_run_garbage_collector() {
  * Helper: Checks if the given IP address is assigned to any local network interface.
  * Prevents the node from adding itself to the Mesh topology table.
  */
-static bool is_local_ip(const char *ip) {
-    if (strcmp(ip, "127.0.0.1") == 0 || strcmp(ip, "localhost") == 0) {
-        return true;
-    }
+bool is_local_ip(const char *ip) {
+    if (!ip || ip[0] == '\0') return true;
+    if (strcmp(ip, "127.0.0.1") == 0 || strcmp(ip, "localhost") == 0) return true;
 
     struct ifaddrs *ifaddr, *ifa;
-    if (getifaddrs(&ifaddr) == -1) {
-        return false;
-    }
+    if (getifaddrs(&ifaddr) == -1) return false;
 
     bool found = false;
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) {
-            continue;
-        }
+        if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) continue;
 
         char host[NI_MAXHOST];
-        if (getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST) == 0) {
+        if (getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), 
+                        host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST) == 0) {
             if (strcmp(host, ip) == 0) {
                 found = true;
                 break;
             }
         }
     }
-
     freeifaddrs(ifaddr);
     return found;
 }
@@ -346,19 +341,20 @@ const char* mesh_get_best_peer_ip() {
     time_t now = time(NULL);
     mesh_recalculate_scores(); 
     for (int i = 0; i < cluster_node_count; i++) {
-        /* Noda shouldn't be in the ban */
+        /* We check both the logical address and the resolved IP address */
+        if (is_local_ip(cluster_nodes[i].addr) || is_local_ip(cluster_nodes[i].resolved_ip)) {
+            cluster_nodes[i].status = PEER_STATUS_BANNED; 
+            continue;
+        }
         if (cluster_nodes[i].penalty_until > now) continue;
-        /* For the server, we can try to bring back nodes that are OFFLINE once the penalty time has expired */ 
-        if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED || 
-            cluster_nodes[i].status == PEER_STATUS_OFFLINE) {
+        if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED) {
             if (cluster_nodes[i].metrics.gorgona_score > top_score) {
                 top_score = cluster_nodes[i].metrics.gorgona_score;
                 best_idx = i;
             }
         }
     }
-    if (best_idx != -1) return cluster_nodes[best_idx].addr;
-    return NULL;
+    return (best_idx != -1) ? cluster_nodes[best_idx].addr : NULL;
 }
 
 /**
