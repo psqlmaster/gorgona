@@ -233,6 +233,7 @@ vacuum_threshold_percent = 50                         # Auto-cleanup threshold f
 sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key
 sync_interval = 60                                    # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
 peer = 64.188.70.158:7777                             # Remote peer address(seed) to sync with
+peer = node1.gorgona.local:7777                       # Remote peer (FQDN/DNS format)
 ```
 
 ##### Client Configuration (gorgona.conf)
