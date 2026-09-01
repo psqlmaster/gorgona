@@ -230,6 +230,7 @@ vacuum_threshold_percent = 50                         # Auto-cleanup threshold f
 # 1. Automatically discovers new nodes and updates /var/lib/gorgona/peers.cache
 # 2. Uses parallel probes (Happy Eyeballs) to find the fastest entry point
 # 3. Prioritizes 127.0.0.1 if a local sidecar daemon is running
+# support (systemctl reload gorgonad)
 sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key
 sync_interval = 60                                    # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
 peer = 64.188.70.158:7777                             # Remote peer address(seed) to sync with
