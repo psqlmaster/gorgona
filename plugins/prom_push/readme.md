@@ -223,11 +223,26 @@ done
 **Enable and Start Services**
 ```bash
 sudo chmod +x /usr/local/bin/gorgona_bridge.sh
-
 # Setup Bridge Service
-sudo nano /etc/systemd/system/gorgona-bridge.service
-# (Reference the gorgona_bridge.sh path in ExecStart)
+sudo vim /etc/systemd/system/gorgona-bridge.service
+```
+```text
+[Unit]
+Description=Gorgona to Prometheus Bridge
+After=network.target pushgateway.service
 
+[Service]
+Type=simple
+ExecStart=/usr/bin/gorgona_bridge.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## (Reference the gorgona_bridge.sh path in ExecStart)
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now pushgateway
 sudo systemctl enable --now gorgona-bridge
