@@ -32,6 +32,11 @@ admin_pub_hash = zpPVK9fbEqo=
 quorum_total_nodes = 3
 # Unique cluster identifier used for log isolation and status file naming
 cluster_id = pg_prod_5432 
+# Name this node announces to the mesh (LEADER_STATUS, status JSON).
+# Defaults to the system hostname. In environments with real DNS (Kubernetes,
+# Consul) the short hostname does not resolve from other hosts, so set the
+# fully qualified name here:
+# node_address = pg17-1.pg17-hdr.demo.svc
 # List of cluster members in IP:PORT format (comma-separated)
 # If PORT does not match the PostgreSQL port, the node is treated as a WITNESS.
 quorum_nodes = 192.168.1.170:5432, 192.168.1.171:5432, 192.168.1.172:7777
@@ -211,7 +216,8 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
 ### Architecture Logic
 
 - **Smart Rebuild:** The `gfm_rebuild.sh` script automatically attempts `pg_rewind` first (to save bandwidth by rolling back diverged timelines) or falls back to `pg_basebackup` if the local database is empty or corrupted.
-- **Conflict Resolution:** If two nodes claim leadership, the one with the higher LSN wins. If LSNs are equal, the node with the lower alphabetical hostname wins. The "loser" is automatically fenced (stopped) and rebuilt as a standby.
+- **Conflict Resolution:** If two nodes claim leadership, the one with the higher LSN wins. If LSNs are equal, the node with the lower alphabetical name wins. The "loser" is automatically fenced (stopped) and rebuilt as a standby.
+- **Node Naming:** By default a node is known by its `hostname`, both in the mesh and in the replication slot name. Setting `node_address` replaces it with a fully qualified name, which is what makes the cluster work where short names do not resolve. Slot names follow: dots and dashes become underscores, since PostgreSQL only allows letters, digits and underscores there, and a name longer than the 63 character limit keeps a readable prefix plus a hash of the full name.
 - **Decentralized Signaling:** All status updates (`LEADER_STATUS`) and election requests (`CANDIDATE`) are encrypted and broadcasted via the Gorgona P2P Mesh.
 
 ---

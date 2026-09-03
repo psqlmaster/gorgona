@@ -47,8 +47,18 @@ LOG_FILE="/var/log/gorgona/rebuild_${CLUSTER_ID}.log"
 
 USER="repuser"
 export PGPASSFILE="/var/lib/postgresql/.pgpass"
-MY_NAME=$(hostname)
-SLOT_NAME="replica_slot_$(echo ${MY_NAME} | tr '-' '_')_${PG_INST}"
+MY_NAME=$(get_val "cluster" "node_address")
+[ -z "$MY_NAME" ] && MY_NAME=$(hostname)
+
+# В именах слотов PostgreSQL допускает только буквы, цифры и подчёркивания,
+# так что точки FQDN и дефисы заменяем. Длина идентификатора ограничена 63
+# символами: если не влезли, оставляем читаемое начало и дописываем хеш от
+# полного имени, иначе две ноды с похожими FQDN получили бы один слот.
+SLOT_NAME="replica_slot_$(echo ${MY_NAME} | tr '.-' '__')_${PG_INST}"
+if [ ${#SLOT_NAME} -gt 63 ]; then
+    SLOT_SUFFIX=$(printf '%s' "$SLOT_NAME" | md5sum | cut -c1-8)
+    SLOT_NAME="$(printf '%s' "$SLOT_NAME" | cut -c1-54)_${SLOT_SUFFIX}"
+fi
 PUB_KEY_ARG="${MY_PUB_HASH}.pub"
 
 log_msg() {

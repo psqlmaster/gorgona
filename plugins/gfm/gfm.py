@@ -97,7 +97,12 @@ class GFM:
 
         # Секция [cluster]
         self.my_pub_hash = conf.get("cluster", "my_pub_hash")
-        self.node_name = os.uname()[1]
+        # Короткое имя нужно отдельно: под ним нода известна самой себе (/etc/hosts, sudo).
+        self.local_hostname = os.uname()[1]
+        # Имя, под которым нода представляется в меше и в status JSON. В Kubernetes
+        # и других средах с настоящим DNS короткое имя снаружи не резолвится,
+        # поэтому его можно переопределить полным (pg17-1.pg17-hdr.demo.svc).
+        self.node_name = conf.get("cluster", "node_address", fallback="").strip() or self.local_hostname
         self.quorum_total_nodes = conf.getint("cluster", "quorum_total_nodes")
         # Уникальный ID кластера (например, pg_prod_5432) для изоляции логов и статусов
         self.cluster_id = conf.get("cluster", "cluster_id", fallback="default")
@@ -232,10 +237,10 @@ class GFM:
         try:
             with open("/etc/hosts", "r") as f:
                 content = f.read()
-            if self.node_name not in content:
+            if self.local_hostname not in content:
                 self.log("Optimizing local hostname resolution in /etc/hosts...")
                 with open("/etc/hosts", "a") as f:
-                    f.write("\n127.0.0.1 " + self.node_name + "\n")
+                    f.write("\n127.0.0.1 " + self.local_hostname + "\n")
         except Exception as e:
             self.log("Warning: Could not update /etc/hosts: " + str(e))
 
