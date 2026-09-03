@@ -176,7 +176,7 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
     GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO repuser;
     GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO repuser;
     ```
-2. **Configure Authentication (`.pgpass`):**
+2. **Configure Authentication (`/var/lib/postgresql/.pgpass`):**
     The `gfm_rebuild.sh` script requires a `.pgpass` file in the postgres home directory (chmod `0600`):
     ```text
     *:5432:*:repuser:your_secure_password
@@ -187,7 +187,7 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
    For pg_rewind (cluster self-healing) to succeed, the user “repuser” needs two entries in pg_hba.conf: 
     ```text
     # Access for pg_rewind to a regular database (SQL) 
-    host    postgres        repuser         192.168.1.0/24          scram-sha-256
+    host    postgres        postgres         192.168.1.0/24          scram-sha-256
     # Streaming Access 
     host    replication     repuser         192.168.1.0/24          scram-sha-256
     ```
@@ -199,7 +199,7 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
     ```text
     # Add the settings for the extensions here 
     listen_addresses = '*'
-    port = 5433
+    port = 5432
     wal_level = replica
     max_wal_senders = 10
     max_replication_slots = 10

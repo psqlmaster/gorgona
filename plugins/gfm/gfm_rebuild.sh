@@ -3,7 +3,7 @@
 # Smart Recovery Script for PostgreSQL (Multi-Instance Version)
 
 CONF_SRC=$1
-MASTER_HOST=$2  # Может быть пустым, тогда ищем сами
+MASTER_HOST=$2 
 
 # --- Цвета для вывода ---
 RED='\033[0;31m'
@@ -14,7 +14,6 @@ NC='\033[0m'
 usage() {
     echo -e "${BLUE}GFM Smart Rebuild Tool${NC}"
     echo -e "Использование: $0 ${GREEN}<путь_к_конфигу>${NC} [IP_мастера]"
-    echo -e "Пример: $0 /etc/gorgona/gfm_pg_prod_5432.conf 192.168.1.170"
     exit 1
 }
 
@@ -30,7 +29,7 @@ get_val() {
     sed 's/[#;].*//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs
 }
 
-# 1. Чтение параметров из конфига
+# 1. Чтение параметров
 CLUSTER_ID=$(get_val "cluster" "cluster_id")
 MY_PUB_HASH=$(get_val "cluster" "my_pub_hash")
 PG_SVC=$(get_val "postgresql" "service_name")
@@ -41,26 +40,54 @@ PG_PORT=$(get_val "postgresql" "port")
 GORGONA_BIN=$(get_val "paths" "gorgona_bin")
 [ -z "$GORGONA_BIN" ] && GORGONA_BIN="/usr/bin/gorgona"
 
-# 2. Динамические пути (Стандартные для Debian/Ubuntu)
 PG_DATA="/var/lib/postgresql/${PG_VER}/${PG_INST}"
 PG_BIN="/usr/lib/postgresql/${PG_VER}/bin"
 STATUS_FILE="/etc/gorgona/status_${CLUSTER_ID}.json"
 LOG_FILE="/var/log/gorgona/rebuild_${CLUSTER_ID}.log"
 
-# Параметры подключения
 USER="repuser"
 export PGPASSFILE="/var/lib/postgresql/.pgpass"
 MY_NAME=$(hostname)
 SLOT_NAME="replica_slot_$(echo ${MY_NAME} | tr '-' '_')_${PG_INST}"
+PUB_KEY_ARG="${MY_PUB_HASH}.pub"
 
 log_msg() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$CLUSTER_ID] $1" | tee -a "$LOG_FILE"
 }
 
-mkdir -p /var/log/gorgona
-log_msg "--- START RECOVERY ATTEMPT ---"
+# --- Функция отправки сообщения в меш Gorgona ---
+send_gorgona_event() {
+    local event_text=$1
+    local start_time=$(date -u +'%Y-%m-%d %H:%M:%S')
+    local end_time=$(date -u -d "+1 hour" +'%Y-%m-%d %H:%M:%S')
+    local msg="EVENT|$CLUSTER_ID|$MY_NAME|$event_text"
+    
+    # Отправка через бинарник gorgona
+    $GORGONA_BIN send "$start_time" "$end_time" "$msg" "$PUB_KEY_ARG" >/dev/null 2>&1
+}
 
-# 3. Поиск мастера, если он не передан вторым аргументом
+mkdir -p /var/log/gorgona
+log_msg "--- START RECOVERY CHECK ---"
+
+# ==============================================================================
+# ЗАЩИТА: ПРОВЕРКА ТЕКУЩЕЙ РЕПЛИКАЦИИ
+# ==============================================================================
+# Если Postgres запущен, проверяем, не работает ли уже репликация
+if sudo -u postgres "$PG_BIN/pg_isready" -p "$PG_PORT" -t 3 >/dev/null 2>&1; then
+    IS_RECOVERY=$(sudo -u postgres "$PG_BIN/psql" -p "$PG_PORT" -At -c "SELECT pg_is_in_recovery();" 2>/dev/null)
+    WAL_RECEIVER_ACTIVE=$(sudo -u postgres "$PG_BIN/psql" -p "$PG_PORT" -At -c "SELECT count(*) FROM pg_stat_wal_receiver;" 2>/dev/null)
+
+    if [[ "$IS_RECOVERY" == "t" ]] && [[ "$WAL_RECEIVER_ACTIVE" -gt 0 ]]; then
+        REPORT="Replication is already ACTIVE and STREAMING. Rebuild aborted. To change leader use: gfm_cluster_switch"
+        log_msg "PROTECTION: $REPORT"
+        send_gorgona_event "$REPORT"
+        echo -e "${GREEN}>>> $REPORT${NC}"
+        exit 0
+    fi
+fi
+# ==============================================================================
+
+# 3. Поиск мастера
 if [ -z "$MASTER_HOST" ] || [ "$MASTER_HOST" == "null" ]; then
     log_msg "Master IP not provided. Checking local status JSON..."
     if [ -f "$STATUS_FILE" ]; then
@@ -70,7 +97,6 @@ fi
 
 if [ -z "$MASTER_HOST" ] || [ "$MASTER_HOST" == "null" ] || [ "$MASTER_HOST" == "$MY_NAME" ]; then
     log_msg "JSON Leader is stale/empty. Scanning mesh history for LEADER_STATUS..."
-    # Ищем последнее сообщение в меше для этого конкретного кластера
     MASTER_HOST=$($GORGONA_BIN listen last 20 "$MY_PUB_HASH" | grep -A 1 "Decrypted Content:" | grep "LEADER_STATUS" | grep -v "$MY_NAME" | tail -n 1 | cut -d'|' -f2)
 fi
 
@@ -94,26 +120,21 @@ systemctl stop "$PG_SVC"
 # 6. Попытка восстановления (pg_rewind или pg_basebackup)
 REWIND_OK=0
 if [ -f "$PG_DATA/global/pg_control" ]; then
-    log_msg "Data exists. Attempting pg_rewind to save bandwidth..."
-    # pg_rewind требует, чтобы в postgresql.conf был включен wal_log_hints или чекпоинты
+    log_msg "Data exists. Attempting pg_rewind..."
     if sudo -u postgres "$PG_BIN/pg_rewind" --target-pgdata="$PG_DATA" --source-server="host=$MASTER_HOST port=$PG_PORT user=$USER dbname=postgres" >> "$LOG_FILE" 2>&1; then
         log_msg "SUCCESS: pg_rewind completed."
         REWIND_OK=1
     else
         log_msg "NOTICE: pg_rewind failed, falling back to full pg_basebackup."
-        log_msg "HINT: if it says 'permission denied for function pg_read_binary_file',"
-        log_msg "HINT: user $USER is missing the pg_rewind GRANTs (see plugin readme)."
     fi
 fi
 
 if [ $REWIND_OK -eq 0 ]; then
-    log_msg "Performing full pg_basebackup (rewind failed or DB empty)..."
-    # Очистка старых данных (БЕЗОПАСНО: только если переменная PG_DATA не пустая)
+    log_msg "Performing full pg_basebackup..."
     if [ -d "$PG_DATA" ] && [ -n "$PG_VER" ]; then
         rm -rf "${PG_DATA:?}"/*
     fi
     
-    # Первая попытка с созданием слота
     if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
         --slot="$SLOT_NAME" --create-slot -X stream --no-password >> "$LOG_FILE" 2>&1; then
         log_msg "SUCCESS: pg_basebackup completed with slot creation."
@@ -130,14 +151,8 @@ if [ $REWIND_OK -eq 0 ]; then
 fi
 
 # 7. Финализация
-# В современных версиях PG (12+) standby.signal создается автоматически ключом -R в pg_basebackup,
-# но мы подстрахуемся для надежности.
 sudo -u postgres touch "$PG_DATA/standby.signal"
 
-# После pg_rewind каталог данных сохраняет postgresql.auto.conf источника,
-# а вместе с ним primary_conninfo и primary_slot_name прежнего мастера.
-# На ветке pg_basebackup эти параметры переписывает ключ -R, здесь их нужно
-# проставить самим, иначе нода уйдет стримить не туда (например, сама на себя).
 if [ $REWIND_OK -eq 1 ]; then
     log_msg "Writing recovery configuration for master $MASTER_HOST..."
     AUTO_CONF="$PG_DATA/postgresql.auto.conf"
@@ -147,17 +162,15 @@ if [ $REWIND_OK -eq 1 ]; then
         "$MASTER_HOST" "$PG_PORT" "$USER" "$MY_NAME" "$SLOT_NAME" \
         | sudo -u postgres tee -a "$AUTO_CONF" > /dev/null
 
-    # Слот на мастере заводит только pg_basebackup --create-slot, на этой ветке его нет.
     log_msg "Ensuring replication slot $SLOT_NAME on $MASTER_HOST..."
     sudo -u postgres "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -tAc \
         "SELECT pg_create_physical_replication_slot('$SLOT_NAME') WHERE NOT EXISTS \
          (SELECT 1 FROM pg_replication_slots WHERE slot_name = '$SLOT_NAME');" \
-        >> "$LOG_FILE" 2>&1 || log_msg "WARNING: could not create slot $SLOT_NAME (may already exist)."
+        >> "$LOG_FILE" 2>&1
 fi
 
 chown -R postgres:postgres "$PG_DATA"
 
-# Перед запуском проверяем, что конфиг в /etc смотрит на правильный порт
 CONF_PATH="/etc/postgresql/${PG_VER}/${PG_INST}/postgresql.conf"
 if [ -f "$CONF_PATH" ]; then
     sed -i "s/^port[[:space:]]*=[[:space:]]*.*/port = $PG_PORT/" "$CONF_PATH"
@@ -165,5 +178,4 @@ fi
 
 log_msg "Starting $PG_SVC..."
 systemctl start "$PG_SVC"
-
 log_msg "--- RECOVERY FINISHED SUCCESSFULLY ---"

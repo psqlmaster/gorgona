@@ -549,14 +549,17 @@ class GFM:
                 
                 elif self.role == "STANDBY":
                     my_lsn_val = self.lsn_to_int(self.current_lsn)
-                    # САМОЛЕЧЕНИЕ: Мы реплика с пустой базой или сломанным линком
+                    # САМОЛЕЧЕНИЕ:
                     if not self.rebuild_in_progress and not self.is_witness:
-                        if my_lsn_val == 0:
+                        # Если у нас пусто, а у лидера есть данные (LSN > 0)
+                        if my_lsn_val == 0 and self.lsn_to_int(s_lsn) > 0:
                             self.log("DB is empty. Starting auto-initialization from " + s_name)
                             self.auto_rebuild(s_name, "Empty database trigger")
+                        
+                        # Если мы не реплицируемся, но Лидер жив и "впереди" нас
                         elif self.is_replication_active() == False:
-                            if (time.time() - self.last_leader_heartbeat) < 30:
-                                self.auto_rebuild(s_name, "Broken replication link recovery")
+                             if self.lsn_to_int(s_lsn) > my_lsn_val:
+                                 self.auto_rebuild(s_name, "Broken replication link recovery")
 
             # --- СЦЕНАРИЙ 2: Кто-то другой хочет стать Лидером ---
             elif msg_type == "CANDIDATE":
