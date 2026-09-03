@@ -39,6 +39,7 @@ class GFM:
         # Это критически важно для предотвращения Deadlock при вызове auto_rebuild из process_message
         self.lock = threading.RLock() 
         self.rebuild_in_progress = False
+        self.failed_replication_checks = 0 
         
         # 4. Подготовка системного окружения
         self.fix_etc_hosts()
@@ -269,36 +270,25 @@ class GFM:
     def sync_role_with_db(self):
         if self.is_witness or self.rebuild_in_progress:
             return
-
         res = self.safe_db_query("SELECT pg_is_in_recovery();")
-        
         if res is None:
-            # База не отвечает - считаем, что мы в режиме ожидания (безопаснее)
-            if self.role == "LEADER":
-                self.log("Postgres UNREACHABLE. Possible crash?")
-                self.role = "STANDBY"
+            # Просто логируем, но не меняем роль.
+            # self.log("Postgres busy or unreachable, keeping current role...") 
             return
-
         if res == "f":
             self.role = "LEADER"
         else:
             self.role = "STANDBY"
 
     def is_replication_active(self):
-        """Проверяет, реально ли узел получает WAL логи от Мастера"""
-        if self.is_witness == True:
-            return True
-        # Если мы сами лидер, репликация "активна" по определению
-        if self.role != "STANDBY":
-            return True
-            
+        if self.is_witness: return True
+        if self.role != "STANDBY": return True
+        res = self.safe_db_query("SELECT count(*) FROM pg_stat_wal_receiver;")
+        if res is None:
+            return True # Оптимизм: если база занята, считаем что репликация идет
         try:
-            # Проверяем наличие строки в таблице wal_receiver
-            cmd = ["sudo", "-u", "postgres", self.psql_bin, "-p", str(self.pg_port), "-At", "-c", "SELECT count(*) FROM pg_stat_wal_receiver;"] 
-            res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-            # Возвращает True если процесс приема запущен
             return int(res) > 0
-        except Exception:
+        except:
             return False
         
     def get_replication_status(self):
@@ -589,6 +579,12 @@ class GFM:
         last_hb_sent_at = 0 
         
         while self.is_running:
+            # Читаем флаг обслуживания
+            maint_flag = f"/tmp/gfm_rebuild_in_progress_{self.cluster_id}.flag"
+            if os.path.exists(maint_flag):
+                # Скрипт ребилда работает — демон уходит в режим ожидания
+                time.sleep(5)
+                continue
             now = time.time()
             self.current_lsn = self.get_pg_lsn()
             # 1. Синхронизируем роль с реальностью Postgres
@@ -632,12 +628,22 @@ class GFM:
 
                 # ПРИОРИТЕТ 2: Ребилд (если лидер слышен, но репликация сломана)
                 elif not self.is_witness and not self.rebuild_in_progress and self.leader_name:
+                    # Проверяем: база пустая (LSN=0) или репликация не идет
                     if my_lsn_val == 0 or self.is_replication_active() == False:
-                        # Чинимся только если мастер вещал в последние 30 сек (он жив)
-                        if silence_time < 30:
-                            self.log("LOOP TRIGGER: Replication check failed. Automatic recovery from " + str(self.leader_name))
-                            self.auto_rebuild(self.leader_name, "Periodic health check failed")
-
+                        # Увеличиваем счетчик ошибок
+                        self.failed_replication_checks += 1
+                        # Если это первая или вторая ошибка — просто ждем следующего цикла
+                        if self.failed_replication_checks < 3:
+                            self.log(f"Replication check failed ({self.failed_replication_checks}/3). Waiting for retry...")
+                        else:
+                            # Только на 3-й раз (через 15 секунд) начинаем ребилд
+                            if silence_time < 30:
+                                self.log("LOOP TRIGGER: Replication check failed 3 times. Automatic recovery starting...")
+                                self.auto_rebuild(self.leader_name, "Confirmed replication failure")
+                                self.failed_replication_checks = 0
+                    else:
+                        # Если проверка прошла успешно — сбрасываем счетчик в ноль!
+                        self.failed_replication_checks = 0
             # 4. Обновление локального JSON статуса (для Stheno UI)
             try:
                 status_obj = {

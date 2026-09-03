@@ -70,19 +70,45 @@ mkdir -p /var/log/gorgona
 log_msg "--- START RECOVERY CHECK ---"
 
 # ==============================================================================
-# ЗАЩИТА: ПРОВЕРКА ТЕКУЩЕЙ РЕПЛИКАЦИИ
+# УЛЬТРА-ЗАЩИТА: ПРОВЕРКА РОЛЕЙ И СИНХРОНИЗАЦИЯ С ДЕМОНОМ
 # ==============================================================================
-# Если Postgres запущен, проверяем, не работает ли уже репликация
+LOCK_FILE="/tmp/gfm_db_query_${CLUSTER_ID}.lock"
+MAINTENANCE_FLAG="/tmp/gfm_rebuild_in_progress_${CLUSTER_ID}.flag"
+# Создаем флаг обслуживания (сигнал для gfm.py приостановить HA-логику)
+touch "$MAINTENANCE_FLAG"
+# Удаляем флаг автоматически при любом выходе из скрипта (успех или ошибка)
+trap 'rm -f "$MAINTENANCE_FLAG"' EXIT
+# Захватываем эксклюзивную блокировку, чтобы два скрипта ребилда не терлись друг об друга
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log_msg "Another rebuild process is already running. Exiting."
+    exit 0
+fi
+# Проверяем локальное состояние (Кто я сейчас?)
 if sudo -u postgres "$PG_BIN/pg_isready" -p "$PG_PORT" -t 3 >/dev/null 2>&1; then
-    IS_RECOVERY=$(sudo -u postgres "$PG_BIN/psql" -p "$PG_PORT" -At -c "SELECT pg_is_in_recovery();" 2>/dev/null)
-    WAL_RECEIVER_ACTIVE=$(sudo -u postgres "$PG_BIN/psql" -p "$PG_PORT" -At -c "SELECT count(*) FROM pg_stat_wal_receiver;" 2>/dev/null)
-
-    if [[ "$IS_RECOVERY" == "t" ]] && [[ "$WAL_RECEIVER_ACTIVE" -gt 0 ]]; then
-        REPORT="Replication is already ACTIVE and STREAMING. Rebuild aborted. To change leader use: gfm_cluster_switch"
+    MY_RECOVERY=$(sudo -u postgres "$PG_BIN/psql" -p "$PG_PORT" -At -c "SELECT pg_is_in_recovery();" 2>/dev/null)
+    WAL_COUNT=$(sudo -u postgres "$PG_BIN/psql" -p "$PG_PORT" -At -c "SELECT count(*) FROM pg_stat_wal_receiver;" 2>/dev/null)
+    # СЦЕНАРИЙ А: Я - работающая реплика. Ребилд не нужен.
+    if [[ "$MY_RECOVERY" == "t" ]] && [[ "$WAL_COUNT" -gt 0 ]]; then
+        REPORT="Replication is already ACTIVE and STREAMING. Rebuild aborted."
         log_msg "PROTECTION: $REPORT"
         send_gorgona_event "$REPORT"
         echo -e "${GREEN}>>> $REPORT${NC}"
         exit 0
+    fi
+    # СЦЕНАРИЙ Б: Я - Лидер (Master). Проверяем, не пытаемся ли мы совершить суицид.
+    if [[ "$MY_RECOVERY" == "f" ]]; then
+        log_msg "I am currently the LEADER. Verifying if target $MASTER_HOST is a valid source..."
+        # Проверяем роль того, об кого хотим пересобраться
+        TARGET_RECOVERY=$(sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -At -c "SELECT pg_is_in_recovery();" 2>/dev/null)
+        # Если цель - сама является репликой или недоступна
+        if [[ "$TARGET_RECOVERY" == "t" ]] || [ -z "$TARGET_RECOVERY" ]; then
+            REPORT="Refusing to rebuild: I am LEADER and target $MASTER_HOST is NOT a Master. To switch roles, use gfm_cluster_switch."
+            log_msg "CRITICAL: $REPORT"
+            send_gorgona_event "$REPORT"
+            echo -e "${RED}>>> $REPORT${NC}"
+            exit 1
+        fi
     fi
 fi
 # ==============================================================================
