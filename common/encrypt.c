@@ -595,35 +595,44 @@ char *base64_encode(const unsigned char *data, size_t len) {
 unsigned char *base64_decode(const char *data, size_t *out_len) {
     BIO *bio, *b64;
     size_t len = strlen(data);
+    if (len == 0) return NULL;
+    /* 
+     * Buffer allocation: Base64 is always ~33% larger than binary data, 
+     * so 'len' is a safe upper bound for the decoded output. 
+     */
     unsigned char *out = malloc(len);
     if (!out) {
-        fprintf(stderr, "Не удалось выделить память для декодировки base64\n");
+        fprintf(stderr, "Error: Memory allocation failed for Base64 decoding\n");
         return NULL;
     }
-
     b64 = BIO_new(BIO_f_base64());
     if (!b64) {
         free(out);
-        fprintf(stderr, "Не удалось создать BIO для base64\n");
+        fprintf(stderr, "Error: Failed to create Base64 BIO\n");
         return NULL;
     }
+    /* 
+     * Set the flag to ignore newlines and treat the input as a single line.
+     * This matches our client-side sanitization.
+     */
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
     bio = BIO_new_mem_buf(data, len);
     if (!bio) {
         BIO_free(b64);
         free(out);
-        fprintf(stderr, "Не удалось создать BIO памяти\n");
+        fprintf(stderr, "Error: Failed to create memory BIO\n");
         return NULL;
     }
     bio = BIO_push(b64, bio);
-
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    *out_len = BIO_read(bio, out, len);
-    if (*out_len == (size_t)-1) {
-        fprintf(stderr, "Не удалось декодировать base64 данные\n");
+    int decoded_len = BIO_read(bio, out, len);
+    if (decoded_len < 0) {
+        /* This often happens if there's an illegal character or unexpected newline */
+        fprintf(stderr, "Error: Base64 decoding failed (invalid format or unexpected newline)\n");
         BIO_free_all(bio);
         free(out);
         return NULL;
     }
+    *out_len = (size_t)decoded_len;
     BIO_free_all(bio);
     return out;
 }

@@ -50,6 +50,27 @@ time_t parse_datetime(const char *datetime) {
 #endif
 }
 
+void sanitize_b64(char *s) {
+    if (!s) return;
+    char *d = s;
+    while (*s) {
+        if (*s != '\n' && *s != '\r') *d++ = *s;
+        s++;
+    }
+    *d = '\0';
+}
+
+ssize_t read_n_bytes(int fd, void *buf, size_t n) {
+    size_t total_read = 0;
+    char *p = buf;
+    while (total_read < n) {
+        ssize_t ret = read(fd, p + total_read, n - total_read);
+        if (ret <= 0) return ret;
+        total_read += ret;
+    }
+    return total_read;
+}
+
 /**
  * Reads input from stdin into a dynamically allocated buffer.
  */
@@ -137,6 +158,10 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     char *encrypted_key_b64 = base64_encode(encrypted_key, k_len);
     char *iv_b64 = base64_encode(iv, i_len);
     char *tag_b64 = base64_encode(tag, t_len);
+    sanitize_b64(encrypted_b64);
+    sanitize_b64(encrypted_key_b64);
+    sanitize_b64(iv_b64);
+    sanitize_b64(tag_b64);
 
     /* 4. Configuration and Networking initialization */
     Config config;
@@ -146,25 +171,33 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         mesh_init(config.sync_psk);
     }
 
-    /* Assemble Protocol Buffer and Check 50MB hard-limit */
-    size_t needed_len = strlen("SEND|") + strlen(pubkey_hash_b64) + 128 + strlen(encrypted_b64) + strlen(encrypted_key_b64) + strlen(iv_b64) + strlen(tag_b64);
+    /* We calculate the EXACT length of the entire string (by passing NULL and 0) */
+    int total_len = snprintf(NULL, 0, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+                             pubkey_hash_b64, (long)unlock_at, (long)expire_at, 
+                             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
+
+    if (total_len < 0) {
+        fprintf(stderr, "Error: Failed to calculate buffer size\n");
+        goto cleanup_all;
+    }
+
     const size_t CLIENT_MAX_LIMIT = 50 * 1024 * 1024;
-    if (needed_len > CLIENT_MAX_LIMIT) {
+    if ((size_t)total_len > CLIENT_MAX_LIMIT) {
         fprintf(stderr, "Error: Payload exceeds 50MB limit.\n");
         goto cleanup_all;
     }
 
-    /* 2. Сначала выделяем память */
-    buffer = malloc(needed_len + 1);
+    /* Allocate exactly as much memory as needed + 1 for the null terminator */
+    buffer = malloc(total_len + 1);
     if (!buffer) {
         fprintf(stderr, "Error: Memory allocation failed\n");
         goto cleanup_all;
     }
 
-    /* 3. И только теперь записываем данные в уже выделенную память */
-    int total_len = snprintf(buffer, needed_len + 1, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
-                             pubkey_hash_b64, (long)unlock_at, (long)expire_at, 
-                             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
+    /* Now let's save the data. Now we're sure everything will fit. */
+    snprintf(buffer, total_len + 1, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+             pubkey_hash_b64, (long)unlock_at, (long)expire_at, 
+             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
 
     struct timeval tv_start, tv_conn, tv_auth, tv_send, tv_ack;
     gettimeofday(&tv_start, NULL);
@@ -251,7 +284,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         struct timeval tv_to = {10, 0};
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_to, sizeof(tv_to));
         uint32_t resp_len_net;
-        if (read(sock, &resp_len_net, 4) == 4) {
+        if (read_n_bytes(sock, &resp_len_net, 4) == 4) {
             size_t resp_len = ntohl(resp_len_net);
             if (resp_len > 0 && resp_len < 2048) {
                 char *resp_buf = malloc(resp_len + 1);

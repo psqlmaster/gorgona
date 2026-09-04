@@ -516,11 +516,11 @@ void run_server(int server_fd) {
 
                 /* STATE: Waiting for message length or text command */
                 if (sub->read_state == READ_LEN) {
-                    /* Initialize buffer if it's a new connection cycle */
                     if (!sub->in_buffer) {
-                        sub->in_buffer = malloc(max_message_size + 1);
+                        sub->in_buffer = malloc(1024); 
                         if (!sub->in_buffer) {
-                            log_event("ERROR", sd, sub->ip_address, sub->port, "Memory allocation failed");
+                            log_event("ERROR", sd, sub->ip_address, sub->port, 
+                                      "CRITICAL: Memory allocation failed for initial buffer (1KB)");
                             cleanup_subscriber(i); 
                             continue;
                         }
@@ -622,8 +622,13 @@ void run_server(int server_fd) {
                                     sub->in_buffer = new_binary_buf;
                                     sub->in_pos = 0;
                                     sub->read_state = READ_MSG;
+                                } else {
+                                    /* ДОБАВЛЯЕМ ЛОГ ОШИБКИ */
+                                    log_event("ERROR", sd, sub->ip_address, sub->port, 
+                                              "CRITICAL: Memory allocation failed for payload (%u bytes)", temp_len);
+                                    cleanup_subscriber(i);
+                                    continue;
                                 }
-                                continue;
                             }
                         } 
                         /* --- TEXT MODE DETECTION --- */
