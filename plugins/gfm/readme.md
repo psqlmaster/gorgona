@@ -192,8 +192,9 @@ Since GFM manages the failover orchestration, you must ensure PostgreSQL is manu
    For pg_rewind (cluster self-healing) to succeed, the user “repuser” needs two entries in pg_hba.conf: 
     ```text
     # Access for pg_rewind to a regular database (SQL) 
-    host    postgres        postgres         192.168.1.0/24          scram-sha-256
-    # Streaming Access 
+    host    postgres        postgres        192.168.1.0/24          scram-sha-256
+    # Streaming Access      
+    host    all             repuser         192.168.1.0/24          scram-sha-256
     host    replication     repuser         192.168.1.0/24          scram-sha-256
     ```
     To confirm

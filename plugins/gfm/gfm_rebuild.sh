@@ -153,65 +153,114 @@ fi
 log_msg "Stopping local service $PG_SVC..."
 systemctl stop "$PG_SVC"
 
-# 6. Попытка восстановления (pg_rewind или pg_basebackup)
+# ==============================================================================
+# 6. УМНАЯ ОЧИСТКА СИРОТСКИХ СЛОТОВ (Safe Sweep)
+# ==============================================================================
+log_msg "Scanning master $MASTER_HOST for inactive orphan slots..."
+# Мы ищем все неактивные слоты, которые начинаются на 'replica_slot_'
+# и НЕ являются нашим текущим именем ($SLOT_NAME). 
+# Фильтр по $PG_INST убираем, так как длинные имена (FQDN) заканчиваются хешем.
+QUERY="SELECT slot_name FROM pg_replication_slots WHERE active = 'f' AND slot_name LIKE 'replica_slot_%' AND slot_name != '$SLOT_NAME';"
+# Выполняем запрос и сохраняем вывод (включая возможные ошибки в переменную)
+ORPHAN_DATA=$(sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -At -c "$QUERY" 2>&1)
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+    log_msg "WARNING: Could not fetch orphan slots. Master said: $ORPHAN_DATA"
+    ORPHAN_SLOTS=""
+else
+    # Очищаем результат от лишних пробелов и превращаем в список
+    ORPHAN_SLOTS=$(echo "$ORPHAN_DATA" | xargs)
+fi
+if [ -n "$ORPHAN_SLOTS" ]; then
+    for old_slot in $ORPHAN_SLOTS; do
+        log_msg "Removing inactive orphan slot '$old_slot' from master..."
+        DROP_RES=$(sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -tAc "SELECT pg_drop_replication_slot('$old_slot');" 2>&1)
+        log_msg "Master response: $DROP_RES"
+    done
+else
+    log_msg "No inactive orphan slots found on master."
+fi
+
+# ==============================================================================
+# 7. ПОПЫТКА ВОССТАНОВЛЕНИЯ (pg_rewind или pg_basebackup)
+# ==============================================================================
 REWIND_OK=0
 if [ -f "$PG_DATA/global/pg_control" ]; then
     log_msg "Data exists. Attempting pg_rewind..."
-    if sudo -u postgres "$PG_BIN/pg_rewind" --target-pgdata="$PG_DATA" --source-server="host=$MASTER_HOST port=$PG_PORT user=$USER dbname=postgres" >> "$LOG_FILE" 2>&1; then
+    # pg_rewind требует доступа к базе 'postgres'
+    if sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/pg_rewind" --target-pgdata="$PG_DATA" --source-server="host=$MASTER_HOST port=$PG_PORT user=$USER dbname=postgres" >> "$LOG_FILE" 2>&1; then
         log_msg "SUCCESS: pg_rewind completed."
         REWIND_OK=1
     else
-        log_msg "NOTICE: pg_rewind failed, falling back to full pg_basebackup."
+        log_msg "NOTICE: pg_rewind failed (this is normal if timelines diverged too far), falling back to full pg_basebackup."
     fi
 fi
 
 if [ $REWIND_OK -eq 0 ]; then
-    log_msg "Performing full pg_basebackup..."
+    log_msg "Performing full pg_basebackup from $MASTER_HOST..."
+    # Очистка старых данных перед полной закачкой
     if [ -d "$PG_DATA" ] && [ -n "$PG_VER" ]; then
         rm -rf "${PG_DATA:?}"/*
     fi
     
-    if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
-        --slot="$SLOT_NAME" --create-slot -X stream --no-password >> "$LOG_FILE" 2>&1; then
+    # Попытка создать слот во время бэкапа
+    if sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
+        --slot="$SLOT_NAME" --create-slot -X stream >> "$LOG_FILE" 2>&1; then
         log_msg "SUCCESS: pg_basebackup completed with slot creation."
     else
         log_msg "WARNING: Basebackup with --create-slot failed. Trying using existing slot..."
-        if sudo -u postgres "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
-            --slot="$SLOT_NAME" -X stream --no-password >> "$LOG_FILE" 2>&1; then
+        if sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/pg_basebackup" -h "$MASTER_HOST" -p "$PG_PORT" -D "$PG_DATA" -U "$USER" -P -R \
+            --slot="$SLOT_NAME" -X stream >> "$LOG_FILE" 2>&1; then
             log_msg "SUCCESS: pg_basebackup completed."
         else
-            log_msg "FATAL: All pg_basebackup attempts failed."
+            log_msg "FATAL: All pg_basebackup attempts failed. Check Master connectivity and HBA."
             exit 1
         fi
     fi
 fi
 
-# 7. Финализация
+# ==============================================================================
+# 8. ФИНАЛИЗАЦИЯ (Конфиги, Слоты и Старт)
+# ==============================================================================
+# Сигнал для Postgres 12+, что нужно работать в режиме Standby
 sudo -u postgres touch "$PG_DATA/standby.signal"
 
-if [ $REWIND_OK -eq 1 ]; then
-    log_msg "Writing recovery configuration for master $MASTER_HOST..."
-    AUTO_CONF="$PG_DATA/postgresql.auto.conf"
-    sudo -u postgres touch "$AUTO_CONF"
-    sudo -u postgres sed -i '/^primary_conninfo/d; /^primary_slot_name/d' "$AUTO_CONF"
-    printf "primary_conninfo = 'host=%s port=%s user=%s application_name=%s'\nprimary_slot_name = '%s'\n" \
-        "$MASTER_HOST" "$PG_PORT" "$USER" "$MY_NAME" "$SLOT_NAME" \
-        | sudo -u postgres tee -a "$AUTO_CONF" > /dev/null
+# --- Очистка и запись postgresql.auto.conf ---
+log_msg "Cleaning and writing recovery configuration to postgresql.auto.conf..."
+AUTO_CONF="$PG_DATA/postgresql.auto.conf"
+sudo -u postgres touch "$AUTO_CONF"
 
-    log_msg "Ensuring replication slot $SLOT_NAME on $MASTER_HOST..."
-    sudo -u postgres "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -tAc \
-        "SELECT pg_create_physical_replication_slot('$SLOT_NAME') WHERE NOT EXISTS \
-         (SELECT 1 FROM pg_replication_slots WHERE slot_name = '$SLOT_NAME');" \
-        >> "$LOG_FILE" 2>&1
-fi
+# Удаляем все старые дубликаты, чтобы файл не рос (ваша защита от "слоеного пирога")
+sudo -u postgres sed -i '/^primary_conninfo/d' "$AUTO_CONF"
+sudo -u postgres sed -i '/^primary_slot_name/d' "$AUTO_CONF"
 
+# Пишем одну актуальную строку
+printf "primary_conninfo = 'host=%s port=%s user=%s application_name=%s'\nprimary_slot_name = '%s'\n" \
+    "$MASTER_HOST" "$PG_PORT" "$USER" "$MY_NAME" "$SLOT_NAME" \
+    | sudo -u postgres tee -a "$AUTO_CONF" > /dev/null
+
+# --- Универсальная проверка слота на мастере ---
+# Гарантируем, что слот существует, даже если предыдущие шаги его не создали.
+log_msg "Ensuring replication slot '$SLOT_NAME' exists on master $MASTER_HOST..."
+sudo -u postgres PGPASSFILE="$PGPASSFILE" "$PG_BIN/psql" -h "$MASTER_HOST" -p "$PG_PORT" -U "$USER" -d postgres -tAc \
+    "SELECT pg_create_physical_replication_slot('$SLOT_NAME') WHERE NOT EXISTS \
+     (SELECT 1 FROM pg_replication_slots WHERE slot_name = '$SLOT_NAME');" \
+    >> "$LOG_FILE" 2>&1 || log_msg "NOTICE: Slot creation skipped (it might already be active)."
+
+# Важно: фиксируем права владельца
 chown -R postgres:postgres "$PG_DATA"
 
+# Синхронизируем порт в основном конфиге /etc/ (для корректной работы pg_lsclusters)
 CONF_PATH="/etc/postgresql/${PG_VER}/${PG_INST}/postgresql.conf"
 if [ -f "$CONF_PATH" ]; then
-    sed -i "s/^port[[:space:]]*=[[:space:]]*.*/port = $PG_PORT/" "$CONF_PATH"
+    sed -i "s/^[#[:space:]]*port[[:space:]]*=[[:space:]]*.*/port = $PG_PORT/" "$CONF_PATH"
 fi
 
+# Финальный запуск
 log_msg "Starting $PG_SVC..."
-systemctl start "$PG_SVC"
-log_msg "--- RECOVERY FINISHED SUCCESSFULLY ---"
+if systemctl start "$PG_SVC"; then
+    log_msg "--- RECOVERY FINISHED SUCCESSFULLY ---"
+else
+    log_msg "FATAL: Service $PG_SVC failed to start. Check Postgres logs: /var/log/postgresql/..."
+    exit 1
+fi
