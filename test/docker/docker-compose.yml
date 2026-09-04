@@ -1,0 +1,25 @@
+# Three nodes that know each other only by name, never by address. Docker's
+# embedded DNS stands in for the Kubernetes headless service: every container
+# is reachable as its service name, and its address changes on recreation.
+services:
+  node-a:
+    build: { context: ../.., dockerfile: test/docker/Dockerfile }
+    hostname: node-a
+    command: ["gorgonad", "-v"]
+    volumes:
+      - ./node-a.conf:/etc/gorgona/gorgonad.conf:ro
+      - ./client.conf:/etc/gorgona/gorgona.conf:ro
+  node-b:
+    build: { context: ../.., dockerfile: test/docker/Dockerfile }
+    hostname: node-b
+    command: ["gorgonad", "-v"]
+    volumes:
+      - ./node-b.conf:/etc/gorgona/gorgonad.conf:ro
+      - ./client.conf:/etc/gorgona/gorgona.conf:ro
+  node-c:
+    build: { context: ../.., dockerfile: test/docker/Dockerfile }
+    hostname: node-c
+    command: ["gorgonad", "-v"]
+    volumes:
+      - ./node-c.conf:/etc/gorgona/gorgonad.conf:ro
+      - ./client.conf:/etc/gorgona/gorgona.conf:ro
