@@ -1,0 +1,26 @@
+[Unit]
+Description=Gorgona to Prometheus Bridge
+Wants=network-online.target
+After=network-online.target pushgateway.service
+Requires=pushgateway.service
+ 
+[Service] 
+Type=simple 
+ExecStart=/usr/bin/gorgona_bridge.sh
+
+Restart=always
+RestartSec=5
+
+# Убивать весь process group, включая gorgona
+KillMode=control-group
+
+# Не оставлять зависший stop
+TimeoutStopSec=10
+
+# Если процесс неожиданно умер
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target
+
