@@ -443,7 +443,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     /* RE-CHAINING: Update hashes for all subsequent alerts in the array */
     uint64_t running_prev_hash = alert->curr_hash;
-    for (int k = insert_pos + 1; k <= rec->count; k++) {
+    for (int k = insert_pos + 1; k < rec->count; k++) {
         Alert *next = &rec->alerts[k];
         next->prev_hash = running_prev_hash;
         uint64_t next_link_data[3] = { next->id, next->prev_hash, next->content_hash };
@@ -500,9 +500,10 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
                         strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
     char *response = malloc(needed_len);
     if (response) {
-        int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
-                           pubkey_hash_b64, new_alert->id, (long)new_alert->unlock_at, 
-                           (long)new_alert->expire_at, bt, bk, bi, bg);
+        int len = snprintf(response, needed_len, "ALERT|%s|%" PRIu64 "|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                   pubkey_hash_b64, new_alert->id, new_alert->curr_hash,
+                   (long)new_alert->unlock_at, (long)new_alert->expire_at, 
+                   bt, bk, bi, bg);
         if (len > 0) {
             size_t actual_len = (size_t)len;
             for (int j = 0; j < max_clients; j++) {
@@ -631,8 +632,12 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                     char *resp = malloc(resp_len);
                     if (resp) {
                         /* Format the ALERT message according to protocol spec */
-                        int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
-                                         pubkey_hash_b64, a->id, (long)a->unlock_at, (long)a->expire_at, 
+                        int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
+                                         pubkey_hash_b64, 
+                                         a->id, 
+                                         a->curr_hash,
+                                         (long)a->unlock_at, 
+                                         (long)a->expire_at, 
                                          bt, bk, bi, bg);
                         if (l > 0) {
                             enqueue_message(sub_index, resp, (size_t)l);

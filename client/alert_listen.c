@@ -497,6 +497,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
 
     char *pubkey_hash_b64 = strtok(copy, "|");
     char *id_str          = strtok(NULL, "|");
+    char *chain_hash_str  = strtok(NULL, "|");
     char *unlock_at_str   = strtok(NULL, "|");
     char *expire_at_str   = strtok(NULL, "|");
     char *encrypted_text  = strtok(NULL, "|");
@@ -555,7 +556,9 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
      */
     printf("Received Alert: Recipient_Hash=%s\n", pubkey_hash_b64);
     printf("Alert ID: %" PRIu64 "\n", id);
-
+    if (verbose && chain_hash_str) {
+        printf("Hash in the chain: %s\n", chain_hash_str);
+    }
     char buf_create[32], buf_unlock[32], buf_expire[32];
     struct tm tm_info;
 

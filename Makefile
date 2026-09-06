@@ -16,8 +16,8 @@ CC      := gcc
 OPT_FLAGS := -O1
 DEBUG_LDFLAGS :=
 # --- Debug Mode (Uncomment the lines below to enable debugging and Address Sanitizer) ---
-# OPT_FLAGS := -g -O0 -fsanitize=address
-# DEBUG_LDFLAGS := -fsanitize=address
+#OPT_FLAGS := -g -O0 -fsanitize=address
+#DEBUG_LDFLAGS := -fsanitize=address
 CFLAGS  := $(OPT_FLAGS) -std=gnu11 -Wall -pthread -Icommon -Iclient -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
 LDFLAGS := $(DEBUG_LDFLAGS) -lssl -lcrypto -lm
 #
@@ -120,3 +120,4 @@ clean:
 	find . -name "*.o" -type f -delete
 
 rebuild: clean all
+
