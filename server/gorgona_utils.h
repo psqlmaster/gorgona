@@ -124,7 +124,7 @@ void clean_expired_alerts(Recipient *rec);
 void remove_oldest_alert(Recipient *rec);
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
-               int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active);
+               int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active, uint64_t remote_prev_hash, uint64_t remote_curr_hash);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
 void send_current_alerts(int sub_index, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
