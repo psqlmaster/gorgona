@@ -271,7 +271,7 @@ static void process_send(int i, char *buffer) {
 
     /* Capture insertion index (res >= 0) */
     int res = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, 
-                       base64_encrypted_key, base64_iv, base64_tag, sd, 0, 0); 
+                       base64_encrypted_key, base64_iv, base64_tag, sd, 0, 0, 1); 
 
     if (res >= 0) {
         Recipient *rec = find_recipient(pubkey_hash);
@@ -543,15 +543,22 @@ static void process_auth(int i, char *buffer) {
 
 /**
  * Handles the "REPL|" command for alert replication between peers.
- * UPDATED: Optimized for Hash Chain integrity and Backfill support.
+ * 
+ * ANTI-STORM LOGIC:
+ * 1. Freshness Gate: Only gossip alerts created within the last 120 seconds.
+ * 2. Append-Only Gossip: Only broadcast new alerts if they are at the tip of the chain.
+ * 3. State-Change Revocation: Only broadcast revocations if the 'active' status actually changes.
  */
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
     gettimeofday(&start_tv, NULL);
+
     Subscriber *sub = &subscribers[i];
     if (sub->auth_state != AUTH_OK) return;
+
     char *rest = strdup(buffer + 5); 
     if (!rest) return;
+
     /* Tokenization */
     char *id_str      = strtok(rest, "|");
     char *create_str  = strtok(NULL, "|");
@@ -563,69 +570,86 @@ static void process_repl(int i, char *buffer) {
     char *key_b64     = strtok(NULL, "|");
     char *iv_b64      = strtok(NULL, "|");
     char *tag_b64     = strtok(NULL, "|");
+
     if (tag_b64) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
         time_t u_at = (time_t)atol(unlock_str);
         time_t e_at = (time_t)atol(expire_str);
-        int is_active = atoi(active_str);
+        int incoming_active = atoi(active_str);
+
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
         if (ph && h_len == PUBKEY_HASH_LEN) {
+            
             /* 
-             * Пытаемся добавить алерт. 
-             * add_alert внутри сам пересчитает хэш-цепочку (Re-chaining),
-             * если алерт вставится в середину (Backfill).
+             * Updated add_alert call including incoming_active status.
+             * This prevents state-flip-flop storms during initial ingestion.
              */
             int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
-                                sub->sock, original_id, c_at);
+                                sub->sock, original_id, c_at, incoming_active);
+            
             Recipient *rec = find_recipient(ph);
-            /* CASE 1: Новый алерт (которого у нас еще не было) */
-            if (rec && res >= 0) {
-                Alert *inserted_a = &rec->alerts[res];
-                /* Метрики скорости */
-                gettimeofday(&end_tv, NULL);
-                double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
-                               (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
-                mesh_update_speed(sub->ip_address, strlen(buffer), delta);
-                /* Уведомляем локальных подписчиков */
-                notify_subscribers(ph, inserted_a);
-                /* 
-                 * СТРАТЕГИЧЕСКИЙ GOSSIP:
-                 * Мы пересылаем алерт дальше, если:
-                 * 1. res >= 0 (Это РЕАЛЬНО новый для нас алерт, мы не видели его раньше).
-                 * 2. Алерт "свежий" (создан менее 10 минут назад).
-                 * из-за сетевых задержек алерты могут приходить не по порядку Snowflake ID.
-                 */
+            if (rec) {
                 time_t now = time(NULL);
-                if (is_active && (now - c_at) < 600) { 
-                    broadcast_replication(ph, inserted_a, sub->sock);
+                /* Gating: Only gossip if alert is less than 2 minutes old */
+                bool is_fresh = (abs((int)(now - c_at)) < 120);
+
+                if (res >= 0 || res == -4) {
+                    gettimeofday(&end_tv, NULL);
+                    double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
+                                   (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
+                    mesh_update_speed(sub->ip_address, strlen(buffer), delta);
                 }
-            } 
-            /* CASE 2: Обработка отзывов (Revocations / Tombstones) */
-            /* Даже если алерт уже был (res == -4), статус 'active' мог измениться */
-            if (rec && (res >= 0 || res == -4)) {
-                for (int j = 0; j < rec->count; j++) {
-                    if (rec->alerts[j].id == original_id) {
-                        /* Если пришел статус "неактивен", а у нас он еще "активен" */
-                        if (!is_active && rec->alerts[j].active) {
-                            alert_db_deactivate_alert(&rec->alerts[j]);
-                            rec->waste_count++;
-                            /* Распространяем отзыв дальше по Mesh */
-                            broadcast_replication(ph, &rec->alerts[j], sub->sock);
-                            /* Уведомляем локальных клиентов об отзыве */
-                            char notify_cmd[64];
-                            snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, original_id);
-                            for (int s = 0; s < max_clients; s++) {
-                                if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
-                                    if (subscribers[s].pubkey_hash[0] == '\0' || 
-                                        strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
-                                        enqueue_message(s, notify_cmd, strlen(notify_cmd));
+
+                /* Scenario A: New Alert received */
+                if (res >= 0) {
+                    Alert *a = &rec->alerts[res];
+                    bool is_append = (res == rec->count - 1);
+
+                    if (a->active) {
+                        notify_subscribers(ph, a);
+                        /* 
+                         * STORM PROTECTION: Gossip ONLY if it's a fresh APPEND.
+                         * Backfills (history sync) are kept local. 
+                         */
+                        if (is_append && is_fresh) {
+                            broadcast_replication(ph, a, sub->sock);
+                        }
+                    }
+                } 
+
+                /* Scenario B: Revocation or Status Update */
+                /* Check both new (res >= 0) and already known (res == -4) alerts */
+                if (res >= 0 || res == -4) {
+                    for (int j = 0; j < rec->count; j++) {
+                        if (rec->alerts[j].id == original_id) {
+                            Alert *a = &rec->alerts[j];
+                            
+                            /* If incoming status is 'inactive' but local is still 'active' */
+                            if (!incoming_active && a->active) {
+                                alert_db_deactivate_alert(a);
+                                rec->waste_count++;
+
+                                /* Broadcast deactivation ONLY if it's a fresh event */
+                                if (is_fresh) {
+                                    broadcast_replication(ph, a, sub->sock);
+                                }
+
+                                /* Notify clients about revocation immediately */
+                                char notify_cmd[64];
+                                int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, original_id);
+                                for (int s = 0; s < max_clients; s++) {
+                                    if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
+                                        if (subscribers[s].pubkey_hash[0] == '\0' || 
+                                            strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                                            enqueue_message(s, notify_cmd, (size_t)n_len);
+                                        }
                                     }
                                 }
                             }
+                            break;
                         }
-                        break;
                     }
                 }
             }
@@ -795,71 +819,67 @@ cleanup_dec:
  */
 static void process_revoke(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    char *rest = strdup(buffer + 7); /* Skip "REVOKE|" */
+    char *rest = strdup(buffer + 7);
     if (!rest) return;
+
     char *id_str = strtok(rest, "|");
     char *hash_b64 = strtok(NULL, "|");
     char *pubkey_b64 = strtok(NULL, "|");
     char *sig_b64 = strtok(NULL, "|");
+
     if (!id_str || !hash_b64 || !pubkey_b64 || !sig_b64) {
         enqueue_message(i, "Error: Incomplete REVOKE data", 28);
-        free(rest);
-        return;
+        free(rest); return;
     }
 
     uint64_t alert_id = strtoull(id_str, NULL, 10);
-    
-    /* Ownership verification: The hash of the submitted key must match the target hash */
     size_t pub_len;
     unsigned char *pub_raw = base64_decode(pubkey_b64, &pub_len);
     if (!pub_raw) {
         enqueue_message(i, "Error: Invalid PubKey encoding", 28);
-        free(rest);
-        return;
+        free(rest); return;
     }
-    
+
     unsigned char calculated_hash[PUBKEY_HASH_LEN];
     compute_raw_pubkey_hash(pub_raw, pub_len, calculated_hash);
     char *calc_hash_b64 = base64_encode(calculated_hash, PUBKEY_HASH_LEN);
 
     if (strcmp(calc_hash_b64, hash_b64) != 0) {
         enqueue_message(i, "Error: Key ownership mismatch", 28);
-        free(pub_raw); free(calc_hash_b64); free(rest);
-        return;
+        free(pub_raw); free(calc_hash_b64); free(rest); return;
     }
 
-    /* Cryptographic verification of a message ID signature */
     if (verify_id_signature(alert_id, pub_raw, pub_len, sig_b64) != 0) {
         enqueue_message(i, "Error: Invalid signature", 23);
-        free(pub_raw); free(calc_hash_b64); free(rest);
-        return;
+        free(pub_raw); free(calc_hash_b64); free(rest); return;
     }
 
-    /* Deactivation in the local database */
     Recipient *rec = find_recipient(calculated_hash);
-    int res = alert_db_revoke_by_id(rec, alert_id);
+    if (!rec) {
+        enqueue_message(i, "Error: Alert history not found", 30);
+        free(pub_raw); free(calc_hash_b64); free(rest); return;
+    }
 
-    if (res == 0) {
+    Alert *target = NULL;
+    for (int j = 0; j < rec->count; j++) {
+        if (rec->alerts[j].id == alert_id) {
+            target = &rec->alerts[j];
+            break;
+        }
+    }
+
+    if (target && target->active) {
+        /* Deactivate locally */
+        alert_db_deactivate_alert(target);
+        rec->waste_count++;
+
         enqueue_message(i, "OK: Alert revoked", 16);
         log_event("INFO", sub->sock, sub->ip_address, sub->port, "Alert %" PRIu64 " revoked by owner", alert_id);
-        
-        /* P2P Replication of Cancellations to Other Nodes */
-        size_t push_max = strlen(pubkey_b64) + strlen(sig_b64) + 256;
-        char *push_msg = malloc(push_max);
-        if (push_msg) {
-            int p_len = snprintf(push_msg, push_max, "REVOKE_PUSH|%" PRIu64 "|%s|%s|%s", 
-                                 alert_id, hash_b64, pubkey_b64, sig_b64);
-            
-            for (int p = 0; p < max_clients; p++) {
-                if (client_sockets[p] > 0 && subscribers[p].type == SUB_TYPE_PEER && 
-                    subscribers[p].auth_state == AUTH_OK && client_sockets[p] != sub->sock) {
-                    enqueue_message(p, push_msg, (size_t)p_len);
-                }
-            }
-            free(push_msg);
-        }
-        
-        /* Notification to local subscribers (customers) */
+
+        /* Broadcast revocation via unified REPL mechanism (active=0) */
+        broadcast_replication(calculated_hash, target, sub->sock);
+
+        /* Notify local clients */
         char notify_cmd[64];
         int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, alert_id);
         for (int s = 0; s < max_clients; s++) {
@@ -873,8 +893,8 @@ static void process_revoke(int i, char *buffer) {
         enqueue_message(i, "Error: Alert not found or already inactive", 43);
     }
 
-    free(pub_raw); 
-    free(calc_hash_b64); 
+    free(pub_raw);
+    free(calc_hash_b64);
     free(rest);
 }
 

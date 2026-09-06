@@ -290,7 +290,7 @@ void remove_oldest_alert(Recipient *rec) {
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
                char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
-               int client_fd, uint64_t forced_id, time_t forced_create_at) {
+               int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active) {
     
     /* 1. Recipient Management */
     Recipient *rec = find_recipient(pubkey_hash);
@@ -307,6 +307,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         expire_at = local_ttl_limit;
     }
 
+    /* Identity Assignment - Moved up for early duplicate check */
+    uint64_t final_id = (forced_id > 0) ? forced_id : generate_snowflake_id();
+    time_t final_create_at = (forced_id > 0) ? forced_create_at : time(NULL);
+
     /* Source identification for logging */
     const char *client_ip = NULL;
     int client_port = 0;
@@ -318,8 +322,33 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* 3. DETERMINISTIC HOUSEKEEPING (Moved to front)
-     * We must shrink the array BEFORE calculating insertion positions. */
+    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ (FIX 1) --- 
+     * Проверяем наличие ID ДО того, как начнем Housekeeping (удаление старых).
+     */
+    for (int j = 0; j < rec->count; j++) {
+        if (rec->alerts[j].id == final_id) {
+            return -4; /* Алерт уже существует, ничего не делаем */
+        }
+    }
+
+    /* --- УМНОЕ ВЫТЕСНЕНИЕ (FIX 2) --- 
+     * Если база полная, проверяем, не пытаемся ли мы вставить алерт, который 
+     * "старше" самого старого в нашей памяти. Это предотвращает циклическую перезапись.
+     */
+    if (rec->count >= max_alerts && rec->count > 0) {
+        uint64_t min_id_in_db = rec->alerts[0].id;
+        for (int i = 1; i < rec->count; i++) {
+            if (rec->alerts[i].id < min_id_in_db) min_id_in_db = rec->alerts[i].id;
+        }
+        if (final_id < min_id_in_db) {
+            // Игнорируем алерт, так как он за пределами нашего текущего окна хранения
+            return -1; 
+        }
+    }
+
+    /* 3. DETERMINISTIC HOUSEKEEPING
+     * Теперь безопасно удаляем старые, так как мы точно знаем, что добавим новый уникальный алерт.
+     */
     clean_expired_alerts_logic(rec, cluster_now);
     while (rec->count >= max_alerts && rec->count > 0) {
         remove_oldest_alert(rec);
@@ -349,17 +378,13 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         return -3;
     }
 
-    /* Identity Assignment */
-    uint64_t final_id = (forced_id > 0) ? forced_id : generate_snowflake_id();
-    time_t final_create_at = (forced_id > 0) ? forced_create_at : time(NULL);
-
-    /* Anti-Replay Layer 2: Deduplication (Check against cleaned array) */
+    /* Anti-Replay Layer 2: Payload Content Deduplication */
     for (int j = 0; j < rec->count; j++) {
-        if (rec->alerts[j].id == final_id) goto duplicate_cleanup;
         if (rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
                 log_event("WARN", client_fd, client_ip, client_port, "Replay attack: Duplicate payload");
-                goto replay_cleanup;
+                free(decoded_text); free(decoded_key); free(decoded_iv); free(decoded_tag);
+                return -2;
             }
         }
     }
@@ -396,19 +421,19 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     alert->iv = decoded_iv;
     alert->iv_len = new_iv_len;
     memcpy(alert->tag, decoded_tag, (new_tag_len < 16) ? new_tag_len : 16);
-    alert->active = 1;
+    alert->active = is_active; 
 
     /* XXH3 Hash Chaining */
-    XXH3_state_t state;
-    XXH3_64bits_reset(&state);
-    XXH3_64bits_update(&state, alert->text, alert->text_len);
-    XXH3_64bits_update(&state, alert->encrypted_key, alert->encrypted_key_len);
-    XXH3_64bits_update(&state, alert->iv, alert->iv_len);
-    XXH3_64bits_update(&state, alert->tag, 16);
-    alert->content_hash = XXH3_64bits_digest(&state);
+    XXH3_state_t hash_state;
+    XXH3_64bits_reset(&hash_state);
+    XXH3_64bits_update(&hash_state, alert->text, alert->text_len);
+    XXH3_64bits_update(&hash_state, alert->encrypted_key, alert->encrypted_key_len);
+    XXH3_64bits_update(&hash_state, alert->iv, alert->iv_len);
+    XXH3_64bits_update(&hash_state, alert->tag, 16);
+    alert->content_hash = XXH3_64bits_digest(&hash_state);
 
     if (insert_pos == 0) {
-        alert->prev_hash = 0; /* Window start */
+        alert->prev_hash = 0;
     } else {
         alert->prev_hash = rec->alerts[insert_pos - 1].curr_hash;
     }
@@ -439,11 +464,6 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     /* 6. PERSISTENCE */
     if (use_disk_db) {
-        /* 
-         * Always use append-only save for performance during high-load sync.
-         * The chain on disk will be sorted and healed during the next 
-         * global maintenance (Vacuum) cycle.
-         */
         if (alert_db_save_alert(rec, alert) != 0) {
             log_event("ERROR", client_fd, client_ip, client_port, "Persistence failed");
         }
@@ -453,7 +473,6 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     free(decoded_tag); 
 
-    /* ИСПОЛЬЗУЕМ is_backfill ЗДЕСЬ, чтобы убрать предупреждение и улучшить логи */
     log_event("DEBUG", client_fd, client_ip, client_port, 
               "Alert %" PRIu64 " added to chain at pos %d [%s] [Hash: 0x%016" PRIx64 "]", 
               alert->id, insert_pos, 
@@ -461,14 +480,6 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
               alert->curr_hash); 
 
     return insert_pos;
-
-duplicate_cleanup:
-    free(decoded_text); free(decoded_key); free(decoded_iv); free(decoded_tag);
-    return -4;
-
-replay_cleanup:
-    free(decoded_text); free(decoded_key); free(decoded_iv); free(decoded_tag);
-    return -2;
 }
 
 
@@ -740,12 +751,37 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
                        alert->active, ph_b64, bt, bk, bi, bg);
 
     if (len > 0) {
+        char sender_ip[64] = "";
+        MeshNode *sender_node = NULL;
+
+        if (exclude_fd > 0) {
+            for (int k = 0; k < max_clients; k++) {
+                if (client_sockets[k] == exclude_fd) {
+                    strncpy(sender_ip, subscribers[k].ip_address, sizeof(sender_ip)-1);
+                    sender_node = subscribers[k].node_ptr;
+                    break;
+                }
+            }
+        }
+
         for (int i = 0; i < max_clients; i++) {
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
                 subscribers[i].auth_state == AUTH_OK && 
                 client_sockets[i] != exclude_fd) {
                 
+                /* ПРАВКА 3: УМНОЕ СРАВНЕНИЕ АДРЕСОВ ЧЕРЕЗ L2 ТАБЛИЦУ */
+                if (sender_node && subscribers[i].node_ptr == sender_node) continue;
+                
+                // Если мы знаем IP отправителя, проверяем через mesh_addr_compare,
+                // не является ли целевой пир тем же самым узлом (по всем его IP)
+                if (sender_ip[0] != '\0') {
+                    if (mesh_addr_compare(subscribers[i].node_ptr, sender_ip)) continue;
+                }
+                
+                // Защита от "самого себя" (если нода подключилась к своему внешнему IP)
+                if (is_local_ip(subscribers[i].ip_address)) continue;
+
                 enqueue_message(i, repl_msg, (size_t)len);
             }
         }
