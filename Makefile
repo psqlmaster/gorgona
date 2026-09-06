@@ -9,17 +9,22 @@
 # ==============================================================================
 CLIENT_VER := $(or $(shell git describe --tags --match "gorgona-v*" --abbrev=0 2>/dev/null | sed 's/gorgona-v//'),0.0.0)
 SERVER_VER := $(or $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/dev/null | sed 's/gorgonad-v//'),0.0.0)
-
-# --- Toolchain & Flags ---
 CC      := gcc
-DEBUG_FLAGS := -g -O0 -fsanitize=address
-CFLAGS  := $(DEBUG_FLAGS) -std=gnu11 -Wall -pthread -Icommon -Iclient -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
-LDFLAGS := -fsanitize=address -lssl -lcrypto -lm
-
+#
+# --- Toolchain & Flags ---
+# --- Release Mode (Standard) ---
+OPT_FLAGS := -O1
+DEBUG_LDFLAGS :=
+# --- Debug Mode (Uncomment the lines below to enable debugging and Address Sanitizer) ---
+# OPT_FLAGS := -g -O0 -fsanitize=address
+# DEBUG_LDFLAGS := -fsanitize=address
+CFLAGS  := $(OPT_FLAGS) -std=gnu11 -Wall -pthread -Icommon -Iclient -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
+LDFLAGS := $(DEBUG_LDFLAGS) -lssl -lcrypto -lm
+#
 # Test Environment Flags
 TEST_CFLAGS  := $(CFLAGS) $(shell pkg-config --cflags check 2>/dev/null || echo "")
 TEST_LDFLAGS := $(LDFLAGS) $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck -lrt -lsubunit")
-
+#
 # --- Source File Definitions ---
 COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c common/alert_chaining.c
 
