@@ -543,18 +543,15 @@ static void process_auth(int i, char *buffer) {
 
 /**
  * Handles the "REPL|" command for alert replication between peers.
- * FIXED: Prevents gossip storms by only broadcasting NEW (append-only) alerts.
+ * UPDATED: Optimized for Hash Chain integrity and Backfill support.
  */
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
     gettimeofday(&start_tv, NULL);
-
     Subscriber *sub = &subscribers[i];
     if (sub->auth_state != AUTH_OK) return;
-
     char *rest = strdup(buffer + 5); 
     if (!rest) return;
-
     /* Tokenization */
     char *id_str      = strtok(rest, "|");
     char *create_str  = strtok(NULL, "|");
@@ -566,67 +563,63 @@ static void process_repl(int i, char *buffer) {
     char *key_b64     = strtok(NULL, "|");
     char *iv_b64      = strtok(NULL, "|");
     char *tag_b64     = strtok(NULL, "|");
-
     if (tag_b64) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
         time_t u_at = (time_t)atol(unlock_str);
         time_t e_at = (time_t)atol(expire_str);
         int is_active = atoi(active_str);
-
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
-
         if (ph && h_len == PUBKEY_HASH_LEN) {
-            /* add_alert returns the insertion index */
+            /* 
+             * Пытаемся добавить алерт. 
+             * add_alert внутри сам пересчитает хэш-цепочку (Re-chaining),
+             * если алерт вставится в середину (Backfill).
+             */
             int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
                                 sub->sock, original_id, c_at);
-            
             Recipient *rec = find_recipient(ph);
+            /* CASE 1: Новый алерт (которого у нас еще не было) */
             if (rec && res >= 0) {
                 Alert *inserted_a = &rec->alerts[res];
-                
-                /* Update metrics for successful ingestion */
+                /* Метрики скорости */
                 gettimeofday(&end_tv, NULL);
                 double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
                                (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
                 mesh_update_speed(sub->ip_address, strlen(buffer), delta);
-
-                /* 1. Notify local connected clients (they always want to know) */
+                /* Уведомляем локальных подписчиков */
                 notify_subscribers(ph, inserted_a);
-
                 /* 
-                 * 2. STRATEGIC GOSSIP (Anti-Storm):
-                 * ONLY broadcast to other peers if:
-                 * - This was an APPEND (inserted at the very end of our list).
-                 * - The alert is not ancient (freshness check).
-                 * 
-                 * If res < rec->count - 1, it's a BACKFILL. 
-                 * We do NOT broadcast backfills because it causes infinite loops 
-                 * during mesh synchronization.
+                 * СТРАТЕГИЧЕСКИЙ GOSSIP:
+                 * Мы пересылаем алерт дальше, если:
+                 * 1. res >= 0 (Это РЕАЛЬНО новый для нас алерт, мы не видели его раньше).
+                 * 2. Алерт "свежий" (создан менее 10 минут назад).
+                 * из-за сетевых задержек алерты могут приходить не по порядку Snowflake ID.
                  */
-                if (res == (rec->count - 1)) {
-                    time_t now = time(NULL);
-                    if (is_active && (now - c_at) < STALE_THRESHOLD_SEC) {
-                        broadcast_replication(ph, inserted_a, sub->sock);
-                    }
+                time_t now = time(NULL);
+                if (is_active && (now - c_at) < 600) { 
+                    broadcast_replication(ph, inserted_a, sub->sock);
                 }
             } 
-            
-            /* CASE 3: Sync 'active' status for revocations (even if already exists) */
+            /* CASE 2: Обработка отзывов (Revocations / Tombstones) */
+            /* Даже если алерт уже был (res == -4), статус 'active' мог измениться */
             if (rec && (res >= 0 || res == -4)) {
                 for (int j = 0; j < rec->count; j++) {
                     if (rec->alerts[j].id == original_id) {
+                        /* Если пришел статус "неактивен", а у нас он еще "активен" */
                         if (!is_active && rec->alerts[j].active) {
                             alert_db_deactivate_alert(&rec->alerts[j]);
                             rec->waste_count++;
-                            
-                            /* Relay revocation */
+                            /* Распространяем отзыв дальше по Mesh */
+                            broadcast_replication(ph, &rec->alerts[j], sub->sock);
+                            /* Уведомляем локальных клиентов об отзыве */
                             char notify_cmd[64];
                             snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, original_id);
                             for (int s = 0; s < max_clients; s++) {
                                 if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
-                                    if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                                    if (subscribers[s].pubkey_hash[0] == '\0' || 
+                                        strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
                                         enqueue_message(s, notify_cmd, strlen(notify_cmd));
                                     }
                                 }

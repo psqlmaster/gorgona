@@ -1,0 +1,29 @@
+[Unit]
+Description=Gorgona Distributed Alert Server (Debug Mode)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/lib/gorgona
+
+# добавляем настройки для ASan
+Environment=gorgonad_LOG_FILE=/var/log/gorgona/gorgonad.log
+Environment=ASAN_OPTIONS=log_path=/tmp/asan.log:abort_on_error=1:disable_coredump=0
+
+ExecStartPre=/usr/bin/mkdir -p /var/log/gorgona
+ExecStart=/usr/bin/gorgonad
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Меняем journal на файл, чтобы отчеты ASan (которые бывают очень длинными) не обрезались системой журналирования
+StandardOutput=append:/var/log/gorgona/gorgonad_sys.log
+StandardError=inherit
+
+Restart=on-failure
+LimitNOFILE=65535
+# РАЗРЕШЕНИЕ НА CORE DUMP (Добавляем)
+LimitCORE=infinity
+
+[Install]
+WantedBy=multi-user.target

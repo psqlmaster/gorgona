@@ -1,0 +1,20 @@
+[Unit]
+Description=Gorgona Distributed Alert Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/lib/gorgona
+Environment=gorgonad_LOG_FILE=/var/log/gorgona/gorgonad.log
+ExecStart=/usr/bin/gorgonad
+ExecReload=/bin/kill -HUP $MAINPID
+StandardOutput=journal
+StandardError=journal
+ExecStartPre=/usr/bin/mkdir -p /var/log/gorgona
+Restart=on-failure
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

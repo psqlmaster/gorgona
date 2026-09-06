@@ -735,42 +735,18 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
         return;
     }
 
-    /* Protocol Update: Added |%d| for alert->active status */
     int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%s|%s|%s|%s|%s",
                        alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
                        alert->active, ph_b64, bt, bk, bi, bg);
 
     if (len > 0) {
-        int sent_to_ips_count = 0;
-        char sent_to_ips[MAX_PEERS * 4][INET_ADDRSTRLEN]; 
-        memset(sent_to_ips, 0, sizeof(sent_to_ips));
-
-        char sender_ip[INET_ADDRSTRLEN] = "";
-        if (exclude_fd > 0) {
-            for (int k = 0; k < max_clients; k++) {
-                if (client_sockets[k] == exclude_fd) {
-                    strncpy(sender_ip, subscribers[k].ip_address, INET_ADDRSTRLEN - 1);
-                    break;
-                }
-            }
-        }
-
         for (int i = 0; i < max_clients; i++) {
-            if (client_sockets[i] > 0 && subscribers[i].type == SUB_TYPE_PEER && subscribers[i].auth_state == AUTH_OK) {
-                if (strcmp(subscribers[i].ip_address, sender_ip) == 0) continue;
-
-                bool already_sent_to_ip = false;
-                for (int j = 0; j < sent_to_ips_count; j++) {
-                    if (strcmp(sent_to_ips[j], subscribers[i].ip_address) == 0) {
-                        already_sent_to_ip = true; break;
-                    }
-                }
-                if (already_sent_to_ip) continue;
-
+            if (client_sockets[i] > 0 && 
+                subscribers[i].type == SUB_TYPE_PEER && 
+                subscribers[i].auth_state == AUTH_OK && 
+                client_sockets[i] != exclude_fd) {
+                
                 enqueue_message(i, repl_msg, (size_t)len);
-                if (sent_to_ips_count < (MAX_PEERS * 4)) {
-                    strncpy(sent_to_ips[sent_to_ips_count++], subscribers[i].ip_address, INET_ADDRSTRLEN - 1);
-                }
             }
         }
     }

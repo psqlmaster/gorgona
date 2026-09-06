@@ -12,8 +12,9 @@ SERVER_VER := $(or $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 
 
 # --- Toolchain & Flags ---
 CC      := gcc
-CFLAGS  := -g -std=gnu11 -Wall -pthread -Icommon -Iclient -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
-LDFLAGS := -lssl -lcrypto -lm
+DEBUG_FLAGS := -g -O0 -fsanitize=address
+CFLAGS  := $(DEBUG_FLAGS) -std=gnu11 -Wall -pthread -Icommon -Iclient -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L
+LDFLAGS := -fsanitize=address -lssl -lcrypto -lm
 
 # Test Environment Flags
 TEST_CFLAGS  := $(CFLAGS) $(shell pkg-config --cflags check 2>/dev/null || echo "")
