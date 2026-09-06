@@ -289,9 +289,10 @@ void remove_oldest_alert(Recipient *rec) {
  * @return insertion index on success, negative values on error.
  */
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
-               char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
-               int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active) {
-    
+              char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag,
+              int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active,
+              uint64_t remote_prev_hash, uint64_t remote_curr_hash) {
+
     /* 1. Recipient Management */
     Recipient *rec = find_recipient(pubkey_hash);
     if (!rec) rec = add_recipient(pubkey_hash);
@@ -322,16 +323,32 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ (FIX 1) --- 
-     * Проверяем наличие ID ДО того, как начнем Housekeeping (удаление старых).
-     */
+    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ С ИСЦЕЛЕНИЕМ (FIX STORM) --- */
     for (int j = 0; j < rec->count; j++) {
         if (rec->alerts[j].id == final_id) {
-            return -4; /* Алерт уже существует, ничего не делаем */
+            /* Если это репликация от пира, мы ОБЯЗАНЫ исправить локально поврежденные хеши */
+            if (forced_id > 0 && remote_curr_hash != 0) {
+                if (rec->alerts[j].prev_hash != remote_prev_hash || 
+                    rec->alerts[j].curr_hash != remote_curr_hash) {
+                    
+                    log_event("WARN", client_fd, client_ip, client_port,
+                              "CHAIN HEALING: Overwriting corrupted hashes for existing ID %" PRIu64, final_id);
+                    
+                    rec->alerts[j].prev_hash = remote_prev_hash;
+                    rec->alerts[j].curr_hash = remote_curr_hash;
+                    
+                    /* Если это последний алерт в цепочке, обновляем last_hash, 
+                       чтобы процесс SYNC_CHAIN перестал считать нас рассинхронизированными */
+                    if (j == rec->count - 1) {
+                        rec->last_hash = remote_curr_hash;
+                    }
+                }
+            }
+            return -4; /* Возвращаем -4, чтобы процессинг знал, что это дубликат, но данные уже исцелены */
         }
     }
 
-    /* --- УМНОЕ ВЫТЕСНЕНИЕ (FIX 2) --- 
+    /* --- УМНОЕ ВЫТЕСНЕНИЕ
      * Если база полная, проверяем, не пытаемся ли мы вставить алерт, который 
      * "старше" самого старого в нашей памяти. Это предотвращает циклическую перезапись.
      */
@@ -432,26 +449,34 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     XXH3_64bits_update(&hash_state, alert->tag, 16);
     alert->content_hash = XXH3_64bits_digest(&hash_state);
 
-    if (insert_pos == 0) {
-        alert->prev_hash = 0;
+    /* ЛОГИКА ВЫЧИСЛЕНИЯ ХЕШЕЙ ЦЕПОЧКИ */
+    if (forced_id > 0 && remote_curr_hash != 0) {
+        /* РЕПЛИКАЦИЯ: Доверяем хешам от пира, предотвращаем corruption при дырах */
+        alert->prev_hash = remote_prev_hash;
+        alert->curr_hash = remote_curr_hash;
     } else {
-        alert->prev_hash = rec->alerts[insert_pos - 1].curr_hash;
+        /* ЛОКАЛЬНАЯ ВСТАВКА (SEND от клиента): считаем сами */
+        if (insert_pos == 0) {
+            alert->prev_hash = 0;
+        } else {
+            alert->prev_hash = rec->alerts[insert_pos - 1].curr_hash;
+        }
+        uint64_t link_data[3] = { alert->id, alert->prev_hash, alert->content_hash };
+        alert->curr_hash = XXH3_64bits_withSeed(link_data, sizeof(link_data), 0);
     }
 
-    uint64_t link_data[3] = { alert->id, alert->prev_hash, alert->content_hash };
-    alert->curr_hash = XXH3_64bits_withSeed(link_data, sizeof(link_data), 0);
-
-    /* RE-CHAINING: Update hashes for all subsequent alerts in the array */
-    uint64_t running_prev_hash = alert->curr_hash;
-    for (int k = insert_pos + 1; k < rec->count; k++) {
-        Alert *next = &rec->alerts[k];
-        next->prev_hash = running_prev_hash;
-        uint64_t next_link_data[3] = { next->id, next->prev_hash, next->content_hash };
-        next->curr_hash = XXH3_64bits_withSeed(next_link_data, sizeof(next_link_data), 0);
-        running_prev_hash = next->curr_hash;
-        
-        if (verbose) {
-            log_event("DEBUG", -1, NULL, 0, "Re-chaining alert %" PRIu64, next->id);
+    /* RE-CHAINING: Пересчитываем хеши последующих алертов ТОЛЬКО для локальных вставок! */
+    if (forced_id == 0) {
+        uint64_t running_prev_hash = alert->curr_hash;
+        for (int k = insert_pos + 1; k < rec->count; k++) {
+            Alert *next = &rec->alerts[k];
+            next->prev_hash = running_prev_hash;
+            uint64_t next_link_data[3] = { next->id, next->prev_hash, next->content_hash };
+            next->curr_hash = XXH3_64bits_withSeed(next_link_data, sizeof(next_link_data), 0);
+            running_prev_hash = next->curr_hash;
+            if (verbose) {
+                log_event("DEBUG", -1, NULL, 0, "Re-chaining local alert %" PRIu64, next->id);
+            }
         }
     }
 
@@ -751,9 +776,12 @@ void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int e
         return;
     }
 
-    int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%s|%s|%s|%s|%s",
-                       alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
-                       alert->active, ph_b64, bt, bk, bi, bg);
+    int len = snprintf(repl_msg, msg_capacity, 
+        "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%" PRIu64 "|%" PRIu64 "|%s|%s|%s|%s|%s",
+        alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
+        alert->active, 
+        alert->prev_hash, alert->curr_hash,
+        ph_b64, bt, bk, bi, bg);
 
     if (len > 0) {
         char sender_ip[64] = "";
@@ -823,9 +851,12 @@ void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *
     char *repl_msg = malloc(msg_capacity);
     if (repl_msg) {
         /* Protocol Update: Added |%d| for alert->active status after expire_at */
-        int len = snprintf(repl_msg, msg_capacity, "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%s|%s|%s|%s|%s",
-                           alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
-                           alert->active, ph_b64, bt, bk, bi, bg);
+        int len = snprintf(repl_msg, msg_capacity, 
+            "REPL|%" PRIu64 "|%ld|%ld|%ld|%d|%" PRIu64 "|%" PRIu64 "|%s|%s|%s|%s|%s",
+            alert->id, (long)alert->create_at, (long)alert->unlock_at, (long)alert->expire_at,
+            alert->active, 
+            alert->prev_hash, alert->curr_hash,
+            ph_b64, bt, bk, bi, bg);
         if (len > 0) {
             enqueue_message(sub_index, repl_msg, (size_t)len);
         }

@@ -270,8 +270,9 @@ static void process_send(int i, char *buffer) {
     time_t expire_at = atol(expire_at_str);
 
     /* Capture insertion index (res >= 0) */
-    int res = add_alert(pubkey_hash, unlock_at, expire_at, base64_text, 
-                       base64_encrypted_key, base64_iv, base64_tag, sd, 0, 0, 1); 
+    int res = add_alert(pubkey_hash, unlock_at, expire_at, base64_text,
+                        base64_encrypted_key, base64_iv, base64_tag,
+                        sd, 0, 0, 1, 0, 0); // <-- 0, 0 для remote хешей
 
     if (res >= 0) {
         Recipient *rec = find_recipient(pubkey_hash);
@@ -552,104 +553,98 @@ static void process_auth(int i, char *buffer) {
 static void process_repl(int i, char *buffer) {
     struct timeval start_tv, end_tv;
     gettimeofday(&start_tv, NULL);
-
+    
     Subscriber *sub = &subscribers[i];
     if (sub->auth_state != AUTH_OK) return;
 
-    char *rest = strdup(buffer + 5); 
+    char *rest = strdup(buffer + 5);
     if (!rest) return;
 
     /* Tokenization */
-    char *id_str      = strtok(rest, "|");
-    char *create_str  = strtok(NULL, "|");
-    char *unlock_str  = strtok(NULL, "|");
-    char *expire_str  = strtok(NULL, "|");
-    char *active_str  = strtok(NULL, "|"); 
-    char *hash_b64    = strtok(NULL, "|");
-    char *text_b64    = strtok(NULL, "|");
-    char *key_b64     = strtok(NULL, "|");
-    char *iv_b64      = strtok(NULL, "|");
-    char *tag_b64     = strtok(NULL, "|");
+    char *id_str            = strtok(rest, "|");
+    char *create_str        = strtok(NULL, "|");
+    char *unlock_str        = strtok(NULL, "|");
+    char *expire_str        = strtok(NULL, "|");
+    char *active_str        = strtok(NULL, "|");
+    char *remote_prev_h_str = strtok(NULL, "|");
+    char *remote_curr_h_str = strtok(NULL, "|");
+    char *hash_b64          = strtok(NULL, "|");
+    char *text_b64          = strtok(NULL, "|");
+    char *key_b64           = strtok(NULL, "|");
+    char *iv_b64            = strtok(NULL, "|");
+    char *tag_b64           = strtok(NULL, "|");
 
-    if (tag_b64) {
+    if (tag_b64 && remote_prev_h_str && remote_curr_h_str) {
         uint64_t original_id = strtoull(id_str, NULL, 10);
+        uint64_t remote_prev_hash = strtoull(remote_prev_h_str, NULL, 10);
+        uint64_t remote_curr_hash = strtoull(remote_curr_h_str, NULL, 10);
         time_t c_at = (time_t)atol(create_str);
-        time_t u_at = (time_t)atol(unlock_str);
-        time_t e_at = (time_t)atol(expire_str);
         int incoming_active = atoi(active_str);
 
         size_t h_len;
         unsigned char *ph = base64_decode(hash_b64, &h_len);
         if (ph && h_len == PUBKEY_HASH_LEN) {
             
-            /* 
-             * Updated add_alert call including incoming_active status.
-             * This prevents state-flip-flop storms during initial ingestion.
-             */
-            int res = add_alert(ph, u_at, e_at, text_b64, key_b64, iv_b64, tag_b64, 
-                                sub->sock, original_id, c_at, incoming_active);
+            int res = add_alert(ph, atol(unlock_str), atol(expire_str), text_b64, key_b64, iv_b64, tag_b64, 
+                                sub->sock, original_id, c_at, incoming_active, 
+                                remote_prev_hash, remote_curr_hash);
+            
+            /* ====== ИЗМЕРЕНИЕ ВРЕМЕНИ ====== */
+            if (res >= 0 || res == -4) {
+                gettimeofday(&end_tv, NULL);  // <-- Засекаем время окончания
+                double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) +
+                               (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
+                mesh_update_speed(sub->ip_address, strlen(buffer), delta);
+            }
+            /* =============================== */
             
             Recipient *rec = find_recipient(ph);
             if (rec) {
-                time_t now = time(NULL);
-                /* Gating: Only gossip if alert is less than 2 minutes old */
-                bool is_fresh = (abs((int)(now - c_at)) < 120);
+                for (int j = 0; j < rec->count; j++) {
+                    if (rec->alerts[j].id == original_id) {
+                        Alert *a = &rec->alerts[j];
 
-                if (res >= 0 || res == -4) {
-                    gettimeofday(&end_tv, NULL);
-                    double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) + 
-                                   (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
-                    mesh_update_speed(sub->ip_address, strlen(buffer), delta);
-                }
-
-                /* Scenario A: New Alert received */
-                if (res >= 0) {
-                    Alert *a = &rec->alerts[res];
-                    bool is_append = (res == rec->count - 1);
-
-                    if (a->active) {
-                        notify_subscribers(ph, a);
-                        /* 
-                         * STORM PROTECTION: Gossip ONLY if it's a fresh APPEND.
-                         * Backfills (history sync) are kept local. 
-                         */
-                        if (is_append && is_fresh) {
-                            broadcast_replication(ph, a, sub->sock);
+                        if (a->prev_hash != remote_prev_hash) {
+                            if (verbose) {
+                                log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                                          "Chain Gap Detected! ID %" PRIu64 " expects PrevHash %" PRIu64 ", local is %" PRIu64 ". Healing...",
+                                          original_id, remote_prev_hash, a->prev_hash);
+                            }
+                            char req[512];
+                            snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|50", hash_b64);
+                            enqueue_message(i, req, strlen(req));
                         }
-                    }
-                } 
 
-                /* Scenario B: Revocation or Status Update */
-                /* Check both new (res >= 0) and already known (res == -4) alerts */
-                if (res >= 0 || res == -4) {
-                    for (int j = 0; j < rec->count; j++) {
-                        if (rec->alerts[j].id == original_id) {
-                            Alert *a = &rec->alerts[j];
+                        if (res >= 0 && incoming_active) {
+                            notify_subscribers(ph, a);
+                            time_t now = time(NULL);
+                            bool is_fresh = (abs((int)(now - c_at)) < 120);
+                            bool is_append = (res == rec->count - 1);
                             
-                            /* If incoming status is 'inactive' but local is still 'active' */
+                            if (is_append && is_fresh) {
+                                broadcast_replication(ph, a, sub->sock);
+                            }
+                        }
+                        
+                        if (res >= 0 || res == -4) {
                             if (!incoming_active && a->active) {
                                 alert_db_deactivate_alert(a);
                                 rec->waste_count++;
-
-                                /* Broadcast deactivation ONLY if it's a fresh event */
-                                if (is_fresh) {
+                                if (abs((int)(time(NULL) - c_at)) < 120) {
                                     broadcast_replication(ph, a, sub->sock);
                                 }
-
-                                /* Notify clients about revocation immediately */
                                 char notify_cmd[64];
                                 int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, original_id);
                                 for (int s = 0; s < max_clients; s++) {
                                     if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
-                                        if (subscribers[s].pubkey_hash[0] == '\0' || 
-                                            strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                                        if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
                                             enqueue_message(s, notify_cmd, (size_t)n_len);
                                         }
                                     }
                                 }
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }
@@ -977,52 +972,58 @@ static void process_sync_chain(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     char *rest = strdup(buffer + 11);
     if (!rest) return;
-
     char *hash_b64 = strtok(rest, "|");
     char *id_str = strtok(NULL, "|");
     char *hash_str = strtok(NULL, "|");
-
     if (!hash_b64 || !id_str || !hash_str) { 
         free(rest); 
         return; 
     }
-
     size_t hlen;
     unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
     if (!raw_hash) {
         free(rest);
         return;
     }
-
     uint64_t remote_last_id = strtoull(id_str, NULL, 10);
     uint64_t remote_last_hash = strtoull(hash_str, NULL, 10);
-
     Recipient *rec = find_recipient(raw_hash);
     if (rec && rec->count > 0) {
-        /* Check if we are already in sync */
-        if (rec->alerts[rec->count - 1].id == remote_last_id && 
-            rec->alerts[rec->count - 1].curr_hash == remote_last_hash) {
+        Alert *my_last = &rec->alerts[rec->count - 1];
+        /* Проверка на полную синхронизацию (без изменений) */
+        if (my_last->id == remote_last_id && my_last->curr_hash == remote_last_hash) {
             free(raw_hash);
             free(rest);
             return;
         }
-
-        /* Hash mismatch: Request Level 1 sample (last 20) */
+        /* Активное исправление (Push) 
+           Если наш последний ID больше, чем у пира, значит он отстал.
+           Вместо того чтобы просто просить у него данные, мы сами шлем ему 
+           нашу "верхушку". Это заставит его увидеть расхождение хэшей. */
+        if (my_last->id > remote_last_id) {
+            send_alert_to_peer(i, rec->hash, my_last);
+            if (verbose) {
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                          "Peer is behind on %s. Pushing my last ID %" PRIu64, hash_b64, my_last->id);
+            }
+        }
+        /* Поиск "дыр" (Pull)
+           Если ID совпали, но хэши разные, либо если наш ID меньше.
+           Мы запрашиваем семплы, чтобы найти точку расхождения в истории. */
         char req[512];
         snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|20", hash_b64);
         enqueue_message(i, req, strlen(req));
-        
         if (verbose) {
             log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                      "Chain mismatch for %s. Level 1 search (20 nodes).", hash_b64);
+                      "Chain divergence for %s. (MyHash: %" PRIx64 ", Remote: %" PRIx64 "). Healing started.", 
+                      hash_b64, my_last->curr_hash, remote_last_hash);
         }
     } else {
-        /* We are empty: request full history */
+        /* Мы пустые: запрашиваем всё (без изменений) */
         char heal_cmd[512];
         snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
         enqueue_message(i, heal_cmd, strlen(heal_cmd));
     }
-    
     free(raw_hash);
     free(rest);
 }
