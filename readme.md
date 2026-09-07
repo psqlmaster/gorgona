@@ -51,7 +51,7 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 
 #### Features
 
-- **Immutable Hash Chaining**: Every alert is cryptographically linked to its predecessor using the **XXH3-64** algorithm. This creates a verifiable ledger of messages where any alteration of historical data (even directly in the `mmap` files) is immediately detected and rejected by the mesh.
+- **[Immutable Hash Chaining ↗](docs/replication.md)**: Every alert is cryptographically linked to its predecessor using the **XXH3-64** algorithm. This creates a verifiable ledger of messages where any alteration of historical data (even directly in the `mmap` files) is immediately detected and rejected by the mesh.
 - **Dual-Layer Cryptography**: Total security isolation.
     - **Layer 1 (Command Plane)**: End-to-End security using RSA-OAEP for key transport and AES-256-GCM for content. The server acts as a "blind carrier" and never sees raw data.
     - **Layer 2 (Management Plane)**: Administrative traffic (PEX, Sync, Heartbeats) is encapsulated in a secondary AES-256-GCM layer keyed by a cluster-wide PSK.
