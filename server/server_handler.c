@@ -115,12 +115,22 @@ void cleanup_subscriber(int index) {
  */
 void enqueue_message(int sub_index, const char *msg, size_t msg_len) {
     if (!msg || msg_len == 0) return;
-
     /* Performance Logging */
-    log_event("DEBUG", subscribers[sub_index].sock, subscribers[sub_index].ip_address, 
-              subscribers[sub_index].port, "Enqueued combined response (%zu bytes payload)", 
-              msg_len);
+    if (verbose || log_level[0] == 'd' || log_level[0] == 'D') {
+        char cmd_hint[32] = {0};
+        const char *sep = strpbrk(msg, "| ");
+        if (sep) {
+            size_t n = (size_t)(sep - msg);
+            if (n > sizeof(cmd_hint) - 1) n = sizeof(cmd_hint) - 1;
+            memcpy(cmd_hint, msg, n);
+        } else {
+            strncpy(cmd_hint, msg, sizeof(cmd_hint) - 1);
+        }
 
+        log_event("DEBUG", subscribers[sub_index].sock, subscribers[sub_index].ip_address, 
+                  subscribers[sub_index].port, "TX [%s] (%zu bytes payload)", 
+                  cmd_hint, msg_len);
+    }
     /* Allocate one block for everything: 4 bytes for header + N bytes for payload */
     size_t total_payload_size = sizeof(uint32_t) + msg_len;
     
@@ -252,28 +262,48 @@ void try_connect_peers() {
     time_t now = time(NULL);
     if (now - last_check < PEER_RECONNECT_INTERVAL) return;
     last_check = now;
+
     for (int p = 0; p < cluster_node_count; p++) {
         MeshNode *node = &cluster_nodes[p];
         if (node->status == PEER_STATUS_BANNED || node->status == PEER_STATUS_HANDSHAKE) continue;
         if (node->port <= 0 || node->penalty_until > now) continue;
-        /* --- DNS RESOLUTION & CONNECTION --- */
+
+        /* ПРОВЕРКА 1: Проверяем адрес в конфиге/кэше еще до резолва */
+        if (is_local_ip(node->addr)) {
+            node->status = PEER_STATUS_BANNED;
+            continue;
+        }
+
         struct addrinfo hints, *res, *rp;
         char port_str[12];
         snprintf(port_str, sizeof(port_str), "%d", node->port);
         memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_INET;       /* Force IPv4 for current core compatibility */
+        hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-        /* `getaddrinfo` resolves both “gorgon-service.default.svc” and “1.2.3.4” */
+
         if (getaddrinfo(node->addr, port_str, &hints, &res) != 0) {
             node->metrics.fail_count++;
             continue; 
         }
+
         int sd = -1;
         for (rp = res; rp != NULL; rp = rp->ai_next) {
+            /* Получаем строковый IP из того, что выдал DNS/Resolver */
+            char resolved_ip[64];
+            getnameinfo(rp->ai_addr, rp->ai_addrlen, resolved_ip, sizeof(resolved_ip), NULL, 0, NI_NUMERICHOST);
+
+            /* ПРОВЕРКА 2: Самая важная. Если DNS выдал наш собственный локальный IP */
+            if (is_local_ip(resolved_ip)) {
+                node->status = PEER_STATUS_BANNED;
+                continue; 
+            }
+
             sd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
             if (sd == -1) continue;
+
             set_tcp_keepalive(sd);
             fcntl(sd, F_SETFL, fcntl(sd, F_GETFL, 0) | O_NONBLOCK);
+
             if (connect(sd, rp->ai_addr, rp->ai_addrlen) < 0) {
                 if (errno != EINPROGRESS) {
                     close(sd);
@@ -281,48 +311,42 @@ void try_connect_peers() {
                     continue;
                 }
             }
-            /* In fact, the connection was successfully established */
-            char resolved_ip[64];
-            getnameinfo(rp->ai_addr, rp->ai_addrlen, resolved_ip, sizeof(resolved_ip), NULL, 0, NI_NUMERICHOST);
-            /* STRICT DUPLICATE CHECK по резолвленному IP */
+
+            /* Проверка на дубликаты уже существующих соединений */
             bool already_linked = false;
             for (int i = 0; i < max_clients; i++) {
                 if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, resolved_ip) == 0) {
                     already_linked = true;
-                    
-                    /* [FIX] Link logic: if we found an existing connection for this IP,
-                       ensure it points to the most important node entry (SEED) */
                     if (node->is_seed && (subscribers[i].node_ptr == NULL || !subscribers[i].node_ptr->is_seed)) {
                         subscribers[i].node_ptr = node;
                     }
-                    
-                    /* Synchronize status */
                     if (subscribers[i].auth_state == AUTH_OK) {
                         node->status = PEER_STATUS_AUTHENTICATED;
                     }
                     break;
                 }
             }
+
             if (already_linked) {
                 close(sd);
                 sd = -1;
                 continue;
             }
-            /* We found a slot and reserved it */
+
+            /* Если мы дошли сюда — сокет чист, это не мы сами, можно регистрировать */
             int i;
             for (i = 0; i < max_clients; i++) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = sd;
                     Subscriber *sub = &subscribers[i];
                     sub->sock = sd;
-                    /* We specifically retain the numeric IP address for logs and PEX */
                     strncpy(sub->ip_address, resolved_ip, sizeof(sub->ip_address) - 1);
                     sub->port = node->port;
                     sub->type = SUB_TYPE_PEER;
                     sub->auth_state = AUTH_SENT;
                     sub->node_ptr = node;
                     node->status = PEER_STATUS_HANDSHAKE;
-                    /* PSK Handshake */
+
                     char auth_msg[256];
                     extern int port;
                     int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d|%d", 
