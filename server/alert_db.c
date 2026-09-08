@@ -20,6 +20,14 @@ extern int verbose;
 extern int max_alerts;
 extern uint64_t global_max_alert_id; 
 
+static int cmp_alert_id_asc(const void *a, const void *b) {
+    uint64_t id_a = ((const Alert *)a)->id;
+    uint64_t id_b = ((const Alert *)b)->id;
+    if (id_a < id_b) return -1;
+    if (id_a > id_b) return 1;
+    return 0;
+}
+
 /* A helper function for synchronizing mmap with memory pages */
 static int safe_msync(void *addr, size_t len, int flags) {
     long page_size = sysconf(_SC_PAGESIZE);
@@ -261,10 +269,19 @@ int alert_db_load_recipients(void) {
                 a->is_mmaped = true; 
                 rec->count++; 
                 offset += (88 + payload);
-                
-                /* Update the tip of the chain for the recipient */
-                rec->last_hash = a->curr_hash;
             }
+
+            /* Сортировка массива по ID (возрастание) для корректной работы бинарного поиска
+             * и корректное определение хвоста цепи (last_hash).
+             * Хеш-цепь НЕ пересчитываем — оставляем как есть с диска,
+             * чтобы не создавать расхождений с другими нодами кластера. */
+            if (rec->count > 0) {
+                qsort(rec->alerts, rec->count, sizeof(Alert), cmp_alert_id_asc);
+                rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+            } else {
+                rec->last_hash = 0;
+            }
+
             time_t now = time(NULL);
             rec->waste_count = 0;
             for (int i = 0; i < rec->count; i++) {
