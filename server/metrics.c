@@ -7,6 +7,7 @@
 #include "common.h"
 #include "admin_mesh.h"
 #include "gorgona_utils.h"
+#include "alert_chaining.h"
 #include "snowflake.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>

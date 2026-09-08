@@ -265,7 +265,16 @@ int alert_db_load_recipients(void) {
                 /* Update the tip of the chain for the recipient */
                 rec->last_hash = a->curr_hash;
             }
-            
+            time_t now = time(NULL);
+            rec->waste_count = 0;
+            for (int i = 0; i < rec->count; i++) {
+                if (!rec->alerts[i].active) {
+                    rec->waste_count++;
+                } else if (rec->alerts[i].expire_at != 0 && 
+                           rec->alerts[i].expire_at <= now) {
+                    rec->waste_count++;
+                }
+            }
             rec->used_size = offset;
             
             if (corrupted) {

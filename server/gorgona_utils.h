@@ -1,9 +1,8 @@
-/* 
-* BSD 3-Clause License
-* Copyright (c) 2025, Alexander Shcheglov
-* All rights reserved. 
+/*
+BSD 3-Clause License
+Copyright (c) 2025, Alexander Shcheglov
+All rights reserved.
 */
-
 #ifndef GORGONA_UTILS_H
 #define GORGONA_UTILS_H
 
@@ -11,13 +10,21 @@
 #include <time.h>
 #include <stdbool.h>
 #include <sys/socket.h>
-#include <netinet/in.h> 
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdint.h>
-#include "alert_chaining.h"
 #include "encrypt.h"
 #include "config.h"
 #include "admin_mesh.h"
+
+/* ============================================================
+ * FORWARD DECLARATIONS
+ * Разрываем циклическую зависимость с alert_chaining.h.
+ * Поскольку Alert и Recipient используются только как указатели
+ * в объявлениях функций ниже, полных определений не требуется.
+ * ============================================================ */
+typedef struct Alert Alert;
+typedef struct Recipient Recipient;
 
 #define MODE_LIVE 1
 #define MODE_ALL 2
@@ -25,8 +32,8 @@
 #define MODE_LOCK 4
 #define MODE_LAST 5
 #define MODE_NEW 6
-#define INITIAL_RECIPIENT_CAPACITY 16
 
+#define INITIAL_RECIPIENT_CAPACITY 16
 #define REPL_RING_SIZE 1000
 #define PEER_RECONNECT_INTERVAL 10
 
@@ -38,11 +45,10 @@
 #define AUTH_NONE       0
 #define AUTH_SENT       1
 #define AUTH_OK         2
-
 #define STALE_THRESHOLD_SEC 120  /* Max allowed clock drift/staleness (2 minutes) */
 
 extern int max_alerts;
-extern int vacuum_threshold; 
+extern int vacuum_threshold;
 extern int max_alert_ttl;
 
 /* Structure for outgoing buffer list (linked list for queue) */
@@ -56,10 +62,10 @@ typedef struct OutBuffer {
 /* Structure for subscribers */
 typedef struct {
     int sock;
-    char ip_address[64];   /* Increased for IPv6/resolved IP safety */ 
+    char ip_address[64];   /* Increased for IPv6/resolved IP safety */
     int port;
-    char pubkey_hash[64]; 
-    int mode; 
+    char pubkey_hash[64];
+    int mode;
     time_t connect_time;
     int type;              /* SUB_TYPE_CLIENT или SUB_TYPE_PEER */
     int auth_state;        /* PSK verification status */
@@ -71,7 +77,7 @@ typedef struct {
     char *in_buffer;
     size_t in_pos;
     bool close_after_send;
-    struct MeshNode *node_ptr; 
+    struct MeshNode *node_ptr;
 } Subscriber;
 
 typedef struct {
@@ -85,25 +91,24 @@ typedef struct {
 /* Replication log element for the ring buffer */
 typedef struct {
     uint64_t id;
-    unsigned char pubkey_hash[PUBKEY_HASH_LEN];
-    /* We only store the ID and hash to find the Alert in main memory/mmap and resend it to the late peer. */
+    unsigned char pubkey_hash[32]; /* PUBKEY_HASH_LEN */
 } ReplLogEntry;
 
 /* Global variables */
 extern FILE *log_file;
 const char *gorgonad_log_path(void);
-extern Recipient *recipients;
+extern Recipient *recipients;       /* ИСПРАВЛЕНО: был "Recipient recipients" без '*' */
 extern int recipient_count;
 extern int recipient_capacity;
 extern int client_sockets[MAX_CLIENTS];
 extern Subscriber subscribers[MAX_CLIENTS];
-extern int max_alerts;
 extern int max_clients;
 extern size_t max_log_size;
-extern char log_level[32]; 
+extern char log_level[32];
 extern size_t max_message_size;
 extern int verbose;
 extern int use_disk_db;
+
 /* Global replication variables */
 extern PeerConfig remote_peers[MAX_PEERS];
 extern int remote_peer_count;
@@ -114,8 +119,8 @@ extern int sync_interval;
 
 /* Function declarations */
 void trim_string(char *str);
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db, 
-                  int *vacuum_threshold_config, int *sync_int_cfg, int *max_ttl);
+void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db,
+                 int *vacuum_threshold_config, int *sync_int_cfg, int *max_ttl);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);
@@ -123,12 +128,12 @@ Recipient *add_recipient(const unsigned char *hash);
 void clean_expired_alerts(Recipient *rec);
 void remove_oldest_alert(Recipient *rec);
 int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_at,
-               char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag, 
-               int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active, uint64_t remote_prev_hash, uint64_t remote_curr_hash);
+              char *base64_text, char *base64_encrypted_key, char *base64_iv, char *base64_tag,
+              int client_fd, uint64_t forced_id, time_t forced_create_at, int is_active,
+              uint64_t remote_prev_hash, uint64_t remote_curr_hash);
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert);
 void send_current_alerts(int sub_index, int mode, const char *single_hash_b64, int count);
 void rotate_log(void);
-/* void get_utc_time_str(char *buffer, size_t buffer_size); */
 void run_server(int server_fd);
 
 /* alert_db.c functions sync */
@@ -152,16 +157,16 @@ void free_out_queue(int sub_index);
 void log_event(const char *level, int fd, const char *ip, int port, const char *fmt, ...);
 
 /* Repl */
-void init_replication();
+void init_replication(void);
 void add_to_repl_ring(uint64_t id, const unsigned char *hash);
 void broadcast_replication(const unsigned char *pubkey_hash, Alert *alert, int exclude_fd);
-void try_connect_peers();
-uint64_t get_max_alert_id();
+void try_connect_peers(void);
+uint64_t get_max_alert_id(void);
 void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert);
 
 /* cleanup */
 void cleanup_subscriber(int index);
 void remove_recipient_at_index(int index);
-void run_global_maintenance(void); 
+void run_global_maintenance(void);
 
-#endif
+#endif /* GORGONA_UTILS_H */

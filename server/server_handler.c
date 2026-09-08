@@ -6,6 +6,7 @@
 
 #include "commands.h"
 #include "gorgona_utils.h"
+#include "alert_chaining.h"
 #include "admin_mesh.h" 
 #include "snowflake.h"
 #include "metrics.h"

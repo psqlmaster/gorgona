@@ -26,7 +26,7 @@ TEST_CFLAGS  := $(CFLAGS) $(shell pkg-config --cflags check 2>/dev/null || echo 
 TEST_LDFLAGS := $(LDFLAGS) $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck -lrt -lsubunit")
 #
 # --- Source File Definitions ---
-COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c common/alert_chaining.c
+COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c
 
 CLIENT_SRC  := client/gorgona.c client/globals.c client/alert_send.c \
                client/alert_listen.c client/config.c client/client_history.c \
@@ -34,7 +34,8 @@ CLIENT_SRC  := client/gorgona.c client/globals.c client/alert_send.c \
 
 SERVER_SRC  := server/gorgonad.c server/config.c server/gorgona_utils.c \
                server/server_handler.c server/snowflake.c server/alert_db.c \
-               server/commands.c server/metrics.c $(COMMON_SRC)
+               server/commands.c server/metrics.c server/alert_chaining.c \
+               $(COMMON_SRC)
 
 # --- Object File Logic ---
 CLIENT_OBJ  := $(CLIENT_SRC:.c=.client.o)

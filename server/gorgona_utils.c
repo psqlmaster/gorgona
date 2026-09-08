@@ -5,6 +5,7 @@
 */
 
 #define XXH_INLINE_ALL
+#include "alert_chaining.h"
 #include "xxhash.h"
 #include "config.h"
 #include "gorgona_utils.h"
@@ -109,6 +110,54 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
         fflush(stdout); /* Ensure immediate output to terminal */
     }
 } 
+
+/* 
+ * Бинарный поиск алерта по ID в отсортированном массиве.
+ * Возвращает индекс элемента или -1, если не найден.
+ * O(log n) вместо O(n). Для 1000 элементов = 10 сравнений.
+ */
+static int find_alert_index_by_id(const Recipient *rec, uint64_t target_id) {
+    if (!rec || rec->count == 0) return -1;
+    
+    int left = 0;
+    int right = rec->count - 1;
+    
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        uint64_t mid_id = rec->alerts[mid].id;
+        
+        if (mid_id == target_id) {
+            return mid;
+        } else if (mid_id < target_id) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Binary search for the insertion position of a new ID.
+ * Returns the index where the new alert should be inserted,
+ * in order to maintain ascending sort order by ID.
+ */
+static int find_insert_position(const Recipient *rec, uint64_t new_id) {
+    if (!rec || rec->count == 0) return 0;
+    
+    int left = 0;
+    int right = rec->count;
+    
+    while (left < right) {
+        int mid = left + (right - left) / 2;
+        if (rec->alerts[mid].id < new_id) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
 
 void format_time(time_t timestamp, char *buffer, size_t buffer_size) {
     struct tm *tm_info = gmtime(&timestamp);
@@ -225,15 +274,9 @@ void clean_expired_alerts(Recipient *rec) {
  */
 void remove_oldest_alert(Recipient *rec) {
     if (rec->count == 0) return;
-    /* 1. Identification: Find the oldest Snowflake ID */
+    /*  1. Identification: Find the oldest Snowflake ID  */
+    /* Массив отсортирован, самый старый алерт всегда имеет индекс 0 */
     int oldest_idx = 0;
-    uint64_t min_id = rec->alerts[0].id;
-    for (int i = 1; i < rec->count; i++) {
-        if (rec->alerts[i].id < min_id) {
-            min_id = rec->alerts[i].id;
-            oldest_idx = i;
-        }
-    }
     /* 2. Disk Deactivation */
     if (use_disk_db) {
         alert_db_deactivate_alert(&rec->alerts[oldest_idx]);
@@ -324,42 +367,31 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
 
     /* --- ПРОВЕРКА НА ДУБЛИКАТЫ С ИСЦЕЛЕНИЕМ (FIX STORM) --- */
-    for (int j = 0; j < rec->count; j++) {
-        if (rec->alerts[j].id == final_id) {
-            /* Если это репликация от пира, мы ОБЯЗАНЫ исправить локально поврежденные хеши */
-            if (forced_id > 0 && remote_curr_hash != 0) {
-                if (rec->alerts[j].prev_hash != remote_prev_hash || 
-                    rec->alerts[j].curr_hash != remote_curr_hash) {
-                    
-                    log_event("WARN", client_fd, client_ip, client_port,
-                              "CHAIN HEALING: Overwriting corrupted hashes for existing ID %" PRIu64, final_id);
-                    
-                    rec->alerts[j].prev_hash = remote_prev_hash;
-                    rec->alerts[j].curr_hash = remote_curr_hash;
-                    
-                    /* Если это последний алерт в цепочке, обновляем last_hash, 
-                       чтобы процесс SYNC_CHAIN перестал считать нас рассинхронизированными */
-                    if (j == rec->count - 1) {
-                        rec->last_hash = remote_curr_hash;
-                    }
+    int dup_idx = find_alert_index_by_id(rec, final_id);
+    if (dup_idx != -1) {
+        /* Если это репликация от пира, мы ОБЯЗАНЫ исправить локально поврежденные хеши */
+        if (forced_id > 0 && remote_curr_hash != 0) {
+            if (rec->alerts[dup_idx].prev_hash != remote_prev_hash ||
+                rec->alerts[dup_idx].curr_hash != remote_curr_hash) {
+                log_event("WARN", client_fd, client_ip, client_port,
+                          "CHAIN HEALING: Overwriting corrupted hashes for existing ID %" PRIu64, final_id);
+                rec->alerts[dup_idx].prev_hash = remote_prev_hash;
+                rec->alerts[dup_idx].curr_hash = remote_curr_hash;
+                if (dup_idx == rec->count - 1) {
+                    rec->last_hash = remote_curr_hash;
                 }
             }
-            return -4; /* Возвращаем -4, чтобы процессинг знал, что это дубликат, но данные уже исцелены */
         }
+        return -4; 
     }
 
-    /* --- УМНОЕ ВЫТЕСНЕНИЕ
-     * Если база полная, проверяем, не пытаемся ли мы вставить алерт, который 
-     * "старше" самого старого в нашей памяти. Это предотвращает циклическую перезапись.
-     */
+    /* --- УМНОЕ ВЫТЕСНЕНИЕ -- */
     if (rec->count >= max_alerts && rec->count > 0) {
+        /* Массив отсортирован по ID, поэтому самый старый ID всегда в начале массива */
         uint64_t min_id_in_db = rec->alerts[0].id;
-        for (int i = 1; i < rec->count; i++) {
-            if (rec->alerts[i].id < min_id_in_db) min_id_in_db = rec->alerts[i].id;
-        }
         if (final_id < min_id_in_db) {
-            // Игнорируем алерт, так как он за пределами нашего текущего окна хранения
-            return -1; 
+            /* Игнорируем алерт, так как он за пределами нашего текущего окна хранения */
+            return -1;
         }
     }
 
@@ -406,16 +438,9 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* 5. Chronological Insertion Logic */
-    int insert_pos = rec->count;
-    bool is_backfill = false;
-    for (int i = 0; i < rec->count; i++) {
-        if (rec->alerts[i].id > final_id) {
-            insert_pos = i;
-            is_backfill = true;
-            break;
-        }
-    }
+    /* 5. Chronological Insertion Logic (Binary Search) */
+    int insert_pos = find_insert_position(rec, final_id);
+    bool is_backfill = (insert_pos < rec->count);
 
     /* Shift memory to accommodate the new alert */
     if (insert_pos < rec->count) {
@@ -440,45 +465,8 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     memcpy(alert->tag, decoded_tag, (new_tag_len < 16) ? new_tag_len : 16);
     alert->active = is_active; 
 
-    /* XXH3 Hash Chaining */
-    XXH3_state_t hash_state;
-    XXH3_64bits_reset(&hash_state);
-    XXH3_64bits_update(&hash_state, alert->text, alert->text_len);
-    XXH3_64bits_update(&hash_state, alert->encrypted_key, alert->encrypted_key_len);
-    XXH3_64bits_update(&hash_state, alert->iv, alert->iv_len);
-    XXH3_64bits_update(&hash_state, alert->tag, 16);
-    alert->content_hash = XXH3_64bits_digest(&hash_state);
-
-    /* ЛОГИКА ВЫЧИСЛЕНИЯ ХЕШЕЙ ЦЕПОЧКИ */
-    if (forced_id > 0 && remote_curr_hash != 0) {
-        /* РЕПЛИКАЦИЯ: Доверяем хешам от пира, предотвращаем corruption при дырах */
-        alert->prev_hash = remote_prev_hash;
-        alert->curr_hash = remote_curr_hash;
-    } else {
-        /* ЛОКАЛЬНАЯ ВСТАВКА (SEND от клиента): считаем сами */
-        if (insert_pos == 0) {
-            alert->prev_hash = 0;
-        } else {
-            alert->prev_hash = rec->alerts[insert_pos - 1].curr_hash;
-        }
-        uint64_t link_data[3] = { alert->id, alert->prev_hash, alert->content_hash };
-        alert->curr_hash = XXH3_64bits_withSeed(link_data, sizeof(link_data), 0);
-    }
-
-    /* RE-CHAINING: Пересчитываем хеши последующих алертов ТОЛЬКО для локальных вставок! */
-    if (forced_id == 0) {
-        uint64_t running_prev_hash = alert->curr_hash;
-        for (int k = insert_pos + 1; k < rec->count; k++) {
-            Alert *next = &rec->alerts[k];
-            next->prev_hash = running_prev_hash;
-            uint64_t next_link_data[3] = { next->id, next->prev_hash, next->content_hash };
-            next->curr_hash = XXH3_64bits_withSeed(next_link_data, sizeof(next_link_data), 0);
-            running_prev_hash = next->curr_hash;
-            if (verbose) {
-                log_event("DEBUG", -1, NULL, 0, "Re-chaining local alert %" PRIu64, next->id);
-            }
-        }
-    }
+    /* A Single Point for Calculating Chain Hashes (Chain Healing + conditional re-chaining) */
+    alert_chain_process_insertion(rec, alert, remote_prev_hash, remote_curr_hash);
 
     /* Finalize State */
     rec->count++;
@@ -498,7 +486,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     free(decoded_tag); 
 
-    log_event("DEBUG", client_fd, client_ip, client_port, 
+    log_event("INFO", client_fd, client_ip, client_port, 
               "Alert %" PRIu64 " added to chain at pos %d [%s] [Hash: 0x%016" PRIx64 "]", 
               alert->id, insert_pos, 
               is_backfill ? "BACKFILL" : "APPEND", 
