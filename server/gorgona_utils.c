@@ -115,7 +115,7 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
  * Возвращает индекс элемента или -1, если не найден.
  * O(log n) вместо O(n). Для 1000 элементов = 10 сравнений.
  */
-static int find_alert_index_by_id(const Recipient *rec, uint64_t target_id) {
+int find_alert_index_by_id(const Recipient *rec, uint64_t target_id) {
     if (!rec || rec->count == 0) return -1;
     
     int left = 0;
@@ -141,7 +141,7 @@ static int find_alert_index_by_id(const Recipient *rec, uint64_t target_id) {
  * Returns the index where the new alert should be inserted,
  * in order to maintain ascending sort order by ID.
  */
-static int find_insert_position(const Recipient *rec, uint64_t new_id) {
+int find_insert_position(const Recipient *rec, uint64_t new_id) {
     if (!rec || rec->count == 0) return 0;
     
     int left = 0;

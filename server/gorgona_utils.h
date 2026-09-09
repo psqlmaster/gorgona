@@ -164,6 +164,10 @@ void try_connect_peers(void);
 uint64_t get_max_alert_id(void);
 void send_alert_to_peer(int sub_index, const unsigned char *pubkey_hash, Alert *alert);
 
+/* Binary search helpers for sorted alert arrays */
+int find_insert_position(const Recipient *rec, uint64_t new_id);
+int find_alert_index_by_id(const Recipient *rec, uint64_t target_id);
+
 /* cleanup */
 void cleanup_subscriber(int index);
 void remove_recipient_at_index(int index);

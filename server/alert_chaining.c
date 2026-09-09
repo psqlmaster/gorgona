@@ -22,9 +22,13 @@ uint64_t alert_chain_compute_link(uint64_t id, uint64_t prev_h, uint64_t cont_h)
     return XXH3_64bits_withSeed(data, sizeof(data), 0);
 }
 
-/* 
- * Главная функция — заменяет весь inline-блок хеширования в add_alert().
+/*
+ * Главная функция > заменяет весь inline-блок хеширования в add_alert().
  * Поддерживает Chain Healing и условный re-chaining.
+ *
+ * ОПТИМИЗАЦИЯ: использует бинарный поиск find_insert_position() из gorgona_utils.c
+ * вместо линейного перебора. Сложность: O(log N) вместо O(N).
+ * Для 1000 алертов: ~10 сравнений вместо ~500 в среднем.
  */
 void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
                                     uint64_t remote_prev_hash,
@@ -33,11 +37,8 @@ void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
     (void)remote_curr_hash;
     /* content_hash — всегда локально пересчитываем */
     new_alert->content_hash = alert_chain_compute_content(new_alert);
-    /* Находим позицию вставки по ID */
-    int pos = 0;
-    while (pos < rec->count && rec->alerts[pos].id < new_alert->id) {
-        pos++;
-    }
+    /* Находим позицию вставки по ID через БИНАРНЫЙ ПОИСК (O(log N)) */
+    int pos = find_insert_position(rec, new_alert->id);
     /* ВСЕГДА пересчитываем цепь локально для всех последующих алертов */
     if (pos == 0) {
         new_alert->prev_hash = 0;
