@@ -27,48 +27,35 @@ uint64_t alert_chain_compute_link(uint64_t id, uint64_t prev_h, uint64_t cont_h)
  * Поддерживает Chain Healing и условный re-chaining.
  */
 void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
-                                   uint64_t remote_prev_hash,
-                                   uint64_t remote_curr_hash) {
-    /* 1. Вычисляем content_hash (всегда локально — это хеш payload) */
+                                    uint64_t remote_prev_hash,
+                                    uint64_t remote_curr_hash) {
+    (void)remote_prev_hash;  /* Игнорируем — цепь детерминистична */
+    (void)remote_curr_hash;
+    /* content_hash — всегда локально пересчитываем */
     new_alert->content_hash = alert_chain_compute_content(new_alert);
-
-    /* 2. Находим позицию вставки (по ID) */
+    /* Находим позицию вставки по ID */
     int pos = 0;
     while (pos < rec->count && rec->alerts[pos].id < new_alert->id) {
         pos++;
     }
-
-    /* 3. Вычисление хешей цепи — два режима */
-    bool is_replication = (remote_curr_hash != 0);
-    
-    if (is_replication) {
-        /* РЕПЛИКАЦИЯ: доверяем хешам от пира (Chain Healing) */
-        new_alert->prev_hash = remote_prev_hash;
-        new_alert->curr_hash = remote_curr_hash;
+    /* ВСЕГДА пересчитываем цепь локально для всех последующих алертов */
+    if (pos == 0) {
+        new_alert->prev_hash = 0;
     } else {
-        /* ЛОКАЛЬНАЯ ВСТАВКА: считаем сами */
-        if (pos == 0) {
-            new_alert->prev_hash = 0;
-        } else {
-            new_alert->prev_hash = rec->alerts[pos - 1].curr_hash;
-        }
-        new_alert->curr_hash = alert_chain_compute_link(
-            new_alert->id, new_alert->prev_hash, new_alert->content_hash);
+        new_alert->prev_hash = rec->alerts[pos - 1].curr_hash;
     }
-
-    /* 4. RE-CHAINING хвоста — ТОЛЬКО для локальных вставок */
-    if (!is_replication && pos < rec->count) {
-        uint64_t running_prev_hash = new_alert->curr_hash;
-        for (int i = pos; i < rec->count; i++) {
-            Alert *current = &rec->alerts[i];
-            current->prev_hash = running_prev_hash;
-            current->curr_hash = alert_chain_compute_link(
-                current->id, current->prev_hash, current->content_hash);
-            running_prev_hash = current->curr_hash;
-        }
+    new_alert->curr_hash = alert_chain_compute_link(
+        new_alert->id, new_alert->prev_hash, new_alert->content_hash);
+    /* Re-chaining ВСЕХ последующих алертов */
+    uint64_t running_prev = new_alert->curr_hash;
+    for (int i = pos; i < rec->count; i++) {
+        Alert *cur = &rec->alerts[i];
+        cur->prev_hash = running_prev;
+        cur->curr_hash = alert_chain_compute_link(
+            cur->id, cur->prev_hash, cur->content_hash);
+        running_prev = cur->curr_hash;
     }
-
-    /* 5. Обновляем last_hash */
+    /* Обновляем last_hash */
     if (rec->count > 0) {
         rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
     } else {

@@ -297,6 +297,14 @@ int alert_db_load_recipients(void) {
             if (corrupted) {
                 if (verbose) fprintf(stderr, "Auto-healing corrupted database (88-byte format): %s\n", b64);
                 alert_db_sync(rec);
+                /* После alert_db_sync mmap пересоздаётся, и last_hash нужно пересчитать.
+                 * Хотя qsort уже был выполнен выше, alert_db_sync мог изменить rec->count
+                 * (удалить повреждённые записи), поэтому last_hash мог устареть. */
+                if (rec->count > 0) {
+                    rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+                } else {
+                    rec->last_hash = 0;
+                }
             }
         }
     }
@@ -376,6 +384,14 @@ int alert_db_sync(Recipient *rec) {
 
     rec->count = j;
     rec->waste_count = 0;
+    /* После vacuum последний алерт мог измениться (если алерт с максимальным ID истёк).
+     * Пересчитываем last_hash, чтобы он указывал на реальный хвост цепи.
+     * Без этого SYNC_CHAIN будет отправлять мусорный last_hash пирам → шторм. */
+    if (rec->count > 0) {
+        rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+    } else {
+        rec->last_hash = 0;
+    }
     fsync(t_fd);
     close(t_fd);
 
