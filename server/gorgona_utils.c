@@ -52,62 +52,61 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
     char time_str[32];
     char header[256];
     bool write_to_file = false;
-
-    get_utc_time_str(time_str, sizeof(time_str));
-
-    /* 1. Format the log prefix: [Time] [Level] [Source Info] */
-    if (ip != NULL && port > 0) {
-        snprintf(header, sizeof(header), "%s [%s] [fd:%d] [%s:%d] ", time_str, level, fd, ip, port);
-    } else if (fd > 0) {
-        snprintf(header, sizeof(header), "%s [%s] [fd:%d] ", time_str, level, fd);
-    } else {
-        snprintf(header, sizeof(header), "%s [%s] [SERVER] ", time_str, level);
+    bool is_quiet_warn = false;
+    /* Определяем "тихий" WARN — виден только в debug-режиме */
+    if (strcasecmp(level, "WARN_QUIET") == 0) {
+        is_quiet_warn = true;
     }
-
-    /* 2. Determine if the event should be recorded in the log file based on log_level */
+    get_utc_time_str(time_str, sizeof(time_str));
+    /* Формируем префикс. Для WARN_QUIET в логе пишем обычный [WARN] */
+    const char *display_level = is_quiet_warn ? "WARN" : level;
+    if (ip != NULL && port > 0) {
+        snprintf(header, sizeof(header), "%s [%s] [fd:%d] [%s:%d] ", 
+                 time_str, display_level, fd, ip, port);
+    } else if (fd > 0) {
+        snprintf(header, sizeof(header), "%s [%s] [fd:%d] ", 
+                 time_str, display_level, fd);
+    } else {
+        snprintf(header, sizeof(header), "%s [%s] [SERVER] ", 
+                 time_str, display_level);
+    }
+    /* Логика фильтрации для записи в файл */
     if (strcasecmp(log_level, "debug") == 0) {
-        /* In DEBUG mode, all events are recorded */
+        /* В DEBUG выводим всё, включая WARN_QUIET */
         write_to_file = true;
-    } 
+    }
     else if (strcasecmp(log_level, "info") == 0) {
-        /* In INFO mode, record everything except DEBUG messages */
-        if (strcmp(level, "DEBUG") != 0) {
+        /* В INFO выводим всё, КРОМЕ DEBUG и WARN_QUIET */
+        if (strcmp(level, "DEBUG") != 0 && !is_quiet_warn) {
             write_to_file = true;
         }
-    } 
+    }
     else if (strcasecmp(log_level, "error") == 0) {
-        /* In ERROR mode, record only messages with ERROR priority */
+        /* В ERROR выводим только ERROR */
         if (strcmp(level, "ERROR") == 0) {
             write_to_file = true;
         }
     }
-
-    /* 3. Output to the log file */
+    /* Запись в файл */
     if (log_file && write_to_file) {
-        rotate_log(); /* Check if rotation is necessary before writing */
+        rotate_log();
         fprintf(log_file, "%s", header);
-        
         va_list args_file;
         va_start(args_file, fmt);
         vfprintf(log_file, fmt, args_file);
         va_end(args_file);
-        
         fprintf(log_file, "\n");
         fflush(log_file);
     }
-
-    /* 4. Output to the system console if verbose mode is enabled.
-       This bypasses log_level filters to provide full debug visibility in the terminal. */
+    /* Вывод на консоль (только при verbose) */
     if (verbose) {
         printf("%s", header);
-        
         va_list args_stdout;
         va_start(args_stdout, fmt);
         vfprintf(stdout, fmt, args_stdout);
         va_end(args_stdout);
-        
         printf("\n");
-        fflush(stdout); /* Ensure immediate output to terminal */
+        fflush(stdout);
     }
 } 
 
@@ -373,7 +372,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         if (forced_id > 0 && remote_curr_hash != 0) {
             if (rec->alerts[dup_idx].prev_hash != remote_prev_hash ||
                 rec->alerts[dup_idx].curr_hash != remote_curr_hash) {
-                log_event("WARN", client_fd, client_ip, client_port,
+                log_event("WARN_QUIET", client_fd, client_ip, client_port,
                           "CHAIN HEALING: Overwriting corrupted hashes for existing ID %" PRIu64, final_id);
                 rec->alerts[dup_idx].prev_hash = remote_prev_hash;
                 rec->alerts[dup_idx].curr_hash = remote_curr_hash;
@@ -431,7 +430,7 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     for (int j = 0; j < rec->count; j++) {
         if (rec->alerts[j].text_len == new_text_len) {
             if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
-                log_event("WARN", client_fd, client_ip, client_port, "Replay attack: Duplicate payload");
+                log_event("WARN_QUIET", client_fd, client_ip, client_port, "Replay attack: Duplicate payload");
                 free(decoded_text); free(decoded_key); free(decoded_iv); free(decoded_tag);
                 return -2;
             }
