@@ -17,6 +17,7 @@
 #include <getopt.h>
 #include <fcntl.h>
 #include "config.h"
+#include "common.h"
 #include "gorgona_utils.h"
 #include "alert_db.h"
 #include "admin_mesh.h"
@@ -82,7 +83,7 @@ void print_server_help(const char *program_name) {
     #define CLR_WHITE_BOLD "\033[1;37m"
 
     printf(CLR_BOLD CLR_GREEN "Gorgona Mesh Server" CLR_RESET " (Version " CLR_YELLOW "%s" CLR_RESET ")\n", VERSION);
-    printf(CLR_BOLD "Usage:" CLR_RESET " %s " CLR_CYAN "[-h|--help] [-v|--verbose] [-V|--version]" CLR_RESET "\n", program_name);
+    printf(CLR_BOLD "Usage:" CLR_RESET " %s " CLR_CYAN "[-h|--help] [-v|--verbose] [-V|--version] [-c|--conf <path>]" CLR_RESET "\n", program_name);
     
     printf("\n" CLR_BOLD "Description:" CLR_RESET "\n");
     printf(" The gorgona server is a decentralized P2P node for encrypted alert delivery.\n");
@@ -101,9 +102,11 @@ void print_server_help(const char *program_name) {
     printf("  " CLR_CYAN "max_alerts" CLR_RESET " = <number>   Storage limit per recipient key\n");
     printf("  " CLR_CYAN "max_alert_ttl" CLR_RESET " = <sec>   Global cluster-wide TTL limit (default: 30 days)\n");
     printf("  " CLR_CYAN "max_clients" CLR_RESET " = <number>  Total TCP connection limit (Clients + Peers)\n");
-    printf("  " CLR_CYAN "use_disk_db" CLR_RESET " = <bool>    Persistence in " CLR_YELLOW ALERT_DB_DIR CLR_RESET "\n");
+    printf("  " CLR_CYAN "use_disk_db" CLR_RESET " = <bool>    Persistence in " CLR_YELLOW "<data_dir>/alerts/" CLR_RESET "\n");
     printf("  " CLR_CYAN "log_level" CLR_RESET " = <level>     \"info\" (standard) or \"debug\" (full P2P trace)\n");
     printf("  " CLR_CYAN "vacuum_threshold_percent" CLR_RESET " = <%%>  Trigger database compression (1-100)\n");
+    printf("  " CLR_CYAN "data_dir" CLR_RESET " = <path>       Data directory (default: " CLR_YELLOW "/var/lib/gorgona" CLR_RESET ")\n");
+    printf("  " CLR_CYAN "conf_dir" CLR_RESET " = <path>       Config/Certs directory (default: " CLR_YELLOW "/etc/gorgona" CLR_RESET ")\n");
 
     printf("\n " CLR_MAGENTA "[replication]" CLR_RESET "\n");
     printf("  " CLR_CYAN "sync_psk" CLR_RESET " = <key>        Cluster-wide secret for Layer 2 encryption (AES-256-GCM)\n");
@@ -113,7 +116,7 @@ void print_server_help(const char *program_name) {
     printf("\n" CLR_BOLD "Mesh Resilience:" CLR_RESET "\n");
     printf(" - Anti-Entropy: Continuous MaxID synchronization ensures data consistency.\n");
     printf(" - Intelligent Routing: Best peers are prioritized via 'Gorgona Score' (RTT/Throughput).\n");
-    printf(" - Self-Healing: Dynamic node discovery (PEX) and boot-strapping from " CLR_CYAN "/var/lib/gorgona/peers.cache" CLR_RESET "\n");
+    printf(" - Self-Healing: Dynamic node discovery (PEX) and boot-strapping from " CLR_CYAN "<data_dir>/peers.cache" CLR_RESET "\n");
 
     printf("\n" CLR_BOLD "Diagnostic Commands (via " CLR_CYAN "nc/telnet" CLR_RESET "):\n");
     printf(" " CLR_YELLOW "status" CLR_RESET " <sync_psk>        Detailed L1/L2 metrics and cluster topology map.\n");
@@ -134,16 +137,28 @@ void print_server_help(const char *program_name) {
 
 int main(int argc, char *argv[]) {
     int opt;
+    char config_path[512] = "/etc/gorgona/gorgonad.conf";
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
         {"verbose", no_argument, 0, 'v'},
         {"version", no_argument, 0, 'V'},
+        {"conf", required_argument, 0, 'c'},
         {0, 0, 0, 0}
     };
 
     /* 1. Parse command line arguments */
-    while ((opt = getopt_long(argc, argv, "vhV", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vhVc:", long_options, NULL)) != -1) {
         switch (opt) {
+            case 'c': 
+                if (!optarg) {
+                    fprintf(stderr, "Error: -c/--conf requires a path argument\n");
+                    return 1;
+                }
+                strncpy(config_path, optarg, sizeof(config_path) - 1);
+                config_path[sizeof(config_path) - 1] = '\0';
+                strncpy(config_file_path, config_path, sizeof(config_file_path) - 1);
+                config_file_path[sizeof(config_file_path) - 1] = '\0';
+                break;
             case 'v': verbose = 1; break;
             case 'h': print_server_help(argv[0]); return 0;
             case 'V': printf("Gorgona Server Version %s\n", VERSION); return 0;
@@ -170,8 +185,36 @@ int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN);
 
-    /* 3. Initialize Logging System (Upto internal rotation) */
-    const char *target_log = gorgonad_log_path();
+
+
+    /* Load configuration */
+    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config; 
+    size_t max_message_size_config, max_log_size_config;
+    int use_disk_db_config;
+
+    read_config(config_path, &port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
+                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config); 
+    
+    sync_interval = sync_interval_tmp;
+    max_alerts = max_alerts_config;
+    max_alert_ttl = max_ttl_config;
+    vacuum_threshold = vacuum_threshold_config;
+    max_clients = (max_clients_config > MAX_CLIENTS) ? MAX_CLIENTS : max_clients_config;
+    max_log_size = max_log_size_config;
+    max_message_size = max_message_size_config;
+    use_disk_db = use_disk_db_config;
+
+    if (verbose) {
+        printf("DEBUG: sync_interval: %d seconds, max_clients: %d\n", sync_interval, max_clients);
+    }
+
+    /* Initialize Logging System (Upto internal rotation) */
+    char target_log[512];
+    if (gorgona_log_file[0] != '\0') {
+        strncpy(target_log, gorgona_log_file, sizeof(target_log) - 1);
+    } else {
+        snprintf(target_log, sizeof(target_log), "%s/gorgonad.log", gorgona_data_dir);
+    }
     
     /* If running under systemd, stdout is usually redirected to journal,
        but we want internal rotation to work, so we open the file explicitly. */
@@ -189,28 +232,7 @@ int main(int argc, char *argv[]) {
         log_file = stdout;
     }
 
-    /* 4. Load configuration */
-    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config; 
-    size_t max_message_size_config, max_log_size_config;
-    int use_disk_db_config;
-
-    read_config(&port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
-                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config); 
-    
-    sync_interval = sync_interval_tmp;
-    max_alerts = max_alerts_config;
-    max_alert_ttl = max_ttl_config;
-    vacuum_threshold = vacuum_threshold_config;
-    max_clients = (max_clients_config > MAX_CLIENTS) ? MAX_CLIENTS : max_clients_config;
-    max_log_size = max_log_size_config;
-    max_message_size = max_message_size_config;
-    use_disk_db = use_disk_db_config;
-
-    if (verbose) {
-        printf("DEBUG: sync_interval: %d seconds, max_clients: %d\n", sync_interval, max_clients);
-    }
-
-    /* 5. Sub-systems Initialization */
+    /* Sub-systems Initialization */
     mesh_init(sync_psk);
     metrics_init_ssl(); 
     mesh_load_peers_cache();

@@ -273,29 +273,16 @@ void clean_expired_alerts(Recipient *rec) {
  */
 void remove_oldest_alert(Recipient *rec) {
     if (rec->count == 0) return;
-    /*  1. Identification: Find the oldest Snowflake ID  */
-    /* Массив отсортирован, самый старый алерт всегда имеет индекс 0 */
     int oldest_idx = 0;
-    /* 2. Disk Deactivation */
     if (use_disk_db) {
         alert_db_deactivate_alert(&rec->alerts[oldest_idx]);
         rec->waste_count++;
     }
-    /* 3. Memory Cleanup */
     free_alert(&rec->alerts[oldest_idx]);
     memmove(&rec->alerts[oldest_idx], &rec->alerts[oldest_idx + 1], 
             sizeof(Alert) * (rec->count - oldest_idx - 1));
     rec->count--;
-    /* 4. Smart Vacuum Trigger Logic */
     int waste_limit = (max_alerts * vacuum_threshold) / 100;
-    /* 
-     * PROGRESSIVE IO PROTECTION:
-     * We only trigger a rewrite if:
-     * 1. Waste count is above the threshold % AND we have at least 100 records to clean.
-     *    (This prevents frequent rewrites of very small files).
-     * 2. OR we hit a hard safety limit of 50,000 records.
-     * 3. OR the recipient is completely empty (final cleanup).
-     */
     bool should_vacuum = false;
     if (use_disk_db) {
         if (rec->waste_count >= waste_limit && rec->waste_count >= 100) {
@@ -304,6 +291,16 @@ void remove_oldest_alert(Recipient *rec) {
             should_vacuum = true;
         } else if (rec->count == 0 && rec->waste_count > 0) {
             should_vacuum = true;
+        } else {
+            if (rec->fd >= 0) {
+                struct stat st;
+                if (fstat(rec->fd, &st) == 0) {
+                    size_t disk_size = st.st_size;
+                    if (disk_size > rec->used_size * 2 && disk_size > 4 * 1024 * 1024) {
+                        should_vacuum = true;
+                    }
+                }
+            }
         }
     }
     if (should_vacuum) {
@@ -311,7 +308,6 @@ void remove_oldest_alert(Recipient *rec) {
             fprintf(stderr, "Vacuum trigger (compaction): waste=%d (threshold=%d), count=%d\n", 
                     rec->waste_count, waste_limit, rec->count);
         }
-        /* alert_db_sync performs atomic swap and ftruncate */
         alert_db_sync(rec);
     }
 }
@@ -674,16 +670,6 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
     }
 }
 
-/*
- * Log destination. Defaults to the historical relative path, so nothing changes
- * for existing installs; set gorgonad_LOG_FILE to pin it to an absolute path
- * (mirrors gorgona_LOG_FILE on the client side).
- */
-const char *gorgonad_log_path(void) {
-    const char *path = getenv("gorgonad_LOG_FILE");
-    return (path && *path) ? path : "gorgonad.log";
-}
-
 void rotate_log() {
     if (log_file == stdout || log_file == stderr || log_file == NULL) {
         return;
@@ -697,12 +683,18 @@ void rotate_log() {
         return;
     }
     last_rotation_check = now;
-    const char *path = gorgonad_log_path();
+    char path[512];
+    if (gorgona_log_file[0] != '\0') {
+        strncpy(path, gorgona_log_file, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+    } else {
+        snprintf(path, sizeof(path), "%s/gorgonad.log", gorgona_data_dir);
+    }
     struct stat st;
     if (stat(path, &st) == 0 && (size_t)st.st_size > max_log_size) {
         FILE *old_log = log_file;
         fclose(old_log);
-        char rotated[512];
+        char rotated[514];
         snprintf(rotated, sizeof(rotated), "%s.1", path);
         rename(path, rotated);
         FILE *new_log = fopen(path, "a");

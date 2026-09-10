@@ -3,9 +3,15 @@
 */
 #ifndef GORGONA_COMMON_H
 #define GORGONA_COMMON_H
+#define DEFAULT_DATA_DIR "/var/lib/gorgona"
+#define DEFAULT_CONF_DIR "/etc/gorgona"
 
 #include <time.h>
 #include <stdarg.h>
+
+extern char gorgona_data_dir[256];
+extern char gorgona_conf_dir[256];
+extern char gorgona_log_file[512];
 
 /* Shared utilities implemented in common.c */
 void get_utc_time_str(char *buffer, size_t buffer_size);

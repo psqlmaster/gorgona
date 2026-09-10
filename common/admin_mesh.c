@@ -4,7 +4,6 @@
  * Copyright (c) 2025, Alexander Shcheglov
  */
 #define _GNU_SOURCE
-#define PEERS_CACHE_FILE "/var/lib/gorgona/peers.cache"
 #define MAX_CACHE_PEERS 10
 #include "admin_mesh.h"
 #include "common.h" 
@@ -434,9 +433,12 @@ void mesh_save_peers_cache() {
     }
 
     /* 3. Write to file */
-    FILE *fp = fopen(PEERS_CACHE_FILE, "w");
+    char cache_path[512];
+    snprintf(cache_path, sizeof(cache_path), "%s/peers.cache", gorgona_data_dir);
+    
+    FILE *fp = fopen(cache_path, "w");
     if (!fp) {
-        log_event("ERROR", -1, NULL, 0, "Mesh: Failed to open %s for writing", PEERS_CACHE_FILE);
+        log_event("ERROR", -1, NULL, 0, "Mesh: Failed to open %s for writing", cache_path);
         return;
     }
 
@@ -470,7 +472,10 @@ void mesh_save_peers_cache() {
  * These nodes are treated as temporary seeds to ensure stability.
  */
 void mesh_load_peers_cache() {
-    FILE *fp = fopen(PEERS_CACHE_FILE, "r");
+    char cache_path[512];
+    snprintf(cache_path, sizeof(cache_path), "%s/peers.cache", gorgona_data_dir);
+    
+    FILE *fp = fopen(cache_path, "r");
     if (!fp) return;
 
     char line[128];

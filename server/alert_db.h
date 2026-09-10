@@ -13,8 +13,6 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 
-/* Path to the database directory */
-#define ALERT_DB_DIR "/var/lib/gorgona/alerts/"
 /* The magic number for the file header */
 #define ALERT_FILE_MAGIC 0xCAFEBABE
 /* Delimiter for separating records */

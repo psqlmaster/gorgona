@@ -96,8 +96,7 @@ typedef struct {
 
 /* Global variables */
 extern FILE *log_file;
-const char *gorgonad_log_path(void);
-extern Recipient *recipients;       /* ИСПРАВЛЕНО: был "Recipient recipients" без '*' */
+extern Recipient *recipients;
 extern int recipient_count;
 extern int recipient_capacity;
 extern int client_sockets[MAX_CLIENTS];
@@ -119,8 +118,6 @@ extern int sync_interval;
 
 /* Function declarations */
 void trim_string(char *str);
-void read_config(int *port, int *max_alerts, int *max_clients, size_t *max_log_size, char *log_level, size_t *max_message_size, int *use_disk_db,
-                 int *vacuum_threshold_config, int *sync_int_cfg, int *max_ttl);
 void format_time(time_t timestamp, char *buffer, size_t buffer_size);
 void free_alert(Alert *alert);
 Recipient *find_recipient(const unsigned char *hash);

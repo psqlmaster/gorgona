@@ -383,10 +383,14 @@ void run_server(int server_fd) {
         if (reload_cfg_requested) {
             reload_cfg_requested = 0;
             log_event("INFO", -1, NULL, 0, "SIGHUP received, reloading configuration...");
+            
             int p_tmp, ma_tmp, mc_tmp, vt_tmp, si_tmp, ttl_tmp, db_tmp;
             size_t mls_tmp, mms_tmp;
             char lvl_tmp[32];
-            read_config(&p_tmp, &ma_tmp, &mc_tmp, &mls_tmp, lvl_tmp, &mms_tmp, &db_tmp, &vt_tmp, &si_tmp, &ttl_tmp);
+            
+            read_config(config_file_path, &p_tmp, &ma_tmp, &mc_tmp, &mls_tmp, lvl_tmp, 
+                        &mms_tmp, &db_tmp, &vt_tmp, &si_tmp, &ttl_tmp);
+            
             max_alerts = ma_tmp;
             sync_interval = si_tmp;
             vacuum_threshold = vt_tmp;
@@ -395,6 +399,7 @@ void run_server(int server_fd) {
             max_message_size = mms_tmp;
             strncpy(log_level, lvl_tmp, 31);
             log_level[31] = '\0';
+            
             if (mc_tmp > max_clients) {
                 if (mc_tmp > MAX_CLIENTS) mc_tmp = MAX_CLIENTS;
                 max_clients = mc_tmp;
@@ -402,7 +407,7 @@ void run_server(int server_fd) {
             if (db_tmp != use_disk_db) {
                 log_event("WARN", -1, NULL, 0, "use_disk_db change requires full restart. Ignoring.");
             }
-
+            
             log_event("INFO", -1, NULL, 0, "Configuration reloaded. Sync interval: %d, Log level: %s", sync_interval, log_level);
         }
 

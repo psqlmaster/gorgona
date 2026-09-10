@@ -98,8 +98,8 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 #### Resilience & Bootstrapping
 
 Gorgona is designed to survive total infrastructure failures:
-- **Peer Caching**: Discovered nodes are persisted to `/var/lib/gorgona/peers.cache`. If the primary server in the config is down, the client will attempt to reach the mesh using all known historical addresses.
-- **Execution Idempotency**: The client tracks processed Alert IDs in a high-performance text-based log at `/var/lib/gorgona/history.log`. This log prevents command re-runs when transitioning between mesh nodes.
+- **Peer Caching**:  Discovered nodes are persisted to `<data_dir>/peers.cache` (default: `/var/lib/gorgona/peers.cache`). If the primary server in the config is down, the client will attempt to reach the mesh using all known historical addresses.
+- **Execution Idempotency**: he client tracks processed Alert IDs in a high-performance text-based log at `<data_dir>/history.log` (default: `/var/lib/gorgona/history.log`). This log prevents command re-runs when transitioning between mesh nodes.
 - **Penalty Box**: If a node misbehaves or drops the connection during handshake, the client applies a temporary 5-minute "penalty," automatically excluding it from the connection race to favor stable providers.
 
 #### Multi-Platform support (Embedded Friendly)
@@ -215,26 +215,30 @@ Controls the `gorgonad` daemon behavior.
 ```ini
 # vim /etc/gorgona/gorgonad.conf
 [server]
-port = 7777                                           # Listen port
-max_alerts = 1000                                     # Max alerts stored per key
-max_alert_ttl = 7776000                               # (90 days) lifetime in seconds
-max_clients = 100                                     # Concurrent client connections
-max_log_size = 10                                     # Log rotation size in MB
-log_level = info                                      # info, error, or debug (systemctl reload gorgonad)
-max_message_size = 5                                  # Max message size in MB
-use_disk_db = true                                    # Enable persistent storage (true - tested for production, false - experimental, requires debugging) 
-vacuum_threshold_percent = 50                         # Auto-cleanup threshold for deleted records
+port = 7777                                            # Listen port
+max_alerts = 1000                                      # Max alerts stored per key
+max_alert_ttl = 7776000                                # (90 days) lifetime in seconds
+max_clients = 100                                      # Concurrent client connections
+max_log_size = 10                                      # Log rotation size in MB
+log_level = info                                       # info, error, or debug (systemctl reload gorgonad)
+max_message_size = 5                                   # Max message size in MB
+use_disk_db = true                                     # Enable persistent storage (true - tested for production, false - experimental, requires debugging)
+vacuum_threshold_percent = 50                          # Auto-cleanup threshold for deleted records
+
+# paths (optional — defaults shown below)
+data_dir = /var/lib/gorgona                            # Base directory for DB, cache, and logs
+conf_dir = /etc/gorgona                                # Directory for config files and TLS certs
+# log_file = /var/log/gorgona/gorgonad.log             # Optional: override default log path (<data_dir>/gorgonad.log)
 
 [replication]
 # If sync_psk is set, the client joins the Layer 2 Mesh:
-# 1. Automatically discovers new nodes and updates /var/lib/gorgona/peers.cache
+# 1. Automatically discovers new nodes and updates <data_dir>/peers.cache
 # 2. Uses parallel probes (Happy Eyeballs) to find the fastest entry point
 # 3. Prioritizes 127.0.0.1 if a local sidecar daemon is running
-# support (systemctl reload gorgonad)
-sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key
-sync_interval = 60                                    # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
-peer = 64.188.70.158:7777                             # Remote peer address(seed) to sync with
-peer = node1.gorgona.local:7777                       # Remote peer (FQDN/DNS format)
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3    # P2P cluster authentication key
+sync_interval = 60                                     # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
+peer = 64.188.70.158:7777                              # Remote peer address(seed) to sync with
+#peer = node-beta.gorgona.local:7777                   #Remote peer address(seed) to sync with
 ```
 
 ##### Client Configuration (gorgona.conf)
@@ -267,8 +271,9 @@ If not using the `.deb` package, install manually:
 
 ##### Manual Service Installation (without .deb package)
 ```bash
-sudo cp ./gorgonad /usr/bin
-sudo mkdir -p /etc/gorgona /var/lib/gorgona/alerts /var/log/gorgona
+sudo mkdir -p /etc/gorgona /var/lib/gorgona/alerts
+# Optional: create separate log directory if you plan to use log_file = /var/log/gorgona/gorgonad.log
+# sudo mkdir -p /var/log/gorgona
 ```
 
 - server service configuration
@@ -285,12 +290,10 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/var/lib/gorgona
-Environment=gorgonad_LOG_FILE=/var/log/gorgona/gorgonad.log
 ExecStart=/usr/bin/gorgonad
 ExecReload=/bin/kill -HUP $MAINPID
 StandardOutput=journal
 StandardError=journal
-ExecStartPre=/usr/bin/mkdir -p /var/log/gorgona
 Restart=on-failure
 LimitNOFILE=65535
 
@@ -537,10 +540,24 @@ Operational Configuration:
 #### Run Server
 
 ```bash
-gorgonad [-v|--verbose] [-h|--help] [-V|--version]
+gorgonad [-v|--verbose] [-h|--help] [-V|--version] [-c|--conf <path>]
 ```
-- The server reads settings from `/etc/gorgona/gorgonad.conf` or uses defaults (port = 5555, max alerts = 1000, max clients = 100, log_level = "info", use_disk_db = false).
-- Use `-h` or `--help` for configuration help.  
+The server reads settings from `/etc/gorgona/gorgonad.conf` by default, or from a custom path specified via `-c/--conf`. If the config file is missing, built-in defaults are used (port = 5555, max alerts = 1000, max clients = 100, log_level = "info", use_disk_db = false, data_dir = /var/lib/gorgona, conf_dir = /etc/gorgona).
+
+Use `-h` or `--help` for configuration help.
+
+### Configuration paths
+
+| Key | Default | Description |
+|---|---|---|
+| `data_dir` | `/var/lib/gorgona` | Base directory for DB, cache (`peers.cache`), and logs |
+| `conf_dir` | `/etc/gorgona` | Directory for TLS certificates (`server.crt`, `server.key`) |
+| `log_file` | `<data_dir>/gorgonad.log` | Optional: override default log path |
+
+Example: run a second instance with a separate config:
+```bash
+sudo gorgonad -c /etc/gorgona/gorgonad-node2.conf
+
 - Use `-v` for verbose mode, example:
 
 ```bash
@@ -750,11 +767,11 @@ graph TD
    |
    v
 [Initialization]
-   - Read configuration (/etc/gorgona/gorgonad.conf)
+   - Read configuration (default: /etc/gorgona/gorgonad.conf, or path from -c/--conf)
    - Initialize Global Data: client_sockets[MAX_CLIENTS], subscribers[MAX_CLIENTS]
-   - Setup Logging: Open gorgonad.log (Supports: error, info, debug)
+   - Setup Logging: Open <log_file> or <data_dir>/gorgonad.log (Supports: error, info, debug)
    - If use_disk_db == true:
-   |  - Load Recipients from /var/lib/gorgona/alerts/
+   |  - Load Recipients from <data_dir>/alerts/
    |  - mmap() existing .alerts files into memory
    |  - Scan files for active records -> Set used_size & recipient_count
    |
@@ -1090,6 +1107,7 @@ Gorgona Node | Uptime: 0d 1h 29m
 Goodbye Sir.
 Connection closed by foreign host.
 ```
+> **Note:** Server status, metrics, and logs are now tied to `data_dir` and `conf_dir` from the configuration file. Use `gorgonad -c <path>` to run multiple instances with isolated state directories.
 
 - example starting service
 ```sh

@@ -5,6 +5,27 @@
 #include "alert_chaining.h"
 #include "gorgona_utils.h" 
 
+/* Пересчитывает prev_hash / curr_hash для всех алертов recipient'а.
+ * Должна вызываться после vacuum и после загрузки с диска.
+ * Делает цепь полностью детерминированной от текущего упорядоченного набора.
+ */
+void alert_chain_recompute_all(Recipient *rec) {
+    if (!rec || rec->count == 0) {
+        rec->last_hash = 0;
+        return;
+    }
+
+    uint64_t running_prev = 0;
+    for (int i = 0; i < rec->count; i++) {
+        Alert *a = &rec->alerts[i];
+        a->content_hash = alert_chain_compute_content(a);   // на всякий случай
+        a->prev_hash = running_prev;
+        a->curr_hash = alert_chain_compute_link(a->id, a->prev_hash, a->content_hash);
+        running_prev = a->curr_hash;
+    }
+    rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+}
+
 /* Единая точка вычисления content_hash */
 uint64_t alert_chain_compute_content(const Alert *a) {
     XXH3_state_t state;

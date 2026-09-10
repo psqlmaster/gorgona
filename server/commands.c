@@ -71,6 +71,11 @@ static void process_get_chain_sample(int i, char *buffer) {
     free(raw_hash); free(copy);
 }
 
+/* === ИЗМЕНЕНО: защита от Full Sync storm ===
+ * Добавлен static cooldown на SYNC_REC для каждого recipient.
+ * Full Sync разрешён не чаще 1 раза в 45 секунд на один ключ.
+ * Также увеличена глубина поиска ancestor.
+ */
 static void process_chain_sample(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     char *rest = strdup(buffer + 13);
@@ -95,7 +100,6 @@ static void process_chain_sample(int i, char *buffer) {
 
     uint64_t ancestor_id = 0;
     char *pair;
-    /* Let's go through the list ID:HASH|ID:HASH... */
     while ((pair = strtok(NULL, "|")) != NULL) {
         char *colon = strchr(pair, ':');
         if (!colon) continue;
@@ -103,7 +107,6 @@ static void process_chain_sample(int i, char *buffer) {
         uint64_t r_id = strtoull(pair, NULL, 10);
         uint64_t r_hash = strtoull(colon + 1, NULL, 16);
 
-        /* We look for this ID in our system and check to see if the hash matches */
         for (int j = rec->count - 1; j >= 0; j--) {
             if (rec->alerts[j].id == r_id) {
                 if (rec->alerts[j].curr_hash == r_hash) {
@@ -116,7 +119,7 @@ static void process_chain_sample(int i, char *buffer) {
 
 found:
     if (ancestor_id > 0) {
-        /* COMMON ANCESTOR FOUND! Please provide only the delta. */
+        /* COMMON ANCESTOR FOUND */
         char req[512];
         snprintf(req, sizeof(req), "SYNC_RANGE|%s|%" PRIu64, hash_b64, ancestor_id);
         enqueue_message(i, req, strlen(req));
@@ -126,11 +129,11 @@ found:
                       "Chain Sync: Ancestor found at ID %" PRIu64 ". Requesting Range Sync.", ancestor_id);
         }
     } else {
-        /* NO ANCESTOR FOUND in the current window. Let's expand the search. */
+        /* NO ANCESTOR — расширяем окно поиска */
         int next_offset = current_offset + current_limit;
-        int next_limit = current_limit * 5; 
+        int next_limit = current_limit * 3;          /* было *5 — слишком агрессивно */
 
-        if (next_offset < rec->count && next_limit <= 500) {
+        if (next_offset < rec->count && next_limit <= 800) {   /* было 500 */
             char req[512];
             snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|%d|%d", hash_b64, next_offset, next_limit);
             enqueue_message(i, req, strlen(req));
@@ -141,13 +144,36 @@ found:
                           next_offset, next_limit);
             }
         } else {
-            /* The gap is too big. Let's give up and download everything. */
-            char req[512];
-            snprintf(req, sizeof(req), "SYNC_REC|%s", hash_b64);
-            enqueue_message(i, req, strlen(req));
-            
-            log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                      "Chain Sync: Divergence too deep for %s. Falling back to Full Sync.", hash_b64);
+            static time_t last_full_sync[64] = {0};   /* простой ring по hash */
+            static unsigned char last_hashes[64][PUBKEY_HASH_LEN];
+            static int full_sync_idx = 0;
+
+            time_t now = time(NULL);
+            bool allowed = true;
+
+            for (int k = 0; k < 64; k++) {
+                if (memcmp(last_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
+                    if (now - last_full_sync[k] < 45) {   /* 45 секунд cooldown */
+                        allowed = false;
+                    }
+                    break;
+                }
+            }
+            if (allowed) {
+                memcpy(last_hashes[full_sync_idx], raw_hash, PUBKEY_HASH_LEN);
+                last_full_sync[full_sync_idx] = now;
+                full_sync_idx = (full_sync_idx + 1) % 64;
+                char req[512];
+                snprintf(req, sizeof(req), "SYNC_REC|%s", hash_b64);
+                enqueue_message(i, req, strlen(req));
+                log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                          "Chain Sync: Divergence too deep for %s. Falling back to Full Sync (cooldown 45s).", hash_b64);
+            } else {
+                if (verbose) {
+                    log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
+                              "Chain Sync: Full Sync for %s suppressed by cooldown", hash_b64);
+                }
+            }
         }
     }
     
@@ -988,41 +1014,49 @@ static void process_sync_chain(int i, char *buffer) {
     uint64_t remote_last_id = strtoull(id_str, NULL, 10);
     uint64_t remote_last_hash = strtoull(hash_str, NULL, 10);
     Recipient *rec = find_recipient(raw_hash);
+
     if (rec && rec->count > 0) {
         Alert *my_last = &rec->alerts[rec->count - 1];
-        /* Проверка на полную синхронизацию (без изменений) */
+
         if (my_last->id == remote_last_id && my_last->curr_hash == remote_last_hash) {
             free(raw_hash);
             free(rest);
             return;
         }
-        /* Активное исправление (Push) 
-           Если наш последний ID больше, чем у пира, значит он отстал.
-           Вместо того чтобы просто просить у него данные, мы сами шлем ему 
-           нашу "верхушку". Это заставит его увидеть расхождение хэшей. */
+
         if (my_last->id > remote_last_id) {
+            /* Мы впереди — просто пушим свой хвост и выходим.
+               Пир сам разберётся, нужно ли ему что-то запрашивать. */
             send_alert_to_peer(i, rec->hash, my_last);
             if (verbose) {
                 log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
                           "Peer is behind on %s. Pushing my last ID %" PRIu64, hash_b64, my_last->id);
             }
+            free(raw_hash);
+            free(rest);
+            return;
         }
-        /* Поиск "дыр" (Pull)
-           Если ID совпали, но хэши разные, либо если наш ID меньше.
-           Мы запрашиваем семплы, чтобы найти точку расхождения в истории. */
+
+        /* Всегда начинаем с небольшого sample вместо немедленного Full Sync */
         char req[512];
-        snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|20", hash_b64);
+        snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|40", hash_b64);
         enqueue_message(i, req, strlen(req));
+
         if (verbose) {
             log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
                       "Chain divergence for %s. (MyHash: %" PRIx64 ", Remote: %" PRIx64 "). Healing started.", 
                       hash_b64, my_last->curr_hash, remote_last_hash);
         }
     } else {
-        /* Мы пустые: запрашиваем всё (без изменений) */
-        char heal_cmd[512];
-        snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
-        enqueue_message(i, heal_cmd, strlen(heal_cmd));
+        /* Мы пустые Full Sync разрешён, но тоже через cooldown */
+        static time_t last_empty_sync = 0;
+        time_t now = time(NULL);
+        if (now - last_empty_sync > 20) {
+            last_empty_sync = now;
+            char heal_cmd[512];
+            snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
+            enqueue_message(i, heal_cmd, strlen(heal_cmd));
+        }
     }
     free(raw_hash);
     free(rest);

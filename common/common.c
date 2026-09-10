@@ -6,6 +6,10 @@
 #include <string.h>
 #include <ctype.h>
 
+char gorgona_data_dir[256] = DEFAULT_DATA_DIR;
+char gorgona_conf_dir[256] = DEFAULT_CONF_DIR;
+char gorgona_log_file[512] = "";
+
 void get_utc_time_str(char *buffer, size_t buffer_size) {
     time_t now = time(NULL);
     struct tm utc_time;

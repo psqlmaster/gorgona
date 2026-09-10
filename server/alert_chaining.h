@@ -71,4 +71,6 @@ void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
                                    uint64_t remote_prev_hash,
                                    uint64_t remote_curr_hash);
 
+void alert_chain_recompute_all(Recipient *rec);
+
 #endif /* ALERT_CHAINING_H */

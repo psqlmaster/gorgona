@@ -5,6 +5,7 @@
 */
 
 #include "alert_db.h"
+#include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,10 +68,12 @@ static void update_alert_pointers(Recipient *rec, unsigned char *old_base, unsig
 }
 
 int alert_db_init(void) {
+    char alerts_dir[512];
+    snprintf(alerts_dir, sizeof(alerts_dir), "%s/alerts", gorgona_data_dir);
     struct stat st = {0};
-    if (stat(ALERT_DB_DIR, &st) == -1) {
-        if (mkdir(ALERT_DB_DIR, 0700) == -1) return -1;
-    }     
+    if (stat(alerts_dir, &st) == -1) {
+        if (mkdir(alerts_dir, 0700) == -1) return -1;
+    }
     return 0;
 }
 
@@ -82,34 +85,47 @@ static int ensure_mmap_capacity(Recipient *rec, size_t additional_size) {
     if (rec->fd < 0) {
         char filename[512];
         char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
-        snprintf(filename, sizeof(filename), "%s%s.alerts", ALERT_DB_DIR, hash_b64);
+        snprintf(filename, sizeof(filename), "%s/alerts/%s.alerts", gorgona_data_dir, hash_b64);
         free(hash_b64);
         rec->fd = open(filename, O_RDWR | O_CREAT, 0600);
         if (rec->fd < 0) return -1;
     }
-
     struct stat st;
     fstat(rec->fd, &st);
     size_t current_disk_size = st.st_size;
     size_t required = rec->used_size + additional_size;
-
-    /* We only expand the file if there really isn't enough space */
+    if (current_disk_size > rec->used_size * 3 / 2 && current_disk_size > 2 * 1024 * 1024) {
+        size_t shrink_to = rec->used_size + (2 * 1024 * 1024); /* +2 МБ запас */
+        if (shrink_to < required) shrink_to = required;
+        shrink_to = ((shrink_to / (1024 * 1024)) + 1) * (1024 * 1024);
+        if (ftruncate(rec->fd, shrink_to) == 0) {
+            fsync(rec->fd);
+            current_disk_size = shrink_to;
+            if (rec->mmap_ptr) {
+                unsigned char *old_ptr = rec->mmap_ptr;
+                unsigned char *new_ptr = mmap(NULL, shrink_to, PROT_READ | PROT_WRITE, MAP_SHARED, rec->fd, 0);
+                if (new_ptr != MAP_FAILED) {
+                    update_alert_pointers(rec, old_ptr, new_ptr);
+                    munmap(old_ptr, rec->mmap_size);
+                    rec->mmap_ptr = new_ptr;
+                    rec->mmap_size = shrink_to;
+                }
+            }
+        }
+    }
+    /* Expand only if really needed */
     if (required > current_disk_size || !rec->mmap_ptr) {
         size_t target_size = (required > current_disk_size) ? required : current_disk_size;
         size_t new_size = ((target_size / (1024 * 1024)) + 1) * (1024 * 1024);
-        
         if (new_size > current_disk_size) {
             if (ftruncate(rec->fd, new_size) != 0) return -1;
             fsync(rec->fd);
         }
-
         unsigned char *old_ptr = rec->mmap_ptr;
         unsigned char *new_ptr = mmap(NULL, new_size, PROT_READ | PROT_WRITE, MAP_SHARED, rec->fd, 0);
         if (new_ptr == MAP_FAILED) return -1;
-
         update_alert_pointers(rec, old_ptr, new_ptr);
         if (old_ptr) munmap(old_ptr, rec->mmap_size);
-        
         rec->mmap_ptr = new_ptr;
         rec->mmap_size = new_size;
     }
@@ -195,7 +211,9 @@ int alert_db_save_alert(Recipient *rec, Alert *alert) {
 }
 
 int alert_db_load_recipients(void) {
-    DIR *dir = opendir(ALERT_DB_DIR);
+    char alerts_dir[512];
+    snprintf(alerts_dir, sizeof(alerts_dir), "%s/alerts", gorgona_data_dir);
+    DIR *dir = opendir(alerts_dir);
     if (!dir) return -1;
     struct dirent *entry;
     while ((entry = readdir(dir))) {
@@ -277,7 +295,7 @@ int alert_db_load_recipients(void) {
              * чтобы не создавать расхождений с другими нодами кластера. */
             if (rec->count > 0) {
                 qsort(rec->alerts, rec->count, sizeof(Alert), cmp_alert_id_asc);
-                rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+                alert_chain_recompute_all(rec); 
             } else {
                 rec->last_hash = 0;
             }
@@ -293,6 +311,16 @@ int alert_db_load_recipients(void) {
                 }
             }
             rec->used_size = offset;
+             
+            if (fstat(rec->fd, &st) == 0) {
+                size_t disk_size = st.st_size;
+                if (disk_size > rec->used_size * 4 && disk_size > 10 * 1024 * 1024) {
+                    if (verbose) fprintf(stderr, 
+                        "Auto-vacuum: %s disk=%.1fMB used=%.1fKB\n",
+                        b64, disk_size/1048576.0, rec->used_size/1024.0);
+                    alert_db_sync(rec);
+                }
+            }
             
             if (corrupted) {
                 if (verbose) fprintf(stderr, "Auto-healing corrupted database (88-byte format): %s\n", b64);
@@ -325,8 +353,8 @@ int alert_db_sync(Recipient *rec) {
     char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
     if (!hash_b64) return -1;
 
-    snprintf(filename, sizeof(filename), "%s%s.alerts", ALERT_DB_DIR, hash_b64);
-    snprintf(tmp, sizeof(tmp), "%s%s.alerts.tmp", ALERT_DB_DIR, hash_b64);
+    snprintf(filename, sizeof(filename), "%s/alerts/%s.alerts", gorgona_data_dir, hash_b64);
+    snprintf(tmp, sizeof(tmp), "%s/alerts/%s.alerts.tmp", gorgona_data_dir, hash_b64);
 
     time_t now = time(NULL);
     int t_fd = open(tmp, O_RDWR | O_CREAT | O_TRUNC, 0600);
@@ -383,6 +411,7 @@ int alert_db_sync(Recipient *rec) {
     }
 
     rec->count = j;
+    alert_chain_recompute_all(rec);
     rec->waste_count = 0;
     /* После vacuum последний алерт мог измениться (если алерт с максимальным ID истёк).
      * Пересчитываем last_hash, чтобы он указывал на реальный хвост цепи.

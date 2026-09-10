@@ -37,9 +37,13 @@ void metrics_init_ssl() {
     }
 
     /* Standard certificate paths for Gorgona */
-    if (SSL_CTX_use_certificate_file(metrics_ssl_ctx, "/etc/gorgona/server.crt", SSL_FILETYPE_PEM) <= 0 ||
-        SSL_CTX_use_PrivateKey_file(metrics_ssl_ctx, "/etc/gorgona/server.key", SSL_FILETYPE_PEM) <= 0) {
-        log_event("WARN", -1, NULL, 0, "Metrics: HTTPS Disabled (Certs not found in /etc/gorgona/)");
+    char cert_path[512], key_path[512];
+    snprintf(cert_path, sizeof(cert_path), "%s/server.crt", gorgona_conf_dir);
+    snprintf(key_path, sizeof(key_path), "%s/server.key", gorgona_conf_dir);
+
+    if (SSL_CTX_use_certificate_file(metrics_ssl_ctx, cert_path, SSL_FILETYPE_PEM) <= 0 ||
+        SSL_CTX_use_PrivateKey_file(metrics_ssl_ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
+        log_event("WARN", -1, NULL, 0, "Metrics: HTTPS Disabled (Certs not found in %s)", gorgona_conf_dir);
         SSL_CTX_free(metrics_ssl_ctx);
         metrics_ssl_ctx = NULL;
     }
