@@ -33,6 +33,7 @@ SERVER_SRC  = ../../server/gorgonad.c \
               ../../server/alert_db.c \
               ../../server/commands.c \
               ../../server/metrics.c \
+              ../../server/alert_chaining.c \
               $(COMMON_SRC)
 
 # Iterate through all discovered SDKs and run the build-one target
