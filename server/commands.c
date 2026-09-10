@@ -15,6 +15,11 @@
 #include "admin_mesh.h"
 #include "alert_db.h"
 
+/* === Защита от параллельных Full/Range Sync === */
+bool chain_sync_in_progress = false;
+time_t chain_sync_started_at = 0;
+int    chain_sync_owner_fd   = -1;   /* fd пира, с которым сейчас идёт синк */
+                                            //
 /* When an authorization packet (AUTH or AUTH_SUCCESS) arrives, we need to find the best entry in the table for that IP address */
 MeshNode* mesh_find_and_merge(const char *ip) {
     int seed_idx = -1;
@@ -203,6 +208,11 @@ static void process_sync_range(int i, char *buffer) {
         if (verbose) log_event("DEBUG", -1, NULL, 0, "Range Sync: Sent %d alerts after ID %" PRIu64, sent, start_id);
     }
     free(raw_hash); free(rest);
+    /* Синхронизация закончилась */
+    if (subscribers[i].sock == chain_sync_owner_fd) {
+        chain_sync_in_progress = false;
+        chain_sync_owner_fd = -1;
+    }
 }
 
 /**
@@ -222,28 +232,49 @@ static void process_sync_rec(int i, char *buffer) {
         }
     }
     free(raw_hash);
+    /* Синхронизация закончилась */
+    if (subscribers[i].sock == chain_sync_owner_fd) {
+        chain_sync_in_progress = false;
+        chain_sync_owner_fd = -1;
+    }
 }
 
 void mesh_request_chain_sync(int sub_index) {
+    time_t now = time(NULL);
+    /* Глобальный cooldown = sync_interval / 2 (но не меньше 10 сек) */
+    int cooldown = sync_interval / 2;
+    if (cooldown < 10) cooldown = 10;
+    if (chain_sync_in_progress) {
+        /* Уже идёт синхронизация с другим пиром не начинаем новую */
+        if (now - chain_sync_started_at < 90) {  // safety timeout 90 сек
+            return;
+        }
+        /* Зависший флаг — сбрасываем */
+        chain_sync_in_progress = false;
+        chain_sync_owner_fd = -1;
+    }
+    static time_t last_global_request = 0;
+    if (now - last_global_request < cooldown) {
+        return;
+    }
+    last_global_request = now;
+    chain_sync_in_progress = true;
+    chain_sync_started_at  = now;
+    chain_sync_owner_fd    = subscribers[sub_index].sock;
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         if (rec->count == 0) continue;
-
         char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!hash_b64) continue;
-
         char sync_cmd[512];
-        /* We're sending the top of our feast chain */
         int len = snprintf(sync_cmd, sizeof(sync_cmd), "SYNC_CHAIN|%s|%" PRIu64 "|%" PRIu64,
-                           hash_b64, 
-                           rec->alerts[rec->count - 1].id, 
+                           hash_b64,
+                           rec->alerts[rec->count - 1].id,
                            rec->last_hash);
-        
         enqueue_message(sub_index, sync_cmd, (size_t)len);
         free(hash_b64);
     }
-    
-    /* Global MaxID Nudge for Empty Nodes */
+    /* Global MaxID Nudge */
     uint64_t my_max = get_max_alert_id();
     char nudge[64];
     int n_len = snprintf(nudge, sizeof(nudge), "SYNC|%" PRIu64, my_max);
@@ -546,12 +577,14 @@ static void process_auth(int i, char *buffer) {
                           "Policy Notice: Peer TTL (%d) differs from Local TTL (%d)", 
                           peer_max_ttl, max_alert_ttl);
             }
-
-            /* 
-             * Если к нам подключился пир, мы должны ТУТ ЖЕ инициировать 
-             * проверку хеш-цепочек со своей стороны.
-             */
-            mesh_request_chain_sync(i);
+            /* Запускаем chain sync только если сейчас никто не синкается.
+               Первый пир из конфига всегда имеет приоритет (нет дополнительной задержки). */
+            if (!chain_sync_in_progress) {
+                mesh_request_chain_sync(i);
+            } else if (verbose) {
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                          "Chain sync skipped — already in progress with another peer");
+            }
         }
         
         sub->auth_state = AUTH_OK;
@@ -1093,7 +1126,14 @@ void handle_command(int sub_index, char *buffer) {
             best->last_seen = time(NULL);
             sub->node_ptr = best;
         }
-        mesh_request_chain_sync(sub_index); 
+        /* Запускаем chain sync только если сейчас никто не синкается.
+           Первый пир из конфига всегда имеет приоритет (нет дополнительной задержки). */
+        if (!chain_sync_in_progress) {
+            mesh_request_chain_sync(sub_index);
+        } else if (verbose) {
+            log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                      "Chain sync skipped — already in progress with another peer");
+        }
         return; 
     }
     

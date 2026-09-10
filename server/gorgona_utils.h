@@ -50,6 +50,10 @@ typedef struct Recipient Recipient;
 extern int max_alerts;
 extern int vacuum_threshold;
 extern int max_alert_ttl;
+/* Chain sync guard (anti-storm) */
+extern bool chain_sync_in_progress;
+extern time_t chain_sync_started_at;
+extern int    chain_sync_owner_fd;
 
 /* Structure for outgoing buffer list (linked list for queue) */
 typedef struct OutBuffer {

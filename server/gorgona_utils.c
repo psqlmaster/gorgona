@@ -953,4 +953,9 @@ void run_global_maintenance(void) {
         mesh_save_peers_cache();
         last_cache_dump = now;
     }
+    if (chain_sync_in_progress && (time(NULL) - chain_sync_started_at > 120)) {
+        chain_sync_in_progress = false;
+        chain_sync_owner_fd = -1;
+        if (verbose) log_event("DEBUG", -1, NULL, 0, "Chain sync flag reset by timeout");
+    }
 }
