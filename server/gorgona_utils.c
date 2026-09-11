@@ -942,6 +942,20 @@ void run_global_maintenance(void) {
         mesh_save_peers_cache();
         last_cache_dump = now;
     }
+    /* Периодический аудит цепочек у активного пира */
+    static time_t last_periodic_chain_sync = 0;
+    if (now - last_periodic_chain_sync >= 60) {
+        last_periodic_chain_sync = now;
+        for (int i = 0; i < max_clients; i++) {
+            if (client_sockets[i] > 0 && 
+                subscribers[i].type == SUB_TYPE_PEER && 
+                subscribers[i].auth_state == AUTH_OK) {
+                
+                mesh_request_chain_sync(i);
+                break; /* Достаточно запустить сверку с одним доверенным пиром */
+            }
+        }
+    }
     if (chain_sync_in_progress && (time(NULL) - chain_sync_started_at > 120)) {
         chain_sync_in_progress = false;
         chain_sync_owner_fd = -1;

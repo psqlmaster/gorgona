@@ -1124,14 +1124,38 @@ static void process_sync_chain(int i, char *buffer) {
                       hash_b64, my_last->curr_hash, remote_last_hash);
         }
     } else {
-        /* Мы пустые Full Sync разрешён, но тоже через cooldown */
-        static time_t last_empty_sync = 0;
+        /* Мы пустые по этому ключу.
+         * Кулдаун 20 секунд должен действовать НА КОНКРЕТНЫЙ КЛЮЧ,
+         * а не блокировать синхронизацию всех остальных ключей! */
+        static time_t last_empty_sync[64] = {0};
+        static unsigned char last_empty_hashes[64][PUBKEY_HASH_LEN];
+        static int empty_sync_idx = 0;
+
         time_t now = time(NULL);
-        if (now - last_empty_sync > 20) {
-            last_empty_sync = now;
+        bool allowed = true;
+
+        for (int k = 0; k < 64; k++) {
+            if (memcmp(last_empty_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
+                if (now - last_empty_sync[k] < 20) {
+                    allowed = false;
+                }
+                break;
+            }
+        }
+
+        if (allowed) {
+            memcpy(last_empty_hashes[empty_sync_idx], raw_hash, PUBKEY_HASH_LEN);
+            last_empty_sync[empty_sync_idx] = now;
+            empty_sync_idx = (empty_sync_idx + 1) % 64;
+
             char heal_cmd[512];
-            snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
-            enqueue_message(i, heal_cmd, strlen(heal_cmd));
+            int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
+            enqueue_message(i, heal_cmd, (size_t)h_len);
+
+            if (verbose) {
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                          "Cold start: Requesting full sync for empty key %s", hash_b64);
+            }
         }
     }
     free(raw_hash);
