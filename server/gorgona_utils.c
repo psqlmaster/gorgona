@@ -549,33 +549,20 @@ void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
  */
 void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_filter, int count) {
     time_t now = time(NULL);
-
-    /* 
-     * Use a manual index increment to safely handle cases where a 
-     * recipient is removed from the global array during the maintenance phase.
-     */
     for (int r = 0; r < recipient_count; ) {
         Recipient *rec = &recipients[r];
-        
-        /* 1. Maintenance: Purge expired alerts before processing the transmission */
         clean_expired_alerts(rec);
-
-        /* 2. Cleanup: If the recipient is now empty, sync/delete the file and remove from memory */
         if (rec->count == 0 && use_disk_db) {
             if (alert_db_sync(rec) == 1) {
                 remove_recipient_at_index(r);
-                /* Do not increment index: the next recipient has shifted into the current slot */
                 continue; 
             }
         }
-
-        /* 3. Filtering: Encode hash to Base64 and compare with requested filter */
         char *pubkey_hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!pubkey_hash_b64) {
             r++;
             continue;
         }
-
         if (pubkey_hash_b64_filter && strlen(pubkey_hash_b64_filter) > 0) {
             if (strcmp(pubkey_hash_b64, pubkey_hash_b64_filter) != 0) {
                 free(pubkey_hash_b64);
@@ -583,32 +570,19 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                 continue;
             }
         }
-
-        /* 4. Ordering: Sort alerts by ID (descending) if historical data is requested */
-        /* We sort based on whether it is LAST, SINGLE, or ALL with a specified limit */
-        if (mode == MODE_LAST || mode == MODE_SINGLE || (mode == MODE_ALL && count > 0)) {
-            qsort(rec->alerts, rec->count, sizeof(Alert), alert_cmp_desc);
-        }
-
-        /* 5. Transmission: Process alerts in the recipient's buffer */
-        int limit;
-        if (mode == MODE_LAST || (mode == MODE_ALL && count > 0)) {
-            limit = count; 
-        } else {
-            limit = rec->count; /* If count == 0, return everything */
-        }
-        
+        /* 
+         * Массив rec->alerts ДОЛЖЕН ВСЕГДА оставаться отсортированным по возрастанию (ASC).
+         */
+        int limit = (count > 0) ? count : rec->count;
         int sent_count = 0;
-        for (int i = 0; i < rec->count && sent_count < limit; i++) {
+        bool reverse_order = (mode == MODE_LAST || mode == MODE_SINGLE);
+        int start_idx = reverse_order ? (rec->count - 1) : 0;
+        int step = reverse_order ? -1 : 1;
+        for (int i = start_idx; (reverse_order ? i >= 0 : i < rec->count) && sent_count < limit; i += step) {
             Alert *a = &rec->alerts[i];
-            
-            /* Skip inactive or expired alerts that haven't been vacuumed yet */
             if (!a->active || a->expire_at <= now) continue;
-
             bool is_locked = (a->unlock_at > now);
             bool send_it = false;
-
-            /* Apply mode-specific visibility rules */
             if (mode == MODE_ALL || mode == MODE_LAST) {
                 send_it = true;
             } else if (mode == MODE_LIVE || mode == MODE_SINGLE) {
@@ -616,19 +590,15 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
             } else if (mode == MODE_LOCK) {
                 send_it = is_locked;
             }
-
             if (send_it) {
-                /* Encode binary fields for network transmission */
                 char *bt = base64_encode(a->text, a->text_len);
                 char *bk = base64_encode(a->encrypted_key, a->encrypted_key_len);
                 char *bi = base64_encode(a->iv, a->iv_len);
                 char *bg = base64_encode(a->tag, GCM_TAG_LEN);
-
                 if (bt && bk && bi && bg) {
                     size_t resp_len = 2048 + strlen(bt) + strlen(bk) + strlen(bi) + strlen(bg);
                     char *resp = malloc(resp_len);
                     if (resp) {
-                        /* Format the ALERT message according to protocol spec */
                         int l = snprintf(resp, resp_len, "ALERT|%s|%" PRIu64 "|%" PRIu64 "|%ld|%ld|%s|%s|%s|%s",
                                          pubkey_hash_b64, 
                                          a->id, 
@@ -642,18 +612,13 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
                         free(resp);
                     }
                 }
-                
                 free(bt); free(bk); free(bi); free(bg);
                 sent_count++;
             }
         }
-
         free(pubkey_hash_b64); 
-        r++; /* Move to the next recipient in the list */
+        r++;
     }
-
-    /* 6. Post-processing: Handle one-time requests by flagging connection for closure.
-     * Note: MODE_ALL is a subscription, so it is intentionally excluded here. */
     if (mode == MODE_LAST || mode == MODE_SINGLE) {
         subscribers[sub_index].close_after_send = true;
     }
