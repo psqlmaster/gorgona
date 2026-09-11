@@ -18,6 +18,7 @@ Copyright (c) 2025, Alexander Shcheglov
 #include "config.h"
 #include "common.h"
 
+extern char client_log_level[32];
 char config_file_path[512] = DEFAULT_CONFIG_FILE;
 
 /* Helper function to trim leading and trailing whitespace */
@@ -31,7 +32,6 @@ static char *trim_spaces(char *str) {
     return str;
 }
 
-/* ✅ НОВАЯ СИГНАТУРА с config_path */
 void read_config(const char *config_path, Config *config, int verbose) {
     /* 1. Initialize defaults */
     memset(config->sync_psk, 0, sizeof(config->sync_psk));
@@ -43,14 +43,12 @@ void read_config(const char *config_path, Config *config, int verbose) {
     config->server_port = DEFAULT_SERVER_PORT;
     config->exec_count = 0;
 
-    /* ✅ Сброс путей к дефолтным */
     strncpy(gorgona_data_dir, DEFAULT_DATA_DIR, sizeof(gorgona_data_dir) - 1);
     gorgona_data_dir[sizeof(gorgona_data_dir) - 1] = '\0';
     strncpy(gorgona_conf_dir, DEFAULT_CONF_DIR, sizeof(gorgona_conf_dir) - 1);
     gorgona_conf_dir[sizeof(gorgona_conf_dir) - 1] = '\0';
     gorgona_log_file[0] = '\0';   /* пусто = использовать data_dir или /dev/null */
 
-    /* ✅ Открытие файла ПО ПЕРЕДАННОМУ пути */
     FILE *conf_fp = fopen(config_path, "r");
     if (!conf_fp) {
         if (verbose) fprintf(stderr, "Warning: Config file %s not found. Using defaults.\n", config_path);
@@ -113,7 +111,6 @@ void read_config(const char *config_path, Config *config, int verbose) {
                 else if (strcmp(key, "sync_psk") == 0) {
                     strncpy(config->sync_psk, value, sizeof(config->sync_psk) - 1);
                 }
-                /* ✅ НОВЫЕ КЛЮЧИ для путей */
                 else if (strcmp(key, "data_dir") == 0) {
                     strncpy(gorgona_data_dir, value, sizeof(gorgona_data_dir) - 1);
                     gorgona_data_dir[sizeof(gorgona_data_dir) - 1] = '\0';
@@ -125,6 +122,10 @@ void read_config(const char *config_path, Config *config, int verbose) {
                 else if (strcmp(key, "log_file") == 0) {
                     strncpy(gorgona_log_file, value, sizeof(gorgona_log_file) - 1);
                     gorgona_log_file[sizeof(gorgona_log_file) - 1] = '\0';
+                }
+                else if (strcmp(key, "log_level") == 0) {
+                    strncpy(client_log_level, value, sizeof(client_log_level) - 1);
+                    client_log_level[sizeof(client_log_level) - 1] = '\0';
                 }
             }
             else if (in_exec_section) {
