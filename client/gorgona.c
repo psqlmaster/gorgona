@@ -6,6 +6,8 @@
 
 #include "encrypt.h"
 #include "admin_mesh.h"
+#include "config.h"
+#include "common.h"  
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
@@ -32,7 +34,7 @@ void print_help(const char *program_name) {
 
     printf(CLR_BOLD CLR_GREEN "Gorgona Client" CLR_RESET " (Version " CLR_YELLOW "%s" CLR_RESET ")\n", VERSION);
     printf(CLR_BOLD "Usage:" CLR_RESET "\n");
-    printf("  %s " CLR_CYAN "[-v] [-e] [-d] [-V|--version] [-h|--help]" CLR_RESET " " CLR_YELLOW "<command>" CLR_RESET " [arguments]\n", program_name);
+    printf("  %s " CLR_CYAN "[-v] [-e] [-d] [-V|--version] [-h|--help] [-c|--conf <path>]" CLR_RESET " " CLR_YELLOW "<command>" CLR_RESET " [arguments]\n", program_name);
 
     printf("\n" CLR_BOLD "Flags:" CLR_RESET "\n");
     printf("  " CLR_CYAN "-v, --verbose" CLR_RESET "      Enables verbose output for debugging\n");
@@ -44,6 +46,7 @@ void print_help(const char *program_name) {
     printf("                     Output from executed commands is written to the file specified by the environment variable\n");
     printf("                     gorgona_LOG_FILE (e.g., gorgona_LOG_FILE=/var/log/gorgona.log ./gorgona -ed listen new ...).\n");
     printf("                     If gorgona_LOG_FILE is not set, output is discarded (/dev/null).\n");
+    printf("  " CLR_CYAN "-c, --conf" CLR_RESET "         Path to config file (default: " CLR_YELLOW "%s" CLR_RESET ")\n", DEFAULT_CONFIG_FILE);
     printf(" " CLR_CYAN "-V, --version" CLR_RESET " Displays version information\n");
     printf(" " CLR_CYAN "-h, --help" CLR_RESET " Displays this help message\n");
     printf("  " CLR_MAGENTA "Note:" CLR_RESET "              Flags -v, -e, and -V can be combined (e.g., -veV) for verbose output during command execution.\n");
@@ -100,6 +103,7 @@ void print_help(const char *program_name) {
 
 int main(int argc, char *argv[]) {
     int opt;
+    char config_path[512] = DEFAULT_CONFIG_FILE;
 
     /* Define long options for getopt_long */
     static struct option long_options[] = {
@@ -108,11 +112,22 @@ int main(int argc, char *argv[]) {
         {"exec", no_argument, 0, 'e'},
         {"version", no_argument, 0, 'V'},
         {"daemon-exec", no_argument, 0, 'd'},
+        {"conf",        required_argument, 0, 'c'}, 
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "vheVd", long_options, NULL)) != -1) {
-      switch (opt) {
+    while ((opt = getopt_long(argc, argv, "vheVdc:", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'c':
+                if (!optarg) {
+                    fprintf(stderr, "Error: -c/--conf requires a path argument\n");
+                    return 1;
+                }
+                strncpy(config_path, optarg, sizeof(config_path) - 1);
+                config_path[sizeof(config_path) - 1] = '\0';
+                strncpy(config_file_path, config_path, sizeof(config_file_path) - 1);
+                config_file_path[sizeof(config_file_path) - 1] = '\0';
+                break;
       case 'v':
         verbose = 1;
         break;
@@ -149,6 +164,9 @@ int main(int argc, char *argv[]) {
         print_help(argv[0]);
         return 1;
     }
+
+    Config cfg;
+    read_config(config_path, &cfg, verbose);
 
     /* Process commands */
     if (strcmp(argv[optind], "genkeys") == 0) {

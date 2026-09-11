@@ -11,6 +11,6 @@
 
 int send_alert(int argc, char *argv[], int verbose);
 /* A function to recall (cancel) a previously sent alert. */
-int send_revocation(int argc, char *argv[], int verbose_flag); 
+int send_revocation(int argc, char *argv[], int verbose); 
 
 #endif

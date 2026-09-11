@@ -14,8 +14,8 @@
 #include <time.h>
 #include <inttypes.h>
 #include <stdarg.h>
-
-#define HISTORY_PATH "/var/lib/gorgona/history.log"
+#include "common.h"
+#include <sys/stat.h>
 
 /* Fixed offsets for the header line (Length: 48 bytes) */
 typedef struct {
@@ -59,9 +59,20 @@ static void write_fixed_str(char *dest, int len, const char *fmt, ...) {
 
 void client_history_init(void) {
     mapped_size = sizeof(LogHeader) + (sizeof(LogLine) * LOG_MAX_ENTRIES);
-    
-    history_fd = open(HISTORY_PATH, O_RDWR | O_CREAT, 0644);
+    char history_path[512];
+    snprintf(history_path, sizeof(history_path), "%s/history.log", gorgona_data_dir);
+    struct stat st = {0};
+    if (stat(gorgona_data_dir, &st) == -1) {
+        mkdir(gorgona_data_dir, 0755);
+    }
+
+    history_fd = open(history_path, O_RDWR | O_CREAT, 0644);
     if (history_fd < 0) return;
+
+    if (ftruncate(history_fd, mapped_size) == -1) {
+        close(history_fd);
+        return;
+    }
 
     if (ftruncate(history_fd, mapped_size) == -1) {
         close(history_fd);

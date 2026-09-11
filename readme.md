@@ -59,11 +59,11 @@ The project includes a client (`gorgona`) for key generation, sending messages, 
 - **Hybrid Operation Modes**:
     - **Smart Mesh Mode**: Enabled by providing a `sync_psk` in the client config. The client uses the Layer 2 Management Plane to discover the full cluster topology via PEX, monitors peer health (Gorgona Score), and automatically switches to the fastest available node.
     - **Legacy Mode**: Active when `sync_psk` is omitted or commented out. The client acts as a traditional point-to-point utility, connecting strictly to the single IP/Port defined in the configuration.
-- **Execution Sovereignty**: Uses a memory-mapped persistent history log (`/var/lib/gorgona/history.log`) to ensure that even if the client jumps between different servers, a unique Snowflake command is executed exactly once.
+- **Execution Sovereignty**: Uses a memory-mapped persistent history log (`<data_dir>/history.log`, default: `/var/lib/gorgona/history.log`) to ensure that even if the client jumps between different servers, a unique Snowflake command is executed exactly once.
 - **Performance-Based Routing (Gorgona Score)**: Real-time health monitoring using RTT latency and rolling-average throughput. The system autonomously prioritizes high-performance paths and suppresses "toxic" (slow or unstable) nodes.
 - **Continuous Anti-Entropy (Exponential Tail Sampling)**: Nodes don't just sync by MaxID; they perform a recursive "Common Ancestor" search using hash samples. This allows the system to autonomously "heal" gaps in history and reconcile divergent branches (forks) with minimal network traffic.
 - **Time-Locked Execution**: A decentralized "crypto-cron" with 1ms precision. Encrypted payloads are strictly time-bound: they unlock exactly at `unlock_at` and are automatically purged after `expire_at`.
-- **Autonomous Self-Healing**: Built-in persistence for active peers via `/var/lib/gorgona/peers.cache`. Nodes can bootstrap themselves and rebuild the entire mesh map even if the primary seed nodes are permanently unavailable.
+- **Autonomous Self-Healing**: Built-in persistence for active peers via `<data_dir>/peers.cache` (default: `/var/lib/gorgona/peers.cache`). Nodes can bootstrap themselves and rebuild the entire mesh map even if the primary seed nodes are permanently unavailable.
 - **Anti-Replay Protection**: Integrated defense against network packet re-injection using cryptographic Proof-of-Knowledge handshakes, staleness filters, and sliding-window deduplication.
 - **Hybrid Protocol Sniffer**: A versatile engine that detects and handles binary length-prefixed packets (for high-speed data) and plain-text commands (for interactive diagnostics and health checks).
 - **Flexible & Efficient Storage**: High-speed In-Memory mode or `mmap`-backed disk persistence. Features automatic ring-buffer management and "Vacuum" auto-compaction to keep the database lean and fast.
@@ -247,7 +247,12 @@ Controls the `gorgona` client and Remote Command Execution (RCE) mappings.
 [server]
 ip = 64.188.70.158 
 port = 7777
-sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3   # P2P cluster authentication key (optionally)
+sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3    # P2P cluster authentication key (optionally)
+
+# paths (optional — defaults shown below)
+data_dir = /var/lib/gorgona                            # Base directory for history.log, peers.cache, sticky_node
+conf_dir = /etc/gorgona                                # Directory for *.pub, *.key files
+# log_file = /var/log/gorgona/gorgona.log              # Optional: output for daemon-exec (default: /dev/null)
 
 # Per-key command sections (Recommended)
 [exec_commands:RWTPQzuhzBw=]
@@ -317,23 +322,35 @@ vim /etc/systemd/system/gorgona.service
 ```
 ```ini
 [Unit]
-Description=gorgona Message Listener
+Description=Gorgona Message Listener
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/gorgona -e listen new BTW9V5jVztY= 
-#ExecStart=/usr/bin/gorgona -ev listen new              # debug mode
+# Basic startup (with the default configuration in /etc/gorgona/gorgona.conf) 
+ExecStart=/usr/bin/gorgona -e listen new BTW9V5jVztY=
+# Running with a custom configuration:
+#ExecStart=/usr/bin/gorgona -c /etc/gorgona/gorgona-node2.conf -e listen new BTW9V5jVztY=
+# Debug mode:
+#ExecStart=/usr/bin/gorgona -ve listen new
+
 Restart=always
 RestartSec=5
 StartLimitBurst=10
+StartLimitIntervalSec=300
 User=root
+
+# stdout/stderr (verbose logs, connection errors) 
 StandardOutput=journal
-StandardError=append:/var/log/gorgona_service.log
+StandardError=journal
+
 KillMode=mixed
 TimeoutStopSec=30
-Environment=gorgona_LOG_FILE=/var/log/gorgona_service.log
+
+# The output of daemon-exec commands (the -d flag) is controlled via the log_file setting in the configuration: 
+# [server]
+# log_file = /var/log/gorgona/gorgona_service.log
 
 [Install]
 WantedBy=multi-user.target
@@ -342,7 +359,7 @@ WantedBy=multi-user.target
 #### Usage
 
 ```bash
-gorgona [-v|--verbose] [-e|--exec] [-d|--daemon-exec] [-h|--help] [-V|--version] <command> [arguments]
+gorgona [-v|--verbose] [-e|--exec] [-d|--daemon-exec] [-c|--conf <path>] [-h|--help] [-V|--version] <command> [arguments]
 ```
 ---
 
@@ -365,10 +382,13 @@ If an attack is detected, the server logs the event as a `WARN` (including clien
   - If `[exec_commands]` contains entries (e.g., `app start = /path/to/script.sh`), only messages matching a key are executed by running the corresponding script.
   - **Execution Limits**: You can specify an optional `time_limit = N` (in seconds) in the config file. If the command exceeds this time, it will be forcefully terminated (requires the `timeout` utility). 
     *Example: `app start = /usr/local/bin/script.sh time_limit = 10`*
-- `-d, --daemon-exec`: Used with `-e/--exec` for 'listen' command: executes messages as **background daemons** (via `fork()` + `setsid()`).  
-  - Output from executed commands is written to the file specified by the environment variable `gorgona_LOG_FILE` (e.g., `gorgona_LOG_FILE=/var/log/gorgona.log gorgona -ed listen new ...`).  
-  - If `gorgona_LOG_FILE` is not set, command output is discarded (`/dev/null`).
+  - `-d, --daemon-exec`: Used with `-e/--exec` for 'listen' command: executes messages as background daemons (via `fork()` + `setsid()`).
+        Output from executed commands is written to the file specified by the `log_file` key in the configuration (e.g., `log_file = /var/log/gorgona.log` in `[server]` section of `gorgona.conf`).
+        If `log_file` is not set, command output is discarded (`/dev/null`).
   - The `time_limit` also applies to background processes, preventing "zombie" or frozen scripts from accumulating.
+- `-c, --conf <path>`: Path to configuration file (default: `/etc/gorgona/gorgona.conf`).
+        Allows running multiple client instances with isolated state directories and separate execution mappings.
+        Example: `gorgona -c /etc/gorgona/gorgona-node2.conf -ed listen new KEY=`
 - `-h, --help`: Displays help message.
 - `-V, --version`: Current version.
 
@@ -382,7 +402,7 @@ If an attack is detected, the server logs the event as a `WARN` (including clien
 sudo gorgona genkeys
 ```
 
-Generates an RSA key pair in `/etc/gorgona/`, creating `hash.pub` (public key) and `hash.key` (private key), where `hash` is the base64-encoded hash of the public key.
+Generates an RSA key pair in `<conf_dir>/` (default: `/etc/gorgona/`), creating `hash.pub` (public key) and `hash.key` (private key), where `hash` is the base64-encoded hash of the public key.
 
 The `hash` in name file `hash.pub` is used to specify the sender in the `listen` command; if omitted, messages for all `*.pub` keys in `/etc/gorgona/` are retrieved.
 
@@ -403,7 +423,7 @@ gorgona send "YYYY-MM-DD HH:MM:SS" "YYYY-MM-DD HH:MM:SS" "Your message" "recipie
 ```
 
 Use `-` for `<message>` to read from stdin. 
-The public key file is the filename in `/etc/gorgona/`, e.g., `RWTPQzuhzBw=.pub`.
+The public key file is the filename in `<conf_dir>/` (default: `/etc/gorgona/`), e.g., `RWTPQzuhzBw=.pub`.
 
 **Examples**:
 
@@ -461,7 +481,7 @@ gorgona listen lock RWTPQzuhzBw=
 gorgona send "$(date -u -d '+10 seconds' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "test message" "RWTPQzuhzBw=.pub"
 # After ~10s the listener without -e prints: "Unlocked pending message ID=..." and the decrypted text
 gorgona -ed listen new RWTPQzuhzBw=     # Listens for new messages and executes them as background daemons
-gorgona_LOG_FILE=/var/log/gorgona.log gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background with logging command output to a central log
+gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background (log_file must be set in gorgona.conf)
 # 1. Send a command to reboot the server in 1 hour
 # Output will provide the Alert ID, e.g., 170112816685056
 gorgona send "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+2 days' '+%Y-%m-%d %H:%M:%S')" "sudo reboot" "RWTPQzuhzBw=.pub"
@@ -1062,10 +1082,12 @@ gorgona -e listen new RWTPQzuhzBw=
  StartLimitIntervalSec=300
  User=root
  StandardOutput=journal
- StandardError=append:/var/log/gorgona_service.log
+ StandardError=journal
  KillMode=mixed
  TimeoutStopSec=30
- Environment=gorgona_LOG_FILE=/var/log/gorgona_service.log
+ # Output of daemon-exec commands is controlled via log_file in gorgona.conf:
+ # [server]
+ # log_file = /var/log/gorgona_service.log
  
  [Install]
  WantedBy=multi-user.target
@@ -1075,10 +1097,6 @@ gorgona -e listen new RWTPQzuhzBw=
  sudo systemctl daemon-reload && \
  sudo systemctl enable gorgona && \
  sudo systemctl start gorgona
-
-sudo touch /var/log/gorgona_service.log
-sudo chown user:user /var/log/gorgona_service.log
-sudo chmod 644 /var/log/gorgona_service.log
  ```
 
 ```bash

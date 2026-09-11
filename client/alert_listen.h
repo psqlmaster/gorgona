@@ -7,6 +7,7 @@
 #ifndef ALERT_LISTEN_H
 #define ALERT_LISTEN_H
 
+#include <time.h>
 #include "config.h"
 
 void trim_string(char *str);

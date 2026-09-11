@@ -15,9 +15,9 @@
 #define LOG_MAX_ENTRIES 1024 
 
 /**
- * Initializes the history tracker. 
- * Maps /var/lib/gorgona/history.log into memory.
- */
+Initializes the history tracker.
+Maps <data_dir>/history.log into memory (default: /var/lib/gorgona/history.log).
+*/
 void client_history_init(void);
 
 /**

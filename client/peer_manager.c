@@ -33,7 +33,6 @@
 */
 
 #define _GNU_SOURCE
-#include "peer_manager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +43,8 @@
 #include <sys/select.h>
 #include <sys/stat.h> 
 #include <time.h>
+#include "peer_manager.h"
+#include "common.h" 
 
 #define PENALTY_SHM_PATH "/dev/shm/gorgona_penalties"
 #define INITIAL_PENALTY_SEC 30
@@ -145,7 +146,9 @@ void peer_manager_load_cache(Config *config) {
     }
     /* Case B: Smart Mesh mode */
     /* PRIORITY 1: Distributed Intelligence (Gossip Cache) */
-    FILE *fp = fopen(PEERS_CACHE_PATH, "r");
+    char peers_cache_path[512];
+    snprintf(peers_cache_path, sizeof(peers_cache_path), "%s/peers.cache", gorgona_data_dir);
+    FILE *fp = fopen(peers_cache_path, "r"); 
     if (fp) {
         char line[128];
         while (fgets(line, sizeof(line), fp) && peer_count < MAX_PEER_TARGETS) {
@@ -199,8 +202,9 @@ int peer_manager_get_best_connection(void) {
     int sticky_port = 0;
     bool has_sticky = false;
 
-    /* 1. Читаем данные Sticky-ноды */
-    int s_fd = open(STICKY_NODE_PATH, O_RDONLY);
+    char sticky_path[512];
+    snprintf(sticky_path, sizeof(sticky_path), "%s/sticky_node", gorgona_data_dir);
+    int s_fd = open(sticky_path, O_RDONLY);
     if (s_fd >= 0) {
         char buf[64];
         ssize_t n = read(s_fd, buf, sizeof(buf)-1);
@@ -286,7 +290,9 @@ void peer_manager_update_cache(const char *payload) {
     if (!list_start) return;
     list_start++; 
 
-    FILE *fp = fopen(PEERS_CACHE_PATH, "a+");
+    char peers_cache_path[512];
+    snprintf(peers_cache_path, sizeof(peers_cache_path), "%s/peers.cache", gorgona_data_dir);
+    FILE *fp = fopen(peers_cache_path, "a+"); 
     if (!fp) return;
 
     char *copy = strdup(list_start);

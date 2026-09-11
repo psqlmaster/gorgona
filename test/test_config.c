@@ -7,8 +7,8 @@
 /* Control mock behavior: 0 = valid config, 1 = missing file, 2 = empty file */
 static int mock_config_mode = 0;
 
-/* 
- * Mock fopen: we can keep this because it overrides the libc function 
+/*
+ * Mock fopen: we can keep this because it overrides the libc function
  * to provide controlled input to the REAL read_config function.
  */
 FILE *fopen(const char *path, const char *mode) {
@@ -17,21 +17,26 @@ FILE *fopen(const char *path, const char *mode) {
         FILE *mock_fp = tmpfile();
         if (mock_fp) {
             if (mock_config_mode == 0) {
-                fprintf(mock_fp, "[server]\nip=192.168.1.200\nport=7777\n[exec_commands]\ndf=/home/su/repository/c/gorgona/test/df.sh\n");
+                fprintf(mock_fp, "[server]\n"
+                                 "ip=192.168.1.200\n"
+                                 "port=7777\n"
+                                 "[exec_commands]\n"
+                                 "df=/home/su/repository/c/gorgona/test/df.sh\n");
                 rewind(mock_fp);
             }
             return mock_fp;
         }
     }
     /* For other files (like keys), we return NULL or real files if needed */
-    return NULL; 
+    return NULL;
 }
 
 START_TEST(test_read_config_valid) {
     mock_config_mode = 0;
     Config config;
     memset(&config, 0, sizeof(Config));
-    read_config(&config, 0); /* Testing REAL implementation from config.c */
+    /* ✅ НОВАЯ СИГНАТУРА: config_path, config, verbose */
+    read_config("/etc/gorgona/gorgona.conf", &config, 0);
     ck_assert_str_eq(config.server_ip, "192.168.1.200");
     ck_assert_int_eq(config.server_port, 7777);
     ck_assert_int_eq(config.exec_count, 1);
@@ -43,7 +48,8 @@ START_TEST(test_read_config_missing) {
     mock_config_mode = 1;
     Config config;
     memset(&config, 0, sizeof(Config));
-    read_config(&config, 0);
+    /* ✅ НОВАЯ СИГНАТУРА: config_path, config, verbose */
+    read_config("/etc/gorgona/gorgona.conf", &config, 0);
     /* Should fall back to defaults defined in config.c */
     ck_assert_str_eq(config.server_ip, DEFAULT_SERVER_IP);
 }

@@ -195,12 +195,19 @@ void free_key_hashes(char **key_hashes, int key_count) {
 void daemon_exec(const char *command, int verbose) {
     pid_t pid = fork();
     if (pid == 0) {
+        /* --- CHILD PROCESS (daemon) --- */
+        /* Create new session, detach from parent's controlling terminal */
         setsid();
-        const char *log_path = getenv("gorgona_LOG_FILE");
+        /*  Use gorgona_log_file from config instead of env variable */
         int fd = -1;
-        if (log_path && log_path[0]) {
-            fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (gorgona_log_file[0] != '\0') {
+            fd = open(gorgona_log_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd == -1 && verbose) {
+                fprintf(stderr, "daemon_exec: failed to open %s: %s\n", 
+                        gorgona_log_file, strerror(errno));
+            }
         }
+        /* Fallback to /dev/null if no log file configured or open failed */
         if (fd == -1) {
             fd = open("/dev/null", O_RDWR);
         }
@@ -210,11 +217,24 @@ void daemon_exec(const char *command, int verbose) {
             dup2(fd, STDERR_FILENO);
             if (fd > 2) close(fd);
         }
+
+        /* Clear inherited signal handlers */
+        signal(SIGCHLD, SIG_DFL);
+        signal(SIGHUP, SIG_DFL);
+        signal(SIGPIPE, SIG_DFL);
+        
         execl("/bin/sh", "sh", "-c", command, (char *)NULL);
-        _exit(127);
+        _exit(127);   /* exec failed */
+        
     } else if (pid > 0) {
+        /* --- PARENT PROCESS --- */
         if (verbose) {
             printf("Launched background process PID=%d\n", (int)pid);
+            if (gorgona_log_file[0] != '\0') {
+                printf("  Output redirected to: %s\n", gorgona_log_file);
+            } else {
+                printf("  Output redirected to: /dev/null\n");
+            }
         }
     } else {
         perror("fork");
@@ -814,8 +834,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
     }
 
     Config config;
-    /* [INIT] Initialize configuration and global tracking systems */
-    read_config(&config, verbose);
+    read_config(config_file_path, &config, verbose);
 
     /* Logic: Switch between Smart Mesh Mode and Legacy Mode based on PSK presence */
     bool l2_mesh_enabled = (config.sync_psk[0] != '\0');

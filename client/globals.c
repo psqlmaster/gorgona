@@ -18,14 +18,27 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
     if (verbose || strcmp(level, "ERROR") == 0 || strcmp(level, "WARN") == 0) {
         char time_str[32];
         get_utc_time_str(time_str, sizeof(time_str));
-        printf("[%s] [%s] ", time_str, level);
-        if (ip) printf("[%s:%d] ", ip, port);
-
+        char log_buf[2048];
+        int pos = 0;
+        pos += snprintf(log_buf + pos, sizeof(log_buf) - pos, "[%s] [%s] ", time_str, level);
+        if (ip) pos += snprintf(log_buf + pos, sizeof(log_buf) - pos, "[%s:%d] ", ip, port);
         va_list args;
         va_start(args, fmt);
-        vprintf(fmt, args);
+        pos += vsnprintf(log_buf + pos, sizeof(log_buf) - pos, fmt, args);
         va_end(args);
-        printf("\n");
-        fflush(stdout);
+        if (pos >= (int)sizeof(log_buf)) pos = sizeof(log_buf) - 1;
+        log_buf[pos++] = '\n';
+        log_buf[pos] = '\0';
+        if (!daemon_exec_flag) {
+            fputs(log_buf, stdout);
+            fflush(stdout);
+        }
+        if (gorgona_log_file[0] != '\0') {
+            FILE *fp = fopen(gorgona_log_file, "a");
+            if (fp) {
+                fputs(log_buf, fp);
+                fclose(fp);
+            }
+        }
     }
 }

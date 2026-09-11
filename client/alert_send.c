@@ -165,7 +165,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
 
     /* 4. Configuration and Networking initialization */
     Config config;
-    read_config(&config, verbose_flag);
+    read_config(config_file_path, &config, verbose_flag);
     bool l2_enabled = (config.sync_psk[0] != '\0');
     if (l2_enabled) {
         mesh_init(config.sync_psk);
@@ -371,7 +371,7 @@ int send_revocation(int argc, char *argv[], int verbose_flag) {
 
     /* Network initialization */
     Config config;
-    read_config(&config, verbose_flag);
+    read_config(config_file_path, &config, verbose_flag);
     peer_manager_load_cache(&config);
     int sock = peer_manager_get_best_connection();
     if (sock < 0) { free(pubkey_b64); return 1; }
