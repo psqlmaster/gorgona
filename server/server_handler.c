@@ -587,10 +587,12 @@ void run_server(int server_fd) {
                                 if (flags != -1) {
                                     fcntl(sd, F_SETFL, flags & ~O_NONBLOCK);
                                 }
+                                alarm(600);                     /* 10 минут на обработку запроса */
+                                signal(SIGALRM, _exit);
                                 /* 3. Handle the metrics request (blocking OpenSSL call) */
                                 handle_https_metrics_request(sd);
                                 /* 4. Exit child immediately */
-                                exit(0);
+                                _exit(0); 
                             } else {
                                 /* --- PARENT PROCESS --- */
                                 /* Close our reference to this socket as it's now handled by the child */

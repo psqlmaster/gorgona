@@ -186,6 +186,10 @@ void handle_https_metrics_request(int client_sd) {
     }
 
     SSL *ssl = SSL_new(metrics_ssl_ctx);
+    if (!ssl) {
+        close(client_sd);
+        return;
+    }
     SSL_set_fd(ssl, client_sd);
 
     /* Perform the SSL handshake (now in blocking mode within the child process) */
