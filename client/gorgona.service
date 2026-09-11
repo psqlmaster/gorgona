@@ -1,0 +1,33 @@
+[Unit]
+Description=Gorgona Message Listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Basic startup (with the default configuration in /etc/gorgona/gorgona.conf)
+#ExecStart=/usr/bin/gorgona -e listen new
+# Running with a custom configuration:
+#ExecStart=/usr/bin/gorgona -c /etc/gorgona/gorgona-node2.conf -e listen new BTW9V5jVztY=
+# Debug mode:
+ExecStart=/usr/bin/gorgona -e listen new
+
+Restart=always
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=300
+User=root
+
+# stdout/stderr (verbose logs, connection errors)
+StandardOutput=journal
+StandardError=journal
+
+KillMode=mixed
+TimeoutStopSec=30
+
+# The output of daemon-exec commands (the -d flag) is controlled via the log_file setting in the configuration:
+# [server]
+# log_file = /var/log/gorgona/gorgona_service.log
+
+[Install]
+WantedBy=multi-user.target

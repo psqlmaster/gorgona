@@ -228,6 +228,7 @@ vacuum_threshold_percent = 50                          # Auto-cleanup threshold 
 # paths (optional — defaults shown below)
 data_dir = /var/lib/gorgona                            # Base directory for DB, cache, and logs
 conf_dir = /etc/gorgona                                # Directory for config files and TLS certs
+log_level = error                                      # info, error, or debug 
 # log_file = /var/log/gorgona/gorgonad.log             # Optional: override default log path (<data_dir>/gorgonad.log)
 
 [replication]
