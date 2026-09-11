@@ -12,13 +12,12 @@ int verbose = 0;
 int sync_interval = 30;
 int execute = 0;
 int daemon_exec_flag = 0;
-
 char client_log_level[32] = "error";
 
 static bool should_log_level(const char *level) {
     if (verbose) return true;
-    if (strcmp(level, "ERROR") == 0 || strcmp(level, "WARN") == 0) return true;
-    if (strcmp(level, "INFO") == 0) {
+    if (strcmp(level, "ERROR") == 0) return true;
+    if (strcmp(level, "WARN") == 0 || strcmp(level, "INFO") == 0) {
         return (strcmp(client_log_level, "info") == 0 ||
                 strcmp(client_log_level, "debug") == 0);
     }
