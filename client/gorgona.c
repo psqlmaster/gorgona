@@ -7,7 +7,6 @@
 #include "encrypt.h"
 #include "admin_mesh.h"
 #include "config.h"
-#include "common.h"  
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>

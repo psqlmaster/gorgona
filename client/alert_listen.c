@@ -138,7 +138,7 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
     if (!priv_fp) {
         char time_str[32];
         get_utc_time_str(time_str, sizeof(time_str));
-        if (verbose) fprintf(stderr, "%s Private key not found: %s\n", time_str, priv_file);
+        log_event("WARN", -1, NULL, 0, "Private key not found: %s", priv_file);
         return 0;
     }
     fclose(priv_fp);
@@ -151,7 +151,7 @@ int collect_key_hashes(char ***key_hashes, int *key_count, int verbose) {
     *key_count = 0;
     DIR *dir = opendir("/etc/gorgona");
     if (!dir) {
-        if (verbose) fprintf(stderr, "Failed to open directory /etc/gorgona: %s\n", strerror(errno));
+        log_event("ERROR", -1, NULL, 0, "Failed to open directory %s: %s", gorgona_conf_dir, strerror(errno));
         return 0;
     }
     struct dirent *entry;
@@ -228,13 +228,11 @@ void daemon_exec(const char *command, int verbose) {
         
     } else if (pid > 0) {
         /* --- PARENT PROCESS --- */
-        if (verbose) {
-            printf("Launched background process PID=%d\n", (int)pid);
-            if (gorgona_log_file[0] != '\0') {
-                printf("  Output redirected to: %s\n", gorgona_log_file);
-            } else {
-                printf("  Output redirected to: /dev/null\n");
-            }
+        log_event("INFO", -1, NULL, 0, "Launched background process PID=%d", (int)pid);
+        if (gorgona_log_file[0] != '\0') {
+            log_event("DEBUG", -1, NULL, 0, "Daemon output redirected to: %s", gorgona_log_file);
+        } else {
+            log_event("DEBUG", -1, NULL, 0, "Daemon output redirected to: /dev/null");
         }
     } else {
         perror("fork");
@@ -249,7 +247,7 @@ static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Confi
     unsigned char *tag_dec = base64_decode(pa->tag, &tag_len);
 
     if (!encrypted || !encrypted_key_dec || !iv_dec || !tag_dec) {
-        fprintf(stderr, "Base64 decode failed for pending alert ID=%" PRIu64 "\n", pa->id);
+        log_event("ERROR", -1, NULL, 0, "Base64 decode failed for pending alert ID=%" PRIu64, pa->id);
         goto cleanup;
     }
 
@@ -260,13 +258,13 @@ static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Confi
                              iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
     
     if (ret != 0 || !plaintext) {
-        fprintf(stderr, "Decryption failed for pending alert ID=%" PRIu64 "\n", pa->id);
+        log_event("ERROR", -1, NULL, 0, "Decryption failed for pending alert ID=%" PRIu64, pa->id);
         goto cleanup;
     }
 
     if (!do_execute) {
-        printf("Unlocked pending message ID=%" PRIu64 "\n", pa->id);
-        printf("Decrypted message:\n%s\n", plaintext);
+        log_event("INFO", -1, NULL, 0, "Unlocked pending message ID=%" PRIu64, pa->id);
+        printf("Decrypted message:\n%s\n", plaintext); 
         free(plaintext);
         goto cleanup;
     }
@@ -308,9 +306,7 @@ static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Confi
     }
 
     if (final_command) {
-        if (verbose) {
-            printf("Executing pending alert ID=%" PRIu64 ": %s\n", pa->id, final_command);
-        }
+        log_event("INFO", -1, NULL, 0, "Executing pending alert ID=%" PRIu64 ": %s", pa->id, final_command);
         if (daemon_exec_flag) {
             daemon_exec(final_command, verbose);
         } else {
@@ -320,8 +316,8 @@ static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Confi
             }
         }
         free(final_command);
-    } else if (verbose) {
-        printf("No matching config key found for pending alert message: %s\n", plaintext);
+    } else {
+        log_event("WARN", -1, NULL, 0, "No matching config key found for pending alert message");
     }
 
     client_history_record(pa->id);
@@ -446,10 +442,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                 uint8_t *plain = mesh_decrypt(payload, (int)p_len, iv, tag, &decrypted_len);
                 
                 if (plain) {
-                    if (verbose) {
-                        printf("L2 Decrypted on Client: %s\n", (char*)plain);
-                    }
-                    
+                    log_event("DEBUG", -1, NULL, 0, "L2 Decrypted on Client: %s", (char*)plain);
                     /* [GOSSIP HANDLER] Process incoming PEX topology */
                     if (strncmp((char*)plain, "PEX_LIST|", 9) == 0) {
                         mesh_discover_nodes((char*)plain + 9, config->server_ip);  
@@ -511,7 +504,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
      */
     char *copy = strdup(response + 6);
     if (!copy) {
-        fprintf(stderr, "Critical: Memory allocation failed during packet parsing\n");
+        log_event("ERROR", -1, NULL, 0, "Critical: Memory allocation failed during packet parsing");
         return;
     }
 
@@ -526,7 +519,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     char *tag_str         = strtok(NULL, "|");
 
     if (!tag_str) {
-        fprintf(stderr, "Protocol Error: Incomplete data received in ALERT packet\n");
+        log_event("ERROR", -1, NULL, 0, "Protocol Error: Incomplete data received in ALERT packet");
         free(copy);
         return;
     }
@@ -539,7 +532,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
 
     /* [IDEMPOTENCY] Skip processing if already in history */
     if (execute && !client_history_is_new(id)) {
-         if (verbose) printf("History: Skipping duplicate Alert ID %" PRIu64 "\n", id);
+         log_event("DEBUG", -1, NULL, 0, "History: Skipping duplicate Alert ID %" PRIu64, id);
          free(copy);
          return;
     } 
@@ -558,14 +551,14 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
 
     /* Apply Pubkey Filter if specified */
     if (expected_pubkey_hash_b64 && strcmp(pubkey_hash_b64, expected_pubkey_hash_b64) != 0) {
-        if (verbose) printf("Filter: Skipping alert for different recipient [%s]\n", pubkey_hash_b64);
+        log_event("DEBUG", -1, NULL, 0, "Filter: Skipping alert for different recipient [%s]", pubkey_hash_b64);
         free(copy);
         return;
     }
 
     /* Check for local Private Key. Decryption is impossible without it. */
     if (!has_private_key(pubkey_hash_b64, verbose)) {
-        if (verbose) printf("Security: Private key missing for hash %s. Skipping.\n", pubkey_hash_b64);
+        log_event("WARN", -1, NULL, 0, "Security: Private key missing for hash %s. Skipping.", pubkey_hash_b64);
         free(copy);
         return;
     }
@@ -617,10 +610,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
             pa->tag = strdup(tag_str);
             pa->next = pending_alerts;
             pending_alerts = pa;
-
-            if (verbose) {
-                printf("Queue: ID %" PRIu64 " added to background wait list.\n", id);
-            }
+            log_event("DEBUG", -1, NULL, 0, "Queue: ID %" PRIu64 " added to background wait list.", id);
         }
         free(copy);
         return;
@@ -638,7 +628,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     unsigned char *t_raw = base64_decode(tag_str, &t_len);
 
     if (!e_raw || !k_raw || !i_raw || !t_raw) {
-        fprintf(stderr, "Error: Base64 decoding failed for alert ID %" PRIu64 "\n", id);
+        log_event("ERROR", -1, NULL, 0, "Base64 decoding failed for alert ID %" PRIu64, id);
         goto decryption_cleanup;
     }
 
@@ -701,10 +691,10 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
             /* Execute the final command (either raw or wrapped in timeout) */
             if (final_cmd) {
                 if (daemon_exec_flag) {
-                    if (verbose) printf("Execution: Launching daemon: %s\n", final_cmd);
+                    log_event("INFO", -1, NULL, 0, "Execution: Launching daemon: %s", final_cmd);
                     daemon_exec(final_cmd, verbose);
                 } else {
-                    if (verbose) printf("Execution: Running: %s\n", final_cmd);
+                    log_event("INFO", -1, NULL, 0, "Execution: Running: %s", final_cmd);
                     
                     int res = system(final_cmd);
                     int exit_status = WEXITSTATUS(res);
@@ -729,23 +719,23 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                                  "Error: execution timed out! Limit in config file for this command: %d seconds. Command aborted.", 
                                  limit);
                         
-                        fprintf(stderr, "Alert ID %" PRIu64 ": %s\n", id, feedback);
+                        log_event("ERROR", -1, NULL, 0, "Alert ID %" PRIu64 ": %s", id, feedback);
 
                         /* ОТПРАВКА ЗАШИФРОВАННОГО ОТВЕТА ОБРАТНО ОТПРАВИТЕЛЮ */
                         internal_reply_error(sock, pubkey_hash_b64, feedback, verbose);
                     } 
-                    else if (res != 0 && verbose) {
-                        fprintf(stderr, "Execution: Process exited with code %d\n", exit_status);
+                    else if (res != 0) {
+                        log_event("WARN", -1, NULL, 0, "Execution: Process exited with code %d", exit_status);
                     }
                 }
                 free(final_cmd);
-            } else if (verbose) {
-                printf("Security: Content does not match any configured execution triggers.\n");
+            } else {
+                log_event("WARN", -1, NULL, 0, "Security: Content does not match any configured execution triggers");
             }
         }
         free(plaintext);
     } else {
-        fprintf(stderr, "Error: RSA/AES Decryption failed for alert ID %" PRIu64 "\n", id);
+        log_event("ERROR", -1, NULL, 0, "RSA/AES Decryption failed for alert ID %" PRIu64, id);
     }
 
 decryption_cleanup:
@@ -828,10 +818,8 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         }
     }
 
-    if (verbose) {
-        printf("Debug: Parsed mode='%s', count=%d, pubkey_hash_b64='%s'\n", 
-               mode, count, pubkey_hash_b64 ? pubkey_hash_b64 : "NULL");
-    }
+    log_event("DEBUG", -1, NULL, 0, "Parsed mode='%s', count=%d, pubkey_hash_b64='%s'",
+              mode, count, pubkey_hash_b64 ? pubkey_hash_b64 : "NULL");
 
     Config config;
     read_config(config_file_path, &config, verbose);
@@ -843,9 +831,9 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         /* Layer 2 initialization (GCM Encryption + PEX system) */
         mesh_init(config.sync_psk);
         mesh_force_save = true; /* We want the client to persist peers.cache for future use */
-        if (verbose) printf("Client: Smart Mesh Mode enabled (Layer 2 initialized).\n");
+        log_event("INFO", -1, NULL, 0, "Client: Smart Mesh Mode enabled (Layer 2 initialized)");
     } else {
-        if (verbose) printf("Client: Legacy Mode enabled (Layer 2 disabled).\n");
+        log_event("INFO", -1, NULL, 0, "Client: Legacy Mode enabled (Layer 2 disabled)");
     }
     
     /* Execution History (Idempotency) is initialized regardless of mode for safety */
@@ -889,8 +877,8 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
             int sock = -1;
 
-            if (verbose && current_pubkey_hash) {
-                printf("Debug: Starting subscription session for key %s\n", current_pubkey_hash);
+            if (current_pubkey_hash) {
+                log_event("DEBUG", -1, NULL, 0, "Starting subscription session for key %s", current_pubkey_hash);
             }
 
             /* --- 2.1 ESTABLISH MESH-AWARE CONNECTION --- */ 
@@ -902,7 +890,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             if (sock < 0) {
                 /* Display error only if it's the first attempt or we are in persistent mode */
                 if (should_reconnect || !any_key_success) {
-                    fprintf(stderr, "Mesh Error: All node candidates unreachable.\n");
+                    log_event("ERROR", -1, NULL, 0, "Mesh: All node candidates unreachable");
                 }
                 goto backoff;
             }
@@ -915,9 +903,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
             }
 
-            if (verbose) {
-                printf("Connection Success: Established via [%s:%d]\n", current_ip, ntohs(p_addr.sin_port));
-            }
+            log_event("INFO", -1, current_ip, ntohs(p_addr.sin_port), "Connection established");
 
             /* --- 2.2 LAYER 2 HANDSHAKE --- */
             if (l2_mesh_enabled) {
@@ -950,19 +936,19 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                         ssize_t read_bytes = recv(sock, a_buf, a_resp_len, MSG_WAITALL);
                         if (read_bytes > 0) {
                             a_buf[read_bytes] = '\0';
-                            if (verbose) printf("Mesh Status: %s\n", a_buf);
+                            log_event("INFO", -1, NULL, 0, "Mesh Status: %s", a_buf);
 
                             /* Safety: check if the server explicitly rejected us */
                             if (strstr(a_buf, "Error:")) {
-                                fprintf(stderr, "Auth Error: %s\n", a_buf);
+                                log_event("ERROR", -1, NULL, 0, "Auth Error: %s", a_buf);
                                 close(sock);
                                 goto backoff;
                             }
                         }
                     }
                 }
-            } else if (verbose) {
-                printf("Mesh Status: Skipping L2 Handshake (Legacy Mode Active).\n");
+            } else {
+                log_event("INFO", -1, NULL, 0, "Mesh Status: Skipping L2 Handshake (Legacy Mode Active)");
             }
 
             /* --- 2.3 STANDARD COMMAND (LISTEN/SUBSCRIBE) --- */
@@ -1100,7 +1086,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         if (backoff_ms > MAX_BACKOFF_CAP_MS) backoff_ms = MAX_BACKOFF_CAP_MS;
 
         char time_str[32]; get_utc_time_str(time_str, sizeof(time_str));
-        fprintf(stderr, "%s Connection lost, reconnecting in %d ms...\n", time_str, backoff_ms);
+        log_event("WARN", -1, NULL, 0, "Connection lost, reconnecting in %d ms...", backoff_ms);
 
         struct timespec ts = { .tv_sec = backoff_ms / 1000, .tv_nsec = (backoff_ms % 1000) * 1000000L };
         nanosleep(&ts, NULL); 

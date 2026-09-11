@@ -7,6 +7,7 @@
 #define _XOPEN_SOURCE 700
 #include "encrypt.h"
 #include "config.h"
+#include "common.h" 
 #include "admin_mesh.h"
 #include "peer_manager.h"
 #include <stdio.h>
@@ -29,7 +30,7 @@ extern int verbose;
 time_t parse_datetime(const char *datetime) {
     struct tm tm = {0};
     if (strptime(datetime, "%Y-%m-%d %H:%M:%S", &tm) == NULL) {
-        fprintf(stderr, "Error: Invalid time format: %s\n", datetime);
+        log_event("ERROR", -1, NULL, 0, "Invalid time format: %s", datetime);
         return -1;
     }
     tm.tm_isdst = -1;
@@ -127,17 +128,17 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     if (!message) return 1;
 
     /* 2. Cryptography: Load Public Key and Hash it */
-    char full_pubkey_file[256];
-    snprintf(full_pubkey_file, sizeof(full_pubkey_file), "/etc/gorgona/%s", pubkey_file);
+    char full_pubkey_file[257];
+    snprintf(full_pubkey_file, sizeof(full_pubkey_file), "%s/%s", gorgona_conf_dir, pubkey_file);
     FILE *pub_fp = fopen(full_pubkey_file, "rb");
     if (!pub_fp) {
-        fprintf(stderr, "Failed to open public key: %s\n", full_pubkey_file);
+        log_event("ERROR", -1, NULL, 0, "Failed to open public key: %s", full_pubkey_file);
         free(message); return 1;
     }
     EVP_PKEY *pubkey = PEM_read_PUBKEY(pub_fp, NULL, NULL, NULL);
     fclose(pub_fp);
     if (!pubkey) {
-        fprintf(stderr, "Failed to parse RSA key\n");
+        log_event("ERROR", -1, NULL, 0, "Failed to parse RSA key");
         free(message); return 1;
     }
 
@@ -177,20 +178,17 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
                              encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
 
     if (total_len < 0) {
-        fprintf(stderr, "Error: Failed to calculate buffer size\n");
+        log_event("ERROR", -1, NULL, 0, "Failed to calculate buffer size");
         goto cleanup_all;
     }
-
     const size_t CLIENT_MAX_LIMIT = 50 * 1024 * 1024;
     if ((size_t)total_len > CLIENT_MAX_LIMIT) {
-        fprintf(stderr, "Error: Payload exceeds 50MB limit.\n");
+        log_event("ERROR", -1, NULL, 0, "Payload exceeds 50MB limit");
         goto cleanup_all;
     }
-
-    /* Allocate exactly as much memory as needed + 1 for the null terminator */
     buffer = malloc(total_len + 1);
     if (!buffer) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        log_event("ERROR", -1, NULL, 0, "Memory allocation failed");
         goto cleanup_all;
     }
 
@@ -208,7 +206,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     gettimeofday(&tv_conn, NULL);
 
     if (sock < 0) {
-        fprintf(stderr, "Mesh Error: All node candidates are unreachable.\n");
+        log_event("ERROR", -1, NULL, 0, "Mesh: All node candidates are unreachable");
         goto cleanup_all;
     }
 
@@ -244,11 +242,10 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
                 ssize_t read_bytes = read(sock, a_buf, a_r_l);
                 if (read_bytes > 0) {
                     a_buf[read_bytes] = '\0';
-                    if (verbose_flag) printf("Mesh: Authentication successful (%s)\n", a_buf);
-                    
+                    log_event("INFO", -1, NULL, 0, "Mesh: Authentication successful (%s)", a_buf);
                     /* Safety check: if server rejected PSK */
                     if (strstr(a_buf, "Error:")) {
-                        fprintf(stderr, "Auth Error: %s\n", a_buf);
+                        log_event("ERROR", -1, NULL, 0, "Auth Error: %s", a_buf);
                         close(sock); goto cleanup_all;
                     }
                 }
@@ -258,7 +255,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     gettimeofday(&tv_auth, NULL);
 
     /* 7. DATA TRANSMISSION (CHUNKED) */
-    if (verbose_flag) printf("Transmission: Sending %d bytes to %s\n", total_len, current_ip);
+    log_event("INFO", -1, current_ip, 0, "Transmission: Sending %d bytes", total_len);
     signal(SIGPIPE, SIG_IGN);
 
     uint32_t msg_len_net = htonl((uint32_t)total_len);
@@ -297,7 +294,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         }
     } else {
         peer_manager_mark_bad(current_ip);
-        fprintf(stderr, "Error: Transmission failed or server dropped the connection.\n");
+        log_event("ERROR", -1, current_ip, 0, "Transmission failed or server dropped the connection");
     }
     gettimeofday(&tv_ack, NULL);
 
@@ -307,14 +304,12 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         double diff_send = (tv_send.tv_sec - tv_auth.tv_sec) * 1000.0 + (tv_send.tv_usec - tv_auth.tv_usec) / 1000.0;
         double diff_ack  = (tv_ack.tv_sec - tv_send.tv_sec) * 1000.0 + (tv_ack.tv_usec - tv_send.tv_usec) / 1000.0;
         double diff_total = (tv_ack.tv_sec - tv_start.tv_sec) * 1000.0 + (tv_ack.tv_usec - tv_start.tv_usec) / 1000.0;
-
-        printf("\n--- Performance Metrics ---\n");
-        printf("TCP Connection:   %.2f ms\n", diff_conn);
-        printf("L2 Mesh Auth:     %.2f ms (Wait for AUTH_SUCCESS)\n", diff_auth);
-        printf("Data Send:        %.2f ms (Raw Payload)\n", diff_send);
-        printf("Server ACK:       %.2f ms (Wait for Confirmation)\n", diff_ack);
-        printf("Total Net Time:   %.2f ms\n", diff_total);
-        printf("---------------------------\n");
+        log_event("DEBUG", -1, NULL, 0, "--- Performance Metrics ---");
+        log_event("DEBUG", -1, NULL, 0, "TCP Connection:   %.2f ms", diff_conn);
+        log_event("DEBUG", -1, NULL, 0, "L2 Mesh Auth:     %.2f ms (Wait for AUTH_SUCCESS)", diff_auth);
+        log_event("DEBUG", -1, NULL, 0, "Data Send:        %.2f ms (Raw Payload)", diff_send);
+        log_event("DEBUG", -1, NULL, 0, "Server ACK:       %.2f ms (Wait for Confirmation)", diff_ack);
+        log_event("DEBUG", -1, NULL, 0, "Total Net Time:   %.2f ms", diff_total);
     }
 
     close(sock); 
@@ -341,12 +336,11 @@ int send_revocation(int argc, char *argv[], int verbose_flag) {
     const char *pubkey_hash_b64 = argv[2];
 
     /* Download and encrypt the public key (the server needs it to verify the signature) */
-    char pub_path[256];
-    snprintf(pub_path, sizeof(pub_path), "/etc/gorgona/%s.pub", pubkey_hash_b64);
-    
+    char pub_path[512];
+    snprintf(pub_path, sizeof(pub_path), "%s/%s.pub", gorgona_conf_dir, pubkey_hash_b64);
     FILE *f_pub = fopen(pub_path, "rb");
     if (!f_pub) {
-        fprintf(stderr, "Error: Public key file not found: %s\n", pub_path);
+        log_event("ERROR", -1, NULL, 0, "Public key file not found: %s", pub_path);
         return 1;
     }
     fseek(f_pub, 0, SEEK_END);
@@ -360,11 +354,11 @@ int send_revocation(int argc, char *argv[], int verbose_flag) {
     free(pub_content);
 
     /* Sign the ID with the private key */
-    char priv_path[256];
-    snprintf(priv_path, sizeof(priv_path), "/etc/gorgona/%s.key", pubkey_hash_b64);
+    char priv_path[512];
+    snprintf(priv_path, sizeof(priv_path), "%s/%s.key", gorgona_conf_dir, pubkey_hash_b64);
     char sig_b64[512] = {0};
     if (sign_message_id(alert_id, priv_path, sig_b64, sizeof(sig_b64), verbose_flag) != 0) {
-        fprintf(stderr, "Error: Failed to sign revocation request.\n");
+        log_event("ERROR", -1, NULL, 0, "Failed to sign revocation request");
         free(pubkey_b64);
         return 1;
     }
