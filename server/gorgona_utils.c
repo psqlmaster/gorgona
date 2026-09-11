@@ -422,17 +422,6 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         return -3;
     }
 
-    /* Anti-Replay Layer 2: Payload Content Deduplication */
-    for (int j = 0; j < rec->count; j++) {
-        if (rec->alerts[j].text_len == new_text_len) {
-            if (memcmp(rec->alerts[j].text, decoded_text, new_text_len) == 0) {
-                log_event("WARN_QUIET", client_fd, client_ip, client_port, "Replay attack: Duplicate payload");
-                free(decoded_text); free(decoded_key); free(decoded_iv); free(decoded_tag);
-                return -2;
-            }
-        }
-    }
-
     /* 5. Chronological Insertion Logic (Binary Search) */
     int insert_pos = find_insert_position(rec, final_id);
     bool is_backfill = (insert_pos < rec->count);
