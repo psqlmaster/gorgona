@@ -575,7 +575,7 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
          */
         int limit = (count > 0) ? count : rec->count;
         int sent_count = 0;
-        bool reverse_order = (mode == MODE_LAST || mode == MODE_SINGLE);
+        bool reverse_order = (mode == MODE_LAST || mode == MODE_SINGLE || (mode == MODE_ALL && count > 0) || count > 0);
         int start_idx = reverse_order ? (rec->count - 1) : 0;
         int step = reverse_order ? -1 : 1;
         for (int i = start_idx; (reverse_order ? i >= 0 : i < rec->count) && sent_count < limit; i += step) {

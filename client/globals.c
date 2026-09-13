@@ -42,7 +42,7 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
     if (pos >= (int)sizeof(log_buf)) pos = sizeof(log_buf) - 1;
     log_buf[pos++] = '\n';
     log_buf[pos] = '\0';
-    if (!daemon_exec_flag) {
+    if (verbose && !daemon_exec_flag) { 
         fputs(log_buf, stdout);
         fflush(stdout);
     }
