@@ -1101,12 +1101,18 @@ static void process_sync_chain(int i, char *buffer) {
         }
 
         if (my_last->id > remote_last_id) {
-            /* Мы впереди — просто пушим свой хвост и выходим.
-               Пир сам разберётся, нужно ли ему что-то запрашивать. */
-            send_alert_to_peer(i, rec->hash, my_last);
+            /* Мы впереди -> отправляем ВСЕ алерты, которые новее remote_last_id */
+            int sent_gap = 0;
+            for (int j = 0; j < rec->count; j++) {
+                if (rec->alerts[j].id > remote_last_id) {
+                    send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
+                    sent_gap++;
+                }
+            }
             if (verbose) {
                 log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                          "Peer is behind on %s. Pushing my last ID %" PRIu64, hash_b64, my_last->id);
+                          "Peer is behind on %s. Pushed %d missing alerts (after ID %" PRIu64 ")", 
+                          hash_b64, sent_gap, remote_last_id);
             }
             free(raw_hash);
             free(rest);
