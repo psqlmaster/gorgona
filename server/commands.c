@@ -702,6 +702,7 @@ static void process_repl(int i, char *buffer) {
                         
                         if (res >= 0 || res == -4) {
                             if (!incoming_active && a->active) {
+                                a->active = 0;
                                 alert_db_deactivate_alert(a);
                                 rec->waste_count++;
                                 if (abs((int)(time(NULL) - c_at)) < 120) {
@@ -938,16 +939,15 @@ static void process_revoke(int i, char *buffer) {
     }
 
     if (target && target->active) {
-        /* Deactivate locally */
+        /* Деактивируем В ОПЕРАТИВНОЙ ПАМЯТИ */
+        target->active = 0;
+        /* Деактивируем НА ДИСКЕ */
         alert_db_deactivate_alert(target);
         rec->waste_count++;
-
         enqueue_message(i, "OK: Alert revoked", 16);
         log_event("INFO", sub->sock, sub->ip_address, sub->port, "Alert %" PRIu64 " revoked by owner", alert_id);
-
-        /* Broadcast revocation via unified REPL mechanism (active=0) */
+        /* Теперь broadcast_replication РЕАЛЬНО отправит active=0 в сеть! */
         broadcast_replication(calculated_hash, target, sub->sock);
-
         /* Notify local clients */
         char notify_cmd[64];
         int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, alert_id);
@@ -961,7 +961,6 @@ static void process_revoke(int i, char *buffer) {
     } else {
         enqueue_message(i, "Error: Alert not found or already inactive", 43);
     }
-
     free(pub_raw);
     free(calc_hash_b64);
     free(rest);
@@ -1075,8 +1074,7 @@ static void process_sync_chain(int i, char *buffer) {
         if (my_last->id > remote_last_id) {
             /* Мы впереди -> отправляем ВСЕ алерты, которые новее remote_last_id */
             int sent_gap = 0;
-            const int MAX_CHUNK = 35;
-            for (int j = 0; j < rec->count && sent_gap < MAX_CHUNK; j++) {
+            for (int j = 0; j < rec->count; j++) {
                 if (rec->alerts[j].id > remote_last_id) {
                     send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
                     sent_gap++;
