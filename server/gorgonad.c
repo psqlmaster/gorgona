@@ -41,26 +41,30 @@ int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
  */
 void shutdown_handler(int sig) {
     log_event("INFO", -1, NULL, 0, "Received signal %d, shutting down gracefully", sig);
-    
     /* Layer 2: Save discovered peers to cache */
     mesh_save_peers_cache();
-    
-    /* Layer 1: Close all database handles */
+    /* Layer 1: ПРИНУДИТЕЛЬНО сохраняем актуальное состояние всех баз из RAM на диск */
+    if (use_disk_db && recipients && recipient_count > 0) {
+        log_event("INFO", -1, NULL, 0, "Flushing %d recipient databases to disk...", recipient_count);
+        for (int r = 0; r < recipient_count; r++) {
+            if (recipients[r].count > 0) {
+                alert_db_sync(&recipients[r]);
+            }
+        }
+    }
+    /* Закрываем файловые дескрипторы базы данных */
     alert_db_close_all();
-    
     /* Close all client and peer connections */
     for (int i = 0; i < max_clients; i++) {
         if (client_sockets[i] > 0) {
             close(client_sockets[i]);
         }
     }
-
     /* Close log file if it's not stdout */
     if (log_file && log_file != stdout && log_file != stderr) {
         fclose(log_file);
         log_file = NULL;
     }
-    
     exit(0);
 }
 

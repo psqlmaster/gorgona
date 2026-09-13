@@ -43,6 +43,13 @@ time_t server_start_time = 0;
 static void set_tcp_keepalive(int fd) {
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
+    /* Увеличиваем буфер отправки и приема до 512 КБ для плавной репликации */
+    int buf_size = 512 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+    /* Отключаем задержку Nagle для мгновенной доставки пакетов */
+    int flag = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
 #ifdef __linux__
     int idle = 30;     /* Start the check after 30 seconds of inactivity */ 
     int interval = 5;  /* The interval between samples is 5 seconds */ 

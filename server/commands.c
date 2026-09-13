@@ -83,21 +83,17 @@ static void process_get_chain_sample(int i, char *buffer) {
  */
 static void process_chain_sample(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
-    char *rest = strdup(buffer + 13); /* Пропускаем "CHAIN_SAMPLE|" */
+    char *rest = strdup(buffer + 13);
     if (!rest) return;
-
     char *hash_b64   = strtok(rest, "|");
     char *offset_str = strtok(NULL, "|");
     char *limit_str  = strtok(NULL, "|");
-    
     if (!hash_b64 || !offset_str || !limit_str) {
         free(rest);
         return;
     }
-
     int current_offset = atoi(offset_str);
     int current_limit  = atoi(limit_str);
-
     size_t hlen;
     unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
     if (!raw_hash || hlen != PUBKEY_HASH_LEN) {
@@ -105,48 +101,38 @@ static void process_chain_sample(int i, char *buffer) {
         free(rest);
         return;
     }
-
     Recipient *rec = find_recipient(raw_hash);
     if (!rec || rec->count == 0) { 
         free(raw_hash); 
         free(rest); 
         return; 
     }
-
     uint64_t ancestor_id = 0;
     char *pair;
-
-    /* Поиск общего предка.
-     * Пары приходят от новых к старым (descending).
-     * Используем бинарный поиск O(log N) для мгновенной проверки каждого ID. */
+    int received_pairs = 0;
+    /* Поиск общего предка */
     while ((pair = strtok(NULL, "|")) != NULL) {
         char *colon = strchr(pair, ':');
         if (!colon) continue;
         *colon = '\0';
-        
         uint64_t r_id   = strtoull(pair, NULL, 10);
         uint64_t r_hash = strtoull(colon + 1, NULL, 16);
-
+        received_pairs++;
         int local_idx = find_alert_index_by_id(rec, r_id);
         if (local_idx != -1) {
-            /* ID найден локально. Проверяем идентичность состояния цепи */
             if (rec->alerts[local_idx].curr_hash == r_hash) {
                 ancestor_id = r_id;
-                break; /* Найден самый свежий общий предок */
+                break;
             }
         }
     }
-
     time_t now = time(NULL);
-
     if (ancestor_id > 0) {
-        /* ОБЩИЙ ПРЕДОК НАЙДЕН.
-         * Защита от шторма: кулдаун 3 секунды на SYNC_RANGE для одного ключа */
+        /* Общий предок найден -> Range Sync */
         static time_t last_range_sync[64] = {0};
         static unsigned char last_range_hashes[64][PUBKEY_HASH_LEN];
         static int range_idx = 0;
         bool allow_range = true;
-
         for (int k = 0; k < 64; k++) {
             if (memcmp(last_range_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
                 if (now - last_range_sync[k] < 3) {
@@ -155,76 +141,62 @@ static void process_chain_sample(int i, char *buffer) {
                 break;
             }
         }
-
         if (allow_range) {
             memcpy(last_range_hashes[range_idx], raw_hash, PUBKEY_HASH_LEN);
             last_range_sync[range_idx] = now;
             range_idx = (range_idx + 1) % 64;
-
             char req[512];
             int req_len = snprintf(req, sizeof(req), "SYNC_RANGE|%s|%" PRIu64, hash_b64, ancestor_id);
             enqueue_message(i, req, (size_t)req_len);
-            
             if (verbose) {
                 log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
                           "Chain Sync: Ancestor found at ID %" PRIu64 " for %s. Requesting Range Sync.", 
                           ancestor_id, hash_b64);
             }
-        } else if (verbose) {
-            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                      "Chain Sync: SYNC_RANGE for %s suppressed by rate-limit", hash_b64);
         }
-
     } else {
-        /* ПРЕДОК НЕ НАЙДЕН — расширяем окно поиска назад по истории */
-        int next_offset = current_offset + current_limit;
-        int next_limit  = current_limit * 2; /* Увеличение x2 вместо x3/x5 для плавности */
-
-        if (next_offset < rec->count && next_limit <= 500) {
+        /* Предок не найден: сдвигаемся строго на то число пар, которое реально получили */
+        int step = (received_pairs > 0) ? received_pairs : current_limit;
+        int next_offset = current_offset + step;
+        /* Размер порции держим 80 штук, чтобы 100% влезать в 4KB буфер пира */
+        int next_limit = 80; 
+        /* Листаем вглубь вплоть до границы окна max_alerts */
+        if (next_offset < max_alerts && received_pairs > 0) {
             char req[512];
             int req_len = snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|%d|%d", 
                                    hash_b64, next_offset, next_limit);
             enqueue_message(i, req, (size_t)req_len);
-            
             if (verbose) {
                 log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                          "Chain Sync: Ancestor not found. Widening search for %s (offset %d, limit %d)", 
-                          hash_b64, next_offset, next_limit);
+                          "Chain Sync: Widening search for %s (offset %d, limit %d, window %d)", 
+                          hash_b64, next_offset, next_limit, max_alerts);
             }
         } else {
-            /* Расхождение глубже локального плавающего окна — аварийный Full Sync с жестким кулдауном */
+            /* Пролистали всё окно max_alerts, предка нет -> Full Sync */
             static time_t last_full_sync[64] = {0};
             static unsigned char last_full_hashes[64][PUBKEY_HASH_LEN];
             static int full_sync_idx = 0;
             bool allow_full = true;
-
             for (int k = 0; k < 64; k++) {
                 if (memcmp(last_full_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
-                    if (now - last_full_sync[k] < 45) { /* 45 секунд кулдаун */
+                    if (now - last_full_sync[k] < 45) {
                         allow_full = false;
                     }
                     break;
                 }
             }
-
             if (allow_full) {
                 memcpy(last_full_hashes[full_sync_idx], raw_hash, PUBKEY_HASH_LEN);
                 last_full_sync[full_sync_idx] = now;
                 full_sync_idx = (full_sync_idx + 1) % 64;
-
                 char req[512];
                 int req_len = snprintf(req, sizeof(req), "SYNC_REC|%s", hash_b64);
                 enqueue_message(i, req, (size_t)req_len);
-                
                 log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                          "Chain Sync: Divergence too deep for %s. Falling back to Full Sync (cooldown 45s).", hash_b64);
-            } else if (verbose) {
-                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                          "Chain Sync: Full Sync for %s suppressed by cooldown", hash_b64);
+                          "Chain Sync: Divergence exceeds window for %s. Falling back to Full Sync (cooldown 45s).", hash_b64);
             }
         }
     }
-    
     free(raw_hash);
     free(rest);
 }
@@ -1103,7 +1075,8 @@ static void process_sync_chain(int i, char *buffer) {
         if (my_last->id > remote_last_id) {
             /* Мы впереди -> отправляем ВСЕ алерты, которые новее remote_last_id */
             int sent_gap = 0;
-            for (int j = 0; j < rec->count; j++) {
+            const int MAX_CHUNK = 35;
+            for (int j = 0; j < rec->count && sent_gap < MAX_CHUNK; j++) {
                 if (rec->alerts[j].id > remote_last_id) {
                     send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
                     sent_gap++;
