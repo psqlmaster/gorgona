@@ -91,31 +91,15 @@ static int ensure_mmap_capacity(Recipient *rec, size_t additional_size) {
         if (rec->fd < 0) return -1;
     }
     struct stat st;
-    fstat(rec->fd, &st);
+    if (fstat(rec->fd, &st) != 0) return -1;
     size_t current_disk_size = st.st_size;
     size_t required = rec->used_size + additional_size;
-    if (current_disk_size > rec->used_size * 3 / 2 && current_disk_size > 2 * 1024 * 1024) {
-        size_t shrink_to = rec->used_size + (2 * 1024 * 1024); /* +2 МБ запас */
-        if (shrink_to < required) shrink_to = required;
-        shrink_to = ((shrink_to / (1024 * 1024)) + 1) * (1024 * 1024);
-        if (ftruncate(rec->fd, shrink_to) == 0) {
-            fsync(rec->fd);
-            current_disk_size = shrink_to;
-            if (rec->mmap_ptr) {
-                unsigned char *old_ptr = rec->mmap_ptr;
-                unsigned char *new_ptr = mmap(NULL, shrink_to, PROT_READ | PROT_WRITE, MAP_SHARED, rec->fd, 0);
-                if (new_ptr != MAP_FAILED) {
-                    update_alert_pointers(rec, old_ptr, new_ptr);
-                    munmap(old_ptr, rec->mmap_size);
-                    rec->mmap_ptr = new_ptr;
-                    rec->mmap_size = shrink_to;
-                }
-            }
-        }
-    }
-    /* Expand only if really needed */
+    /* ВАЖНО: Мы НИКОГДА не уменьшаем файл в этой функции, 
+     * чтобы не отрезать живые алерты при старте сервера!
+     * Расширяем mmap только тогда, когда реально не хватает места */
     if (required > current_disk_size || !rec->mmap_ptr) {
         size_t target_size = (required > current_disk_size) ? required : current_disk_size;
+        /* Выделяем память с запасом блоками по 1 МБ (минимум 1 МБ) */
         size_t new_size = ((target_size / (1024 * 1024)) + 1) * (1024 * 1024);
         if (new_size > current_disk_size) {
             if (ftruncate(rec->fd, new_size) != 0) return -1;
