@@ -295,7 +295,8 @@ int alert_db_load_recipients(void) {
              * чтобы не создавать расхождений с другими нодами кластера. */
             if (rec->count > 0) {
                 qsort(rec->alerts, rec->count, sizeof(Alert), cmp_alert_id_asc);
-                alert_chain_recompute_all(rec); 
+                /* Хэши с диска не трогаем! Берем актуальный хэш хвоста прямо из сохраненных данных */
+                rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
             } else {
                 rec->last_hash = 0;
             }
@@ -411,8 +412,14 @@ int alert_db_sync(Recipient *rec) {
     }
 
     rec->count = j;
-    alert_chain_recompute_all(rec);
+    /* Хэш-цепь не обнуляем — пересчитываем только связи при удалении протухших, 
+     * либо просто берем хвост сохраненной цепи */
     rec->waste_count = 0;
+    if (rec->count > 0) {
+        rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+    } else {
+        rec->last_hash = 0;
+    }
     /* После vacuum последний алерт мог измениться (если алерт с максимальным ID истёк).
      * Пересчитываем last_hash, чтобы он указывал на реальный хвост цепи.
      * Без этого SYNC_CHAIN будет отправлять мусорный last_hash пирам → шторм. */
