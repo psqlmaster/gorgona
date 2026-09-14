@@ -679,15 +679,38 @@ static void process_repl(int i, char *buffer) {
                         Alert *a = &rec->alerts[j];
 
                         if (a->prev_hash != remote_prev_hash) {
-                            if (verbose) {
-                                log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                                          "Chain Gap Detected! ID %" PRIu64 " expects PrevHash %" PRIu64 ", local is %" PRIu64 ". Healing...",
-                                          original_id, remote_prev_hash, a->prev_hash);
+                            /* Защита от шторма: не слать GET_CHAIN_SAMPLE на каждый алерт из пачки */
+                            static time_t last_gap_req[64] = {0};
+                            static unsigned char last_gap_hashes[64][PUBKEY_HASH_LEN];
+                            static int gap_req_idx = 0;
+                            time_t now_gap = time(NULL);
+                            bool allow_sample = true;
+
+                            for (int k = 0; k < 64; k++) {
+                                if (memcmp(last_gap_hashes[k], ph, PUBKEY_HASH_LEN) == 0) {
+                                    if (now_gap - last_gap_req[k] < 5) {
+                                        allow_sample = false;
+                                    }
+                                    break;
+                                }
                             }
-                            char req[512];
-                            snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|50", hash_b64);
-                            enqueue_message(i, req, strlen(req));
+
+                            if (allow_sample) {
+                                memcpy(last_gap_hashes[gap_req_idx], ph, PUBKEY_HASH_LEN);
+                                last_gap_req[gap_req_idx] = now_gap;
+                                gap_req_idx = (gap_req_idx + 1) % 64;
+
+                                if (verbose) {
+                                    log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                                              "Chain Gap Detected! ID %" PRIu64 " expects PrevHash %" PRIu64 ", local is %" PRIu64 ". Healing...",
+                                              original_id, remote_prev_hash, a->prev_hash);
+                                }
+                                char req[512];
+                                snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|50", hash_b64);
+                                enqueue_message(i, req, strlen(req));
+                            }
                         }
+
 
                         if (res >= 0 && incoming_active) {
                             notify_subscribers(ph, a);
@@ -1072,10 +1095,10 @@ static void process_sync_chain(int i, char *buffer) {
         }
 
         if (my_last->id > remote_last_id) {
-            /* Мы впереди -> отправляем ВСЕ алерты, которые новее remote_last_id */
             int sent_gap = 0;
             for (int j = 0; j < rec->count; j++) {
-                if (rec->alerts[j].id > remote_last_id) {
+                /* Передаем только те алерты, которые новее remote_last_id И которые реально активны */
+                if (rec->alerts[j].id > remote_last_id && rec->alerts[j].active) {
                     send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
                     sent_gap++;
                 }
