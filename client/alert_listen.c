@@ -631,14 +631,32 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         log_event("ERROR", -1, NULL, 0, "Base64 decoding failed for alert ID %" PRIu64, id);
         goto decryption_cleanup;
     }
-
+    /* --- ПЕРЕХВАТ СОБЫТИЙ-МОГИЛЬЩИКОВ (EVENT-SOURCING TOMBSTONE) --- */
+    if (e_len >= 10 && memcmp(e_raw, "TOMBSTONE|", 10) == 0) {
+        char *t_str = malloc(e_len - 10 + 1);
+        if (t_str) {
+            memcpy(t_str, e_raw + 10, e_len - 10);
+            t_str[e_len - 10] = '\0';
+            char *target_id_str = strtok(t_str, "|");
+            if (target_id_str) {
+                uint64_t target_id = strtoull(target_id_str, NULL, 10);
+                printf("Status: [TOMBSTONE] Cryptographic Revocation of Alert ID %" PRIu64 "\n", target_id);
+                remove_pending_alert(target_id, verbose);
+                if (execute) {
+                    client_history_record(target_id);
+                }
+            }
+            free(t_str);
+        }
+        /* Успешно обработано, выходим без попытки RSA-расшифровки */
+        goto decryption_cleanup;
+    }
+    /* --------------------------------------------------------------- */
     char priv_path[256];
     snprintf(priv_path, sizeof(priv_path), "/etc/gorgona/%s.key", pubkey_hash_b64);
-    
     char *plaintext = NULL;
     int status = decrypt_message(e_raw, e_len, k_raw, k_len, i_raw, i_len, t_raw, 
                                  &plaintext, priv_path, verbose);
-
     if (status == 0 && plaintext) {
         if (!execute) {
             printf("Decrypted Content:\n%s\n", plaintext);
