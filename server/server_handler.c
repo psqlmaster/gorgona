@@ -755,9 +755,14 @@ void run_server(int server_fd) {
                                                 Recipient *rec = &recipients[r];
                                                 total_waste += rec->waste_count;
                                                 total_bytes += rec->used_size;
-                                                
                                                 for (int a = 0; a < rec->count; a++) {
                                                     if (rec->alerts[a].active) {
+                                                        /* Не считаем служебные Tombstone-события за живые пользовательские сообщения */
+                                                        if (rec->alerts[a].text && rec->alerts[a].text_len >= 10 &&
+                                                            strncmp((char*)rec->alerts[a].text, "TOMBSTONE|", 10) == 0) {
+                                                            continue;
+                                                        }
+
                                                         live_alerts++;
                                                         if (oldest_ts == 0 || rec->alerts[a].create_at < oldest_ts) {
                                                             oldest_ts = rec->alerts[a].create_at;
