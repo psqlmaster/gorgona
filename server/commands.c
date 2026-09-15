@@ -681,34 +681,40 @@ static void process_repl(int i, char *buffer) {
                         size_t dec_len;
                         unsigned char *plain_payload = base64_decode(text_b64, &dec_len);
                         if (plain_payload) {
-                            if (dec_len > 10 && strncmp((char*)plain_payload, "TOMBSTONE|", 10) == 0) {
-                                char *t_copy = strdup((char*)plain_payload + 10);
-                                char *t_target_str = strtok(t_copy, "|");
-                                char *t_pub_b64    = strtok(NULL, "|");
-                                char *t_sig_b64    = strtok(NULL, "|");
-
-                                if (t_target_str && t_pub_b64 && t_sig_b64) {
-                                    uint64_t victim_id = strtoull(t_target_str, NULL, 10);
-                                    size_t t_pub_len;
-                                    unsigned char *t_pub = base64_decode(t_pub_b64, &t_pub_len);
-
-                                    if (t_pub && verify_id_signature(victim_id, t_pub, t_pub_len, t_sig_b64) == 0) {
-                                        /* Подпись верна! Гасим жертву в локальной памяти и на диске */
-                                        for (int v = 0; v < rec->count; v++) {
-                                            if (rec->alerts[v].id == victim_id && rec->alerts[v].active) {
-                                                rec->alerts[v].active = 0;
-                                                alert_db_deactivate_alert(&rec->alerts[v]);
-                                                rec->waste_count++;
-                                                log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                                                          "P2P: Alert %" PRIu64 " killed by tombstone %" PRIu64, 
-                                                          victim_id, original_id);
-                                                break;
+                            if (dec_len > 10 && memcmp(plain_payload, "TOMBSTONE|", 10) == 0) {
+                                /* Безопасное выделение с гарантированным нуль-терминатором */
+                                char *t_copy = malloc(dec_len - 10 + 1);
+                                if (t_copy) {
+                                    memcpy(t_copy, plain_payload + 10, dec_len - 10);
+                                    t_copy[dec_len - 10] = '\0';
+                                    char *t_target_str = strtok(t_copy, "|");
+                                    char *t_pub_b64    = strtok(NULL, "|");
+                                    char *t_sig_b64    = strtok(NULL, "|");
+                                    if (t_target_str && t_pub_b64 && t_sig_b64) {
+                                        uint64_t victim_id = strtoull(t_target_str, NULL, 10);
+                                        size_t t_pub_len;
+                                        unsigned char *t_pub = base64_decode(t_pub_b64, &t_pub_len);
+                                        if (t_pub && verify_id_signature(victim_id, t_pub, t_pub_len, t_sig_b64) == 0) {
+                                            /* Подпись верна! Гасим жертву в локальной памяти и на диске */
+                                            for (int v = 0; v < rec->count; v++) {
+                                                if (rec->alerts[v].id == victim_id && rec->alerts[v].active) {
+                                                    rec->alerts[v].active = 0;
+                                                    alert_db_deactivate_alert(&rec->alerts[v]);
+                                                    rec->waste_count++;
+                                                    log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                                                              "P2P: Alert %" PRIu64 " killed by tombstone %" PRIu64, 
+                                                              victim_id, original_id);
+                                                    break;
+                                                }
                                             }
+                                        } else {
+                                            log_event("WARN", sub->sock, sub->ip_address, sub->port,
+                                                      "P2P: Tombstone signature check FAILED for victim %" PRIu64, victim_id);
                                         }
+                                        if (t_pub) free(t_pub);
                                     }
-                                    if (t_pub) free(t_pub);
+                                    free(t_copy);
                                 }
-                                free(t_copy);
                             }
                             free(plain_payload);
                         }
@@ -992,7 +998,7 @@ static void process_revoke(int i, char *buffer) {
         }
     }
     /* 4. EVENT-SOURCING: Упаковываем открытое доказательство отзыва в полезную нагрузку Tombstone */
-    char tombstone_payload[512];
+    char tombstone_payload[2048]; 
     snprintf(tombstone_payload, sizeof(tombstone_payload), "TOMBSTONE|%" PRIu64 "|%s|%s", 
              target_id, pubkey_b64, sig_b64);
     char *b64_text = base64_encode((unsigned char*)tombstone_payload, strlen(tombstone_payload));
