@@ -14,6 +14,7 @@
 #include "commands.h"
 #include "admin_mesh.h"
 #include "alert_db.h"
+#include "snowflake.h"
 
 /* === Защита от параллельных Full/Range Sync === */
 bool chain_sync_in_progress = false;
@@ -671,13 +672,47 @@ static void process_repl(int i, char *buffer) {
                 mesh_update_speed(sub->ip_address, strlen(buffer), delta);
             }
             /* =============================== */
-            
             Recipient *rec = find_recipient(ph);
             if (rec) {
                 for (int j = 0; j < rec->count; j++) {
                     if (rec->alerts[j].id == original_id) {
                         Alert *a = &rec->alerts[j];
+                        /* --- EVENT-SOURCING TOMBSTONE --- */
+                        size_t dec_len;
+                        unsigned char *plain_payload = base64_decode(text_b64, &dec_len);
+                        if (plain_payload) {
+                            if (dec_len > 10 && strncmp((char*)plain_payload, "TOMBSTONE|", 10) == 0) {
+                                char *t_copy = strdup((char*)plain_payload + 10);
+                                char *t_target_str = strtok(t_copy, "|");
+                                char *t_pub_b64    = strtok(NULL, "|");
+                                char *t_sig_b64    = strtok(NULL, "|");
 
+                                if (t_target_str && t_pub_b64 && t_sig_b64) {
+                                    uint64_t victim_id = strtoull(t_target_str, NULL, 10);
+                                    size_t t_pub_len;
+                                    unsigned char *t_pub = base64_decode(t_pub_b64, &t_pub_len);
+
+                                    if (t_pub && verify_id_signature(victim_id, t_pub, t_pub_len, t_sig_b64) == 0) {
+                                        /* Подпись верна! Гасим жертву в локальной памяти и на диске */
+                                        for (int v = 0; v < rec->count; v++) {
+                                            if (rec->alerts[v].id == victim_id && rec->alerts[v].active) {
+                                                rec->alerts[v].active = 0;
+                                                alert_db_deactivate_alert(&rec->alerts[v]);
+                                                rec->waste_count++;
+                                                log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                                                          "P2P: Alert %" PRIu64 " killed by tombstone %" PRIu64, 
+                                                          victim_id, original_id);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (t_pub) free(t_pub);
+                                }
+                                free(t_copy);
+                            }
+                            free(plain_payload);
+                        }
+                        /* --- конец EVENT-SOURCING TOMBSTONE --- */
                         if (a->prev_hash != remote_prev_hash) {
                             /* Защита от шторма: не слать GET_CHAIN_SAMPLE на каждый алерт из пачки */
                             static time_t last_gap_req[64] = {0};
@@ -908,72 +943,76 @@ cleanup_dec:
 
 /**
  * Processing the initial cancellation request from the client.
- * Format: REVOKE|ID|HASH_B64|PUBKEY_B64|SIG_B64
+ * EVENT-SOURCING: Creates a new Tombstone Alert in the chain.
  */
 static void process_revoke(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     char *rest = strdup(buffer + 7);
     if (!rest) return;
-
-    char *id_str = strtok(rest, "|");
-    char *hash_b64 = strtok(NULL, "|");
+    char *id_str     = strtok(rest, "|");
+    char *hash_b64   = strtok(NULL, "|");
     char *pubkey_b64 = strtok(NULL, "|");
-    char *sig_b64 = strtok(NULL, "|");
-
+    char *sig_b64    = strtok(NULL, "|");
     if (!id_str || !hash_b64 || !pubkey_b64 || !sig_b64) {
         enqueue_message(i, "Error: Incomplete REVOKE data", 28);
         free(rest); return;
     }
-
-    uint64_t alert_id = strtoull(id_str, NULL, 10);
+    uint64_t target_id = strtoull(id_str, NULL, 10);
     size_t pub_len;
     unsigned char *pub_raw = base64_decode(pubkey_b64, &pub_len);
     if (!pub_raw) {
         enqueue_message(i, "Error: Invalid PubKey encoding", 28);
         free(rest); return;
     }
-
+    /* 1. Проверяем соответствие публичного ключа и хэша получателя */
     unsigned char calculated_hash[PUBKEY_HASH_LEN];
     compute_raw_pubkey_hash(pub_raw, pub_len, calculated_hash);
     char *calc_hash_b64 = base64_encode(calculated_hash, PUBKEY_HASH_LEN);
-
     if (strcmp(calc_hash_b64, hash_b64) != 0) {
         enqueue_message(i, "Error: Key ownership mismatch", 28);
         free(pub_raw); free(calc_hash_b64); free(rest); return;
     }
-
-    if (verify_id_signature(alert_id, pub_raw, pub_len, sig_b64) != 0) {
+    /* 2. Криптографическая проверка: действительно ли владелец подписал удаление */
+    if (verify_id_signature(target_id, pub_raw, pub_len, sig_b64) != 0) {
         enqueue_message(i, "Error: Invalid signature", 23);
         free(pub_raw); free(calc_hash_b64); free(rest); return;
     }
-
     Recipient *rec = find_recipient(calculated_hash);
     if (!rec) {
         enqueue_message(i, "Error: Alert history not found", 30);
         free(pub_raw); free(calc_hash_b64); free(rest); return;
     }
-
-    Alert *target = NULL;
+    /* 3. Гасим целевой алерт локально (если он есть в памяти) */
     for (int j = 0; j < rec->count; j++) {
-        if (rec->alerts[j].id == alert_id) {
-            target = &rec->alerts[j];
+        if (rec->alerts[j].id == target_id) {
+            rec->alerts[j].active = 0;
+            alert_db_deactivate_alert(&rec->alerts[j]);
+            rec->waste_count++;
             break;
         }
     }
-
-    if (target && target->active) {
-        /* Деактивируем В ОПЕРАТИВНОЙ ПАМЯТИ */
-        target->active = 0;
-        /* Деактивируем НА ДИСКЕ */
-        alert_db_deactivate_alert(target);
-        rec->waste_count++;
-        enqueue_message(i, "OK: Alert revoked", 16);
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, "Alert %" PRIu64 " revoked by owner", alert_id);
-        /* Теперь broadcast_replication РЕАЛЬНО отправит active=0 в сеть! */
-        broadcast_replication(calculated_hash, target, sub->sock);
-        /* Notify local clients */
+    /* 4. EVENT-SOURCING: Упаковываем открытое доказательство отзыва в полезную нагрузку Tombstone */
+    char tombstone_payload[512];
+    snprintf(tombstone_payload, sizeof(tombstone_payload), "TOMBSTONE|%" PRIu64 "|%s|%s", 
+             target_id, pubkey_b64, sig_b64);
+    char *b64_text = base64_encode((unsigned char*)tombstone_payload, strlen(tombstone_payload));
+    char *dummy_key = base64_encode((unsigned char*)"TOMBSTONE_KEY", 13);
+    char *dummy_iv  = base64_encode((unsigned char*)"000000000000", 12);
+    char *dummy_tag = base64_encode((unsigned char*)"0000000000000000", 16);
+    uint64_t tombstone_id = generate_snowflake_id();
+    time_t now = time(NULL);
+    /* 5. Вставляем Tombstone в САМЫЙ ХВОСТ ЦЕПИ как новое событие!
+     * Это меняет last_hash и гарантирует синхронизацию даже после выхода из офлайна */
+    int res = add_alert(calculated_hash, now, now + max_alert_ttl, 
+                        b64_text, dummy_key, dummy_iv, dummy_tag,
+                        sub->sock, tombstone_id, now, 1, 0, 0);
+    if (res >= 0 && res < rec->count) {
+        Alert *tomb_alert = &rec->alerts[res];
+        /* Рассылаем Tombstone пирам (если в онлайне) */
+        broadcast_replication(calculated_hash, tomb_alert, sub->sock);
+        /* Локальный пуш клиентам (gorgona listen) */
         char notify_cmd[64];
-        int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, alert_id);
+        int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, target_id);
         for (int s = 0; s < max_clients; s++) {
             if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
                 if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
@@ -981,83 +1020,12 @@ static void process_revoke(int i, char *buffer) {
                 }
             }
         }
-    } else {
-        enqueue_message(i, "Error: Alert not found or already inactive", 43);
     }
-    free(pub_raw);
-    free(calc_hash_b64);
-    free(rest);
-}
-
-/**
- * Processing a replicated rollback command from another node (P2P).
- * Format: REVOKE_PUSH|ID|HASH_B64|PUBKEY_B64|SIG_B64
- */
-static void process_revoke_push(int i, char *buffer) {
-    Subscriber *sub = &subscribers[i];
-    
-    /* Parsing data (we use a copy, since `strtok` modifies the string) */
-    char *rest = strdup(buffer + 12); /* Skip "REVOKE_PUSH|" */
-    if (!rest) return;
-
-    char *id_str      = strtok(rest, "|");
-    char *hash_b64    = strtok(NULL, "|");
-    char *pubkey_b64  = strtok(NULL, "|");
-    char *sig_b64     = strtok(NULL, "|");
-
-    if (!id_str || !hash_b64 || !pubkey_b64 || !sig_b64) {
-        log_event("WARN", sub->sock, sub->ip_address, sub->port, "P2P: Received truncated REVOKE_PUSH packet");
-        free(rest);
-        return;
-    }
-
-    uint64_t alert_id = strtoull(id_str, NULL, 10);
-
-    /* Cryptographic verification before deletion */
-    size_t pub_len;
-    unsigned char *pub_raw = base64_decode(pubkey_b64, &pub_len);
-    if (!pub_raw) {
-        free(rest);
-        return;
-    }
-
-    /* Verifying the signature: Did the key owner actually initiate the revocation? */
-    if (verify_id_signature(alert_id, pub_raw, pub_len, sig_b64) != 0) {
-        log_event("ERROR", sub->sock, sub->ip_address, sub->port, 
-                  "P2P: Revocation signature check failed for ID %" PRIu64, alert_id);
-        free(pub_raw);
-        free(rest);
-        return;
-    }
-
-    /* Checking if the key matches the hash */
-    unsigned char calculated_hash[PUBKEY_HASH_LEN];
-    compute_raw_pubkey_hash(pub_raw, pub_len, calculated_hash);
-    
-    /* Deletion from the local database */
-    Recipient *rec = find_recipient(calculated_hash);
-    int res = alert_db_revoke_by_id(rec, alert_id);
-
-    if (res == 0) {
-        log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                  "P2P: Alert %" PRIu64 " revoked via mesh sync", alert_id);
-
-        /* Notifying local clients (those that are ‘listening’) */
-        char notify_cmd[64];
-        int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, alert_id);
-
-        for (int s = 0; s < max_clients; s++) {
-            if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
-                /* Send a notification if the client is listening on this hash or is listening on all keys */
-                if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
-                    enqueue_message(s, notify_cmd, (size_t)n_len);
-                }
-            }
-        }
-    }
-
-    free(pub_raw);
-    free(rest);
+    enqueue_message(i, "OK: Alert revoked (tombstone appended)", 38);
+    log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+              "Tombstone %" PRIu64 " appended for target ID %" PRIu64, tombstone_id, target_id);
+    free(b64_text); free(dummy_key); free(dummy_iv); free(dummy_tag);
+    free(pub_raw); free(calc_hash_b64); free(rest);
 }
 
 /**
@@ -1264,9 +1232,6 @@ void handle_command(int sub_index, char *buffer) {
     } 
     else if (strncmp(buffer, "REVOKE|", 7) == 0) { 
         process_revoke(sub_index, buffer);
-    }
-    else if (strncmp(buffer, "REVOKE_PUSH|", 12) == 0) {
-        process_revoke_push(sub_index, buffer);
     }
     else if (strncmp(buffer, "LISTEN|", 7) == 0) {
         process_listen(sub_index, buffer);
