@@ -482,7 +482,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     if (!new_alert || !new_alert->active) return;
-
+    /* --- не шлем tombstone клиентам как новое сообщение --- */
+    if (new_alert->text && new_alert->text_len >= 10 && memcmp(new_alert->text, "TOMBSTONE|", 10) == 0) {
+        return;
+    }
     char *pubkey_hash_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     char *bt = base64_encode(new_alert->text, new_alert->text_len);
     char *bk = base64_encode(new_alert->encrypted_key, new_alert->encrypted_key_len);
@@ -581,6 +584,11 @@ void send_current_alerts(int sub_index, int mode, const char *pubkey_hash_b64_fi
         for (int i = start_idx; (reverse_order ? i >= 0 : i < rec->count) && sent_count < limit; i += step) {
             Alert *a = &rec->alerts[i];
             if (!a->active || a->expire_at <= now) continue;
+            /* --- не отдаем служебные tombstone клиентам в истории --- */
+            if (a->text && a->text_len >= 10 && memcmp(a->text, "TOMBSTONE|", 10) == 0) {
+                continue;
+            }
+            /* -------------------------------------------------------- */
             bool is_locked = (a->unlock_at > now);
             bool send_it = false;
             if (mode == MODE_ALL || mode == MODE_LAST) {

@@ -704,6 +704,16 @@ static void process_repl(int i, char *buffer) {
                                                     log_event("INFO", sub->sock, sub->ip_address, sub->port, 
                                                               "P2P: Alert %" PRIu64 " killed by tombstone %" PRIu64, 
                                                               victim_id, original_id);
+                                                    /* оповещаем клиентов */
+                                                    char notify_cmd[64];
+                                                    int n_len = snprintf(notify_cmd, sizeof(notify_cmd), "REVOKE|%" PRIu64, victim_id);
+                                                    for (int s = 0; s < max_clients; s++) {
+                                                        if (client_sockets[s] > 0 && subscribers[s].type == SUB_TYPE_CLIENT) {
+                                                            if (subscribers[s].pubkey_hash[0] == '\0' || strcmp(subscribers[s].pubkey_hash, hash_b64) == 0) {
+                                                                enqueue_message(s, notify_cmd, (size_t)n_len);
+                                                            }
+                                                        }
+                                                    }
                                                     break;
                                                 }
                                             }
