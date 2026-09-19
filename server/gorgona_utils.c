@@ -60,13 +60,27 @@ void log_event(const char *level, int fd, const char *ip, int port, const char *
     get_utc_time_str(time_str, sizeof(time_str));
     /* Формируем префикс. Для WARN_QUIET в логе пишем обычный [WARN] */
     const char *display_level = is_quiet_warn ? "WARN" : level;
+    /* 
+     * Дескриптор [fd] выводим ТОЛЬКО при отладке (DEBUG в конфиге или флаг verbose).
+     * В обычном режиме INFO/WARN/ERROR не засоряем лог внутренностями ядра.
+     */
+    bool show_fd = (strcasecmp(log_level, "debug") == 0 || verbose);
     if (ip != NULL && port > 0) {
-        snprintf(header, sizeof(header), "%s [%s] [fd:%d] [%s:%d] ", 
-                 time_str, display_level, fd, ip, port);
+        if (show_fd && fd > 0) {
+            /* Полный отладочный вывод для DEBUG */
+            snprintf(header, sizeof(header), "%s [%s] [fd:%d] [%s:%d] ", 
+                     time_str, display_level, fd, ip, port);
+        } else {
+            /* Чистый продакшен-вывод для INFO (без fd и без бага [fd:-1]) */
+            snprintf(header, sizeof(header), "%s [%s] [%s:%d] ", 
+                     time_str, display_level, ip, port);
+        }
     } else if (fd > 0) {
+        /* Случай, когда IP неизвестен, но дескриптор реальный */
         snprintf(header, sizeof(header), "%s [%s] [fd:%d] ", 
                  time_str, display_level, fd);
     } else {
+        /* Внутренние системные события демона (fd <= 0) */
         snprintf(header, sizeof(header), "%s [%s] [SERVER] ", 
                  time_str, display_level);
     }
