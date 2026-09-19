@@ -235,7 +235,9 @@ void process_out(int sub_index, int sd) {
         if (sub->node_ptr && sub->node_ptr->port > 0) {
             sub->port = sub->node_ptr->port;
         }
-        log_event("INFO", sd, sub->ip_address, sub->port, "Session finished");
+        if (verbose) {
+            log_event("DEBUG", sd, sub->ip_address, sub->port, "Session finished");
+        }
         close(sd);
         client_sockets[sub_index] = 0;
         sub->sock = 0;
@@ -883,7 +885,11 @@ void run_server(int server_fd) {
                         if (sub->node_ptr && sub->node_ptr->port > 0) {
                             sub->port = sub->node_ptr->port;
                         } 
-                        log_event("INFO", sd, sub->ip_address, sub->port, "Client disconnected") ;
+                        if (sub->type == SUB_TYPE_PEER && sub->auth_state == AUTH_OK) {
+                            log_event("INFO", sd, sub->ip_address, sub->port, "Peer disconnected");
+                        } else if (verbose) {
+                            log_event("DEBUG", sd, sub->ip_address, sub->port, "Client disconnected");
+                        } 
                         cleanup_subscriber(i); 
                         if (sub->in_buffer) free(sub->in_buffer);
                         sub->in_buffer = NULL; sub->in_pos = 0;

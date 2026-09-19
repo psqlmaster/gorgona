@@ -201,7 +201,7 @@ void mesh_run_garbage_collector() {
             evict = true;
         }
         if (evict) {
-            log_event("INFO", -1, n->addr, n->port, "Layer 2 GC: Removing %s node from memory", 
+            log_event("DEBUG", -1, n->addr, n->port, "Layer 2 GC: Removing %s node from memory", 
                       n->is_cached ? "stale CACHED" : "unresponsive PEX");
             if (i < cluster_node_count - 1) 
                 memcpy(&cluster_nodes[i], &cluster_nodes[cluster_node_count - 1], sizeof(MeshNode));

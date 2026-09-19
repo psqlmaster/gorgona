@@ -470,15 +470,18 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     free(decoded_tag); 
 
+    char *ph_b64 = base64_encode(pubkey_hash, PUBKEY_HASH_LEN);
     log_event("INFO", client_fd, client_ip, client_port, 
-              "Alert %" PRIu64 " added to chain at pos %d [%s] [Hash: 0x%016" PRIx64 "]", 
-              alert->id, insert_pos, 
-              is_backfill ? "BACKFILL" : "APPEND", 
+              "Alert %" PRIu64 " -> [%s] %s [pos:%d] [Hash: 0x%016" PRIx64 "]", 
+              alert->id, 
+              ph_b64 ? ph_b64 : "UNKNOWN",
+              is_backfill ? "backfilled" : "appended",
+              insert_pos, 
               alert->curr_hash); 
+    if (ph_b64) free(ph_b64);
 
     return insert_pos;
 }
-
 
 void notify_subscribers(const unsigned char *pubkey_hash, Alert *new_alert) {
     if (!new_alert || !new_alert->active) return;
