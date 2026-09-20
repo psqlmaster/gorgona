@@ -92,6 +92,14 @@ case "$ACTION" in
         systemctl restart "$GFM_SVC"
         RESULT="Success: GFM Manager restarted"
         ;;
+    start_gfm)
+        systemctl start "$GFM_SVC"
+        RESULT="Success: GFM Manager start"
+        ;;
+    stop_gfm)
+        systemctl stop "$GFM_SVC"
+        RESULT="Success: GFM Manager stop"
+        ;;
     status)
         PG_ST=$(systemctl is-active "$PG_SVC")
         GFM_ST=$(systemctl is-active "$GFM_SVC")

@@ -10,6 +10,8 @@ pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_543
 pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf status
 pg_cluster_promote = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf promote
 gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf restart_gfm
+gfm_cluster_start = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf start_gfm
+gfm_cluster_stop = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf stop_gfm
 gfm_cluster_health   = /usr/local/bin/gfm_health.sh /etc/gorgona/gfm_pg_prod1_5432.conf
 gfm_cluster_switch   = /usr/local/bin/gfm_switchover.sh /etc/gorgona/gfm_pg_prod1_5432.conf
 # умный rebuild реплики ip второй ноды необязательный параметр, нужен для начального ребилда
@@ -22,6 +24,8 @@ pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_543
 pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf status
 pg_cluster_promote = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf promote
 gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf restart_gfm
+gfm_cluster_start = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf start_gfm
+gfm_cluster_stop = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf stop_gfm
 gfm_cluster_health   = /usr/local/bin/gfm_health.sh /etc/gorgona/gfm_pg_prod2_5433.conf
 gfm_cluster_switch   = /usr/local/bin/gfm_switchover.sh /etc/gorgona/gfm_pg_prod2_5433.conf
 # умный rebuild реплики ip второй ноды необязательный параметр, нужен для начального ребилда

@@ -11,6 +11,8 @@ pg_cluster_start   = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432
 pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf stop
 pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf status
 gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod_5432.conf restart_gfm
+gfm_cluster_start = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf start_gfm
+gfm_cluster_stop = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod1_5432.conf stop_gfm
 
 [exec_commands:GU2eTmaMW0E=]
 # Управление кластером pg_prod2_5433
@@ -18,5 +20,7 @@ pg_cluster_start   = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_543
 pg_cluster_stop    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf stop
 pg_cluster_status    = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf status
 gfm_cluster_restart = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf restart_gfm
+gfm_cluster_start = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf start_gfm
+gfm_cluster_stop = /usr/local/bin/gfm_control.sh /etc/gorgona/gfm_pg_prod2_5433.conf stop_gfm
 
 
