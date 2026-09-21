@@ -851,6 +851,33 @@ void run_server(int server_fd) {
                                         }
                                         sub->close_after_send = true;
                                     }
+                                    /* COMMAND: sync <psk> - Trigger immediate Mesh Anti-Entropy Sync */
+                                    else if (strncmp(sub->in_buffer, "sync", 4) == 0) {
+                                        char *provided_psk = sub->in_buffer + 4;
+                                        while (*provided_psk == ' ') provided_psk++; 
+                                        if (provided_psk[0] == '\0' || strcmp(provided_psk, sync_psk) != 0) {
+                                            log_event("WARN", sd, sub->ip_address, sub->port, "Unauthorized sync request");
+                                            enqueue_text_only(i, "Error: Unauthorized\n", 19);
+                                        } else {
+                                            int triggered = 0;
+                                            /* Reset the lock flags and force a sync with all peers */
+                                            chain_sync_in_progress = false;
+                                            chain_sync_owner_fd = -1;
+                                            for (int p = 0; p < max_clients; p++) {
+                                                if (client_sockets[p] > 0 && 
+                                                    subscribers[p].type == SUB_TYPE_PEER && 
+                                                    subscribers[p].auth_state == AUTH_OK) {
+                                                    mesh_request_chain_sync(p);
+                                                    triggered++;
+                                                }
+                                            }
+                                            char sync_resp[128];
+                                            int r_len = snprintf(sync_resp, sizeof(sync_resp), 
+                                                "OK: Chain audit and synchronization triggered across %d peers\n", triggered);
+                                            enqueue_text_only(i, sync_resp, r_len);
+                                        }
+                                        sub->close_after_send = true;
+                                    }
                                     /* Handle unknown text commands */
                                     else {
                                         log_event("WARN", sd, sub->ip_address, sub->port, "Unknown text command: %s", sub->in_buffer);
@@ -861,7 +888,6 @@ void run_server(int server_fd) {
                                 sub->in_pos = 0;
                                 continue;
                             }
-
                             /* Prevent text buffer overflow and DoS attempts via long strings */
                             if (sub->in_pos >= max_message_size) {
                                 log_event("WARN", sd, sub->ip_address, sub->port, "Text command buffer limit exceeded");

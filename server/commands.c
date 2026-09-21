@@ -283,10 +283,11 @@ void mesh_request_chain_sync(int sub_index) {
         char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
         if (!hash_b64) continue;
         char sync_cmd[512];
-        int len = snprintf(sync_cmd, sizeof(sync_cmd), "SYNC_CHAIN|%s|%" PRIu64 "|%" PRIu64,
+        int len = snprintf(sync_cmd, sizeof(sync_cmd), "SYNC_CHAIN|%s|%" PRIu64 "|%" PRIu64 "|%d",
                            hash_b64,
                            rec->alerts[rec->count - 1].id,
-                           rec->last_hash);
+                           rec->last_hash,
+                           rec->count);
         enqueue_message(sub_index, sync_cmd, (size_t)len);
         free(hash_b64);
     }
@@ -1055,6 +1056,7 @@ static void process_sync_chain(int i, char *buffer) {
     char *hash_b64 = strtok(rest, "|");
     char *id_str = strtok(NULL, "|");
     char *hash_str = strtok(NULL, "|");
+    char *count_str = strtok(NULL, "|"); 
     if (!hash_b64 || !id_str || !hash_str) { 
         free(rest); 
         return; 
@@ -1068,16 +1070,42 @@ static void process_sync_chain(int i, char *buffer) {
     uint64_t remote_last_id = strtoull(id_str, NULL, 10);
     uint64_t remote_last_hash = strtoull(hash_str, NULL, 10);
     Recipient *rec = find_recipient(raw_hash);
-
+    int remote_count = count_str ? atoi(count_str) : 0;
     if (rec && rec->count > 0) {
         Alert *my_last = &rec->alerts[rec->count - 1];
-
+        /* Выходим ТОЛЬКО если совпали ID, Хэш И КОЛИЧЕСТВО алертов! */
         if (my_last->id == remote_last_id && my_last->curr_hash == remote_last_hash) {
-            free(raw_hash);
-            free(rest);
-            return;
+            if (remote_count == 0 || rec->count == remote_count) {
+                free(raw_hash);
+                free(rest);
+                return; /* Реально полная идентичность */
+            }
+            /* Если концы равны, а количество РАЗНОЕ — это внутренняя скрытая дыра! */
+            log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                      "Chain Tip matches but count differs (Local: %d, Remote: %d) for %s. Healing...",
+                      rec->count, remote_count, hash_b64);
+            /* 1. Если у нас алертов БОЛЬШЕ — мы сами выгружаем пиру всё по этому ключу */
+            if (rec->count > remote_count) {
+                for (int j = 0; j < rec->count; j++) {
+                    send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
+                }
+                log_event("INFO", sub->sock, sub->ip_address, sub->port, 
+                          "Healed peer gap: Pushed all %d alerts for %s to peer", 
+                          rec->count, hash_b64);
+                free(raw_hash);
+                free(rest);
+                return;
+            }
+            /* 2. Если у нас алертов МЕНЬШЕ, запрашиваем полный синк у пира */
+            if (rec->count < remote_count) {
+                char heal_cmd[512];
+                int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
+                enqueue_message(i, heal_cmd, (size_t)h_len);
+                free(raw_hash);
+                free(rest);
+                return;
+            }
         }
-
         if (my_last->id > remote_last_id) {
             int sent_gap = 0;
             for (int j = 0; j < rec->count; j++) {
@@ -1096,12 +1124,10 @@ static void process_sync_chain(int i, char *buffer) {
             free(rest);
             return;
         }
-
         /* Всегда начинаем с небольшого sample вместо немедленного Full Sync */
         char req[512];
         snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|40", hash_b64);
         enqueue_message(i, req, strlen(req));
-
         if (verbose) {
             log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
                       "Chain divergence for %s. (MyHash: %" PRIx64 ", Remote: %" PRIx64 "). Healing started.", 
@@ -1114,10 +1140,8 @@ static void process_sync_chain(int i, char *buffer) {
         static time_t last_empty_sync[64] = {0};
         static unsigned char last_empty_hashes[64][PUBKEY_HASH_LEN];
         static int empty_sync_idx = 0;
-
         time_t now = time(NULL);
         bool allowed = true;
-
         for (int k = 0; k < 64; k++) {
             if (memcmp(last_empty_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
                 if (now - last_empty_sync[k] < 20) {
@@ -1126,16 +1150,13 @@ static void process_sync_chain(int i, char *buffer) {
                 break;
             }
         }
-
         if (allowed) {
             memcpy(last_empty_hashes[empty_sync_idx], raw_hash, PUBKEY_HASH_LEN);
             last_empty_sync[empty_sync_idx] = now;
             empty_sync_idx = (empty_sync_idx + 1) % 64;
-
             char heal_cmd[512];
             int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
             enqueue_message(i, heal_cmd, (size_t)h_len);
-
             if (verbose) {
                 log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
                           "Cold start: Requesting full sync for empty key %s", hash_b64);
