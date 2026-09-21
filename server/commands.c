@@ -1084,15 +1084,18 @@ static void process_sync_chain(int i, char *buffer) {
             log_event("WARN", sub->sock, sub->ip_address, sub->port, 
                       "Chain Tip matches but count differs (Local: %d, Remote: %d) for %s. Healing...",
                       rec->count, remote_count, hash_b64);
-            /* 1. Если у нас алертов БОЛЬШЕ — лечим пира */
+            /* 1. Если у нас алертов БОЛЬШЕ - лечим пира адаптивным окном */
             if (rec->count > remote_count) {
                 int count_diff = rec->count - remote_count;
                 int start_idx = 0;
-                /* ОПТИМИЗАЦИЯ ТРАФИКА (Tail Window):
-                 * Если отставание небольшое (до 20 алертов), выгружаем только 
-                 * свежий хвост из последних 40 алертов (с двойным запасом),это экономит 95% трафика при микро-лагах сети! */
-                if (count_diff <= 20 && rec->count > 40) {
-                    start_idx = rec->count - 40;
+                /* АДАПТИВНОЕ ОКНО:
+                 * Динамически рассчитываем окно под размер дыры с 4-кратным запасом.
+                 * Для diff=1 окно будет всего 12 алертов (~15 КБ трафика). */
+                if (count_diff <= 25) {
+                    int adaptive_window = (count_diff * 4) + 8;
+                    if (rec->count > adaptive_window) {
+                        start_idx = rec->count - adaptive_window;
+                    }
                 }
                 int pushed = 0;
                 for (int j = start_idx; j < rec->count; j++) {
@@ -1100,7 +1103,7 @@ static void process_sync_chain(int i, char *buffer) {
                     pushed++;
                 }
                 log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                          "Healed peer gap: Pushed tail window of %d alerts (from pos %d) for %s", 
+                          "Healed peer gap: Pushed adaptive tail of %d alerts (from pos %d) for %s", 
                           pushed, start_idx, hash_b64);
                 free(raw_hash);
                 free(rest);
@@ -1108,9 +1111,9 @@ static void process_sync_chain(int i, char *buffer) {
             }
             /* 2. Если у нас алертов МЕНЬШЕ */
             if (rec->count < remote_count) {
-                /* Если отставание микроскопическое (до 20 шт), не дергаем тяжелый SYNC_REC:
-                 * более свежий пир сам запушит нам окно хвоста в своем цикле синка! */
-                if ((remote_count - rec->count) > 20) {
+                /* Если отставание микроскопическое (до 25 шт), не дергаем тяжелый SYNC_REC:
+                 * более свежий пир сам запушит адаптивное окно в своем такте синка! */
+                if ((remote_count - rec->count) > 25) {
                     char heal_cmd[512];
                     int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
                     enqueue_message(i, heal_cmd, (size_t)h_len);
