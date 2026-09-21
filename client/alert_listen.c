@@ -271,34 +271,53 @@ static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Confi
 
     /* Start of updated execution logic */
     char *final_command = NULL;
-
     if (config->exec_count == 0) {
         final_command = strdup(plaintext);
     } else {
-        for (int i = 0; i < config->exec_count; i++) {
-            /* If the config entry requires a specific key, ensure it matches the message owner */
-            if (config->exec_commands[i].required_key[0] != '\0') {
-                if (pa->pubkey_hash_b64 == NULL || strcmp(config->exec_commands[i].required_key, pa->pubkey_hash_b64) != 0) {
-                    continue; /* Not allowed for this key */
+        /* Check whether there is a personal section for the key of this scheduled alert */
+        bool has_specific_acl = false;
+        if (pa->pubkey_hash_b64) {
+            for (int i = 0; i < config->exec_count; i++) {
+                if (config->exec_commands[i].required_key[0] != '\0' &&
+                    strcmp(config->exec_commands[i].required_key, pa->pubkey_hash_b64) == 0) {
+                    has_specific_acl = true;
+                    break;
                 }
             }
-            size_t key_len = strlen(config->exec_commands[i].key);
-            
+        }
+        for (int i = 0; i < config->exec_count; i++) {
+            ExecCommand *ec = &config->exec_commands[i];
+            /* ISOLATION: If a key has its own section, block any global commands */
+            if (has_specific_acl && ec->required_key[0] == '\0') {
+                continue;
+            }
+            /* SECURITY: Ignore any unfamiliar, specific commands */
+            if (ec->required_key[0] != '\0') {
+                if (pa->pubkey_hash_b64 == NULL || strcmp(ec->required_key, pa->pubkey_hash_b64) != 0) {
+                    continue;
+                }
+            }
+            size_t key_len = strlen(ec->key);
             /* Check if the message starts with the allowed key */
-            if (strncmp(plaintext, config->exec_commands[i].key, key_len) == 0) {
-                /* 
-                 * Verify that it's a boundary match: either the key ends exactly 
-                 * or it is followed by a space (arguments).
-                 */
+            if (strncmp(plaintext, ec->key, key_len) == 0) {
+                /* Verify boundary match: either exact match or followed by space */
                 if (plaintext[key_len] == '\0' || isspace((unsigned char)plaintext[key_len])) {
                     const char *dynamic_part = plaintext + key_len;
-                    /* Skip any additional spaces between the key and arguments */
                     while (*dynamic_part == ' ') dynamic_part++;
-                    /* 
-                     * Combine the script path from config with the dynamic arguments.
-                     * Arguments are wrapped in single quotes for security.
-                     */
-                    final_command = sanitize_and_concat(config->exec_commands[i].value, dynamic_part);
+                    char *raw_cmd = sanitize_and_concat(ec->value, dynamic_part);
+                    if (raw_cmd) {
+                        /* use time_limit if it is specified in the configuration */
+                        if (ec->time_limit > 0) {
+                            size_t len = strlen(raw_cmd) + 64;
+                            final_command = malloc(len);
+                            if (final_command) {
+                                snprintf(final_command, len, "timeout -s KILL %d %s", ec->time_limit, raw_cmd);
+                            }
+                            free(raw_cmd);
+                        } else {
+                            final_command = raw_cmd;
+                        }
+                    }
                     break;
                 }
             }
@@ -426,21 +445,17 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         if (l2_mesh_enabled) {
             char *frame = strdup(response + 5);
             if (!frame) return;
-
             char *iv_b64 = strtok(frame, "|");
             char *tag_b64 = strtok(NULL, "|");
             char *payload_b64 = strtok(NULL, "|");
-            
             if (iv_b64 && tag_b64 && payload_b64) {
                 size_t iv_len, tag_len, p_len;
                 uint8_t *iv = base64_decode(iv_b64, &iv_len);
                 uint8_t *tag = base64_decode(tag_b64, &tag_len);
                 uint8_t *payload = base64_decode(payload_b64, &p_len);
-                
                 int decrypted_len;
                 /* Decrypt the payload using the admin_mesh.c module from common/ */
                 uint8_t *plain = mesh_decrypt(payload, (int)p_len, iv, tag, &decrypted_len);
-                
                 if (plain) {
                     log_event("DEBUG", -1, NULL, 0, "L2 Decrypted on Client: %s", (char*)plain);
                     /* [GOSSIP HANDLER] Process incoming PEX topology */
@@ -448,7 +463,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                         mesh_discover_nodes((char*)plain + 9, config->server_ip);  
                     }
                     /* Optionally, answer PING here if you want servers to track client latency */
-                    
                     free(plain);
                 }
                 if (iv) free(iv); 
@@ -460,7 +474,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         }
          return; 
     }   
-
     /* -------------------------------------------------------------------------
      * 2. PROTOCOL FILTERING: P2P NOISE REDUCTION
      * -------------------------------------------------------------------------
@@ -476,8 +489,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         strcmp(response, "AUTH_FAILED") == 0) {
         return;
     }
-
-
     /* Cancellation Processing */ 
     if (strncmp(response, "REVOKE|", 7) == 0) {
         uint64_t revoke_id = strtoull(response + 7, NULL, 10);
@@ -496,7 +507,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         printf("Server: %s\n", response);
         return;
     }
-
     /* -------------------------------------------------------------------------
      * 4. ALERT PACKET PARSING
      * -------------------------------------------------------------------------
@@ -507,7 +517,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         log_event("ERROR", -1, NULL, 0, "Critical: Memory allocation failed during packet parsing");
         return;
     }
-
     char *pubkey_hash_b64 = strtok(copy, "|");
     char *id_str          = strtok(NULL, "|");
     char *chain_hash_str  = strtok(NULL, "|");
@@ -517,52 +526,44 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     char *encrypted_key   = strtok(NULL, "|");
     char *iv_str          = strtok(NULL, "|");
     char *tag_str         = strtok(NULL, "|");
-
     if (!tag_str) {
         log_event("ERROR", -1, NULL, 0, "Protocol Error: Incomplete data received in ALERT packet");
         free(copy);
         return;
     }
-
     /* -------------------------------------------------------------------------
      * 5. IDENTITY & TIMESTAMP RECONSTRUCTION
      * -------------------------------------------------------------------------
      */
     uint64_t id = strtoull(id_str, NULL, 10);
-
     /* [IDEMPOTENCY] Skip processing if already in history */
     if (execute && !client_history_is_new(id)) {
          log_event("DEBUG", -1, NULL, 0, "History: Skipping duplicate Alert ID %" PRIu64, id);
          free(copy);
          return;
     } 
-
     /* Snowflake ID Logic: 
      * Extract the timestamp (bits 63-12), add custom epoch, and convert to seconds. */
     time_t create_at = ((id >> 12) + SNOWFLAKE_EPOCH) / 1000;
     time_t unlock_at = atol(unlock_at_str);
     time_t expire_at = atol(expire_at_str);
     time_t now = time(NULL);
-
     /* -------------------------------------------------------------------------
      * 6. SECURITY & ACCESS CONTROL
      * -------------------------------------------------------------------------
      */
-
     /* Apply Pubkey Filter if specified */
     if (expected_pubkey_hash_b64 && strcmp(pubkey_hash_b64, expected_pubkey_hash_b64) != 0) {
         log_event("DEBUG", -1, NULL, 0, "Filter: Skipping alert for different recipient [%s]", pubkey_hash_b64);
         free(copy);
         return;
     }
-
     /* Check for local Private Key. Decryption is impossible without it. */
     if (!has_private_key(pubkey_hash_b64, verbose)) {
         log_event("WARN", -1, NULL, 0, "Security: Private key missing for hash %s. Skipping.", pubkey_hash_b64);
         free(copy);
         return;
     }
-
     /* -------------------------------------------------------------------------
      * 7. METADATA DISPLAY
      * -------------------------------------------------------------------------
@@ -574,30 +575,24 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     }
     char buf_create[32], buf_unlock[32], buf_expire[32];
     struct tm tm_info;
-
     /* Format timestamps for human-readable local time output */
     if (localtime_r(&create_at, &tm_info)) strftime(buf_create, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
     if (localtime_r(&unlock_at, &tm_info)) strftime(buf_unlock, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
     if (localtime_r(&expire_at, &tm_info)) strftime(buf_expire, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
-
     printf("Timestamps (Local): Created: %s, Unlock: %s, Expire: %s\n", 
            buf_create, buf_unlock, buf_expire);
-
     /* -------------------------------------------------------------------------
      * 8. LIFECYCLE MANAGEMENT (EXPIRY & TIME-LOCK)
      * -------------------------------------------------------------------------
      */
-
     if (expire_at <= now) {
         printf("Status: Alert has expired and is no longer valid.\n");
         free(copy);
         return;
     }
-
     if (unlock_at > now) {
         /* Message is still locked. Queue it for future processing. */
         printf("Status: Alert is TIME-LOCKED. Will unlock at %s\n", buf_unlock);
-        
         PendingAlert *pa = malloc(sizeof(PendingAlert));
         if (pa) {
             pa->pubkey_hash_b64 = strdup(pubkey_hash_b64);
@@ -615,7 +610,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         free(copy);
         return;
     }
-
     /* -------------------------------------------------------------------------
     * 9. DECRYPTION & EXECUTION
     * -------------------------------------------------------------------------
@@ -626,7 +620,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     unsigned char *k_raw = base64_decode(encrypted_key, &k_len);
     unsigned char *i_raw = base64_decode(iv_str, &i_len);
     unsigned char *t_raw = base64_decode(tag_str, &t_len);
-
     if (!e_raw || !k_raw || !i_raw || !t_raw) {
         log_event("ERROR", -1, NULL, 0, "Base64 decoding failed for alert ID %" PRIu64, id);
         goto decryption_cleanup;
@@ -669,21 +662,36 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                 final_cmd = strdup(plaintext);
             } else {
                 /* ACL Check: match message to allowed scripts */
+                /* check whether a personal section has been defined in the configuration for this key */
+                bool has_specific_acl = false;
+                if (pubkey_hash_b64) {
+                    for (int j = 0; j < config->exec_count; j++) {
+                        if (config->exec_commands[j].required_key[0] != '\0' &&
+                            strcmp(config->exec_commands[j].required_key, pubkey_hash_b64) == 0) {
+                            has_specific_acl = true;
+                            break;
+                        }
+                    }
+                }
+                /* check whether the message matches any of the allowed commands */
                 for (int j = 0; j < config->exec_count; j++) {
                     ExecCommand *ec = &config->exec_commands[j];
-                    
-                    /* Key restriction (if defined in config) */
-                    if (ec->required_key[0] != '\0' && strcmp(ec->required_key, pubkey_hash_b64) != 0) {
+                    /* ISOLATION: If the key has its own section -> block any global commands */
+                    if (has_specific_acl && ec->required_key[0] == '\0') {
                         continue;
                     }
-
+                    /* SECURITY: Ignore any unfamiliar, specific commands */
+                    if (ec->required_key[0] != '\0') {
+                        if (pubkey_hash_b64 == NULL || strcmp(ec->required_key, pubkey_hash_b64) != 0) {
+                            continue;
+                        }
+                    }
                     size_t k_match_len = strlen(ec->key);
                     if (strncmp(plaintext, ec->key, k_match_len) == 0) {
                         /* Check for boundary match: exact string or followed by space */
                         if (plaintext[k_match_len] == '\0' || isspace((unsigned char)plaintext[k_match_len])) {
                             const char *args = plaintext + k_match_len;
                             while (isspace((unsigned char)*args)) args++;
-
                             /* Generate sanitized command with arguments */
                             char *raw_cmd = sanitize_and_concat(ec->value, args);
                             if (raw_cmd) {
@@ -705,7 +713,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                     }
                 }
             }
-
             /* Execute the final command (either raw or wrapped in timeout) */
             if (final_cmd) {
                 if (daemon_exec_flag) {
@@ -713,10 +720,8 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                     daemon_exec(final_cmd, verbose);
                 } else {
                     log_event("INFO", -1, NULL, 0, "Execution: Running: %s", final_cmd);
-                    
                     int res = system(final_cmd);
                     int exit_status = WEXITSTATUS(res);
-
                     /* 
                      * 124 - стандартный код timeout. 
                      * 137 - если таймаут убил процесс через KILL (128 + SIGKILL).
@@ -724,7 +729,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                     if (WIFEXITED(res) && (exit_status == 124 || exit_status == 137)) {
                         char feedback[512];
                         int limit = 0;
-
                         /* Ищем, какой лимит времени был задан в конфиге для этой команды */
                         for (int j = 0; j < config->exec_count; j++) {
                             if (strncmp(plaintext, config->exec_commands[j].key, strlen(config->exec_commands[j].key)) == 0) {
@@ -732,14 +736,9 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                                 break;
                             }
                         }
-
-                        snprintf(feedback, sizeof(feedback), 
-                                 "Error: execution timed out! Limit in config file for this command: %d seconds. Command aborted.", 
-                                 limit);
-                        
+                        snprintf(feedback, sizeof(feedback), "Error: execution timed out! Limit in config file for this command: %d seconds. Command aborted.", limit);
                         log_event("ERROR", -1, NULL, 0, "Alert ID %" PRIu64 ": %s", id, feedback);
-
-                        /* ОТПРАВКА ЗАШИФРОВАННОГО ОТВЕТА ОБРАТНО ОТПРАВИТЕЛЮ */
+                        /* SENDING AN ENCRYPTED REPLY BACK TO THE SENDER */
                         internal_reply_error(sock, pubkey_hash_b64, feedback, verbose);
                     } 
                     else if (res != 0) {
@@ -755,7 +754,6 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     } else {
         log_event("ERROR", -1, NULL, 0, "RSA/AES Decryption failed for alert ID %" PRIu64, id);
     }
-
 decryption_cleanup:
     free(e_raw); free(k_raw); free(i_raw); free(t_raw);
     free(copy);
