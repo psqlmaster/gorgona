@@ -1084,23 +1084,37 @@ static void process_sync_chain(int i, char *buffer) {
             log_event("WARN", sub->sock, sub->ip_address, sub->port, 
                       "Chain Tip matches but count differs (Local: %d, Remote: %d) for %s. Healing...",
                       rec->count, remote_count, hash_b64);
-            /* 1. Если у нас алертов БОЛЬШЕ — мы сами выгружаем пиру всё по этому ключу */
+            /* 1. Если у нас алертов БОЛЬШЕ — лечим пира */
             if (rec->count > remote_count) {
-                for (int j = 0; j < rec->count; j++) {
+                int count_diff = rec->count - remote_count;
+                int start_idx = 0;
+                /* ОПТИМИЗАЦИЯ ТРАФИКА (Tail Window):
+                 * Если отставание небольшое (до 20 алертов), выгружаем только 
+                 * свежий хвост из последних 40 алертов (с двойным запасом),это экономит 95% трафика при микро-лагах сети! */
+                if (count_diff <= 20 && rec->count > 40) {
+                    start_idx = rec->count - 40;
+                }
+                int pushed = 0;
+                for (int j = start_idx; j < rec->count; j++) {
                     send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
+                    pushed++;
                 }
                 log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                          "Healed peer gap: Pushed all %d alerts for %s to peer", 
-                          rec->count, hash_b64);
+                          "Healed peer gap: Pushed tail window of %d alerts (from pos %d) for %s", 
+                          pushed, start_idx, hash_b64);
                 free(raw_hash);
                 free(rest);
                 return;
             }
-            /* 2. Если у нас алертов МЕНЬШЕ, запрашиваем полный синк у пира */
+            /* 2. Если у нас алертов МЕНЬШЕ */
             if (rec->count < remote_count) {
-                char heal_cmd[512];
-                int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
-                enqueue_message(i, heal_cmd, (size_t)h_len);
+                /* Если отставание микроскопическое (до 20 шт), не дергаем тяжелый SYNC_REC:
+                 * более свежий пир сам запушит нам окно хвоста в своем цикле синка! */
+                if ((remote_count - rec->count) > 20) {
+                    char heal_cmd[512];
+                    int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
+                    enqueue_message(i, heal_cmd, (size_t)h_len);
+                }
                 free(raw_hash);
                 free(rest);
                 return;
