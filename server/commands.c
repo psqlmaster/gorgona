@@ -1084,26 +1084,65 @@ static void process_sync_chain(int i, char *buffer) {
             log_event("WARN", sub->sock, sub->ip_address, sub->port, 
                       "Chain Tip matches but count differs (Local: %d, Remote: %d) for %s. Healing...",
                       rec->count, remote_count, hash_b64);
-            /* 1. Если у нас алертов БОЛЬШЕ - лечим пира адаптивным окном */
+            /* 1. Если у нас алертов БОЛЬШЕ - лечим пира плавной 3-ступенчатой лесенкой */
             if (rec->count > remote_count) {
                 int count_diff = rec->count - remote_count;
                 int start_idx = 0;
-                /* АДАПТИВНОЕ ОКНО:
-                 * Динамически рассчитываем окно под размер дыры с 4-кратным запасом.
-                 * Для diff=1 окно будет всего 12 алертов (~15 КБ трафика). */
-                if (count_diff <= 25) {
-                    int adaptive_window = (count_diff * 4) + 8;
-                    if (rec->count > adaptive_window) {
-                        start_idx = rec->count - adaptive_window;
+                static struct {
+                    int peer_sock;
+                    unsigned char hash[PUBKEY_HASH_LEN];
+                    int attempts;
+                    time_t last_attempt;
+                } ladder_sync[64];
+                static int ladder_idx = 0;
+                time_t now_lad = time(NULL);
+                int current_stage = 0;
+                int slot = -1;
+                for (int s = 0; s < 64; s++) {
+                    if (ladder_sync[s].peer_sock == sub->sock &&
+                        memcmp(ladder_sync[s].hash, rec->hash, PUBKEY_HASH_LEN) == 0) {
+                        if (now_lad - ladder_sync[s].last_attempt < 60) {
+                            current_stage = ladder_sync[s].attempts;
+                        } else {
+                            current_stage = 0;
+                        }
+                        slot = s;
+                        break;
                     }
                 }
+                if (slot == -1) {
+                    slot = ladder_idx;
+                    ladder_idx = (ladder_idx + 1) % 64;
+                    ladder_sync[slot].peer_sock = sub->sock;
+                    memcpy(ladder_sync[slot].hash, rec->hash, PUBKEY_HASH_LEN);
+                    current_stage = 0;
+                }
+                if (current_stage == 0 && count_diff <= 25) {
+                    int window = (count_diff * 4) + 8;
+                    if (rec->count > window) start_idx = rec->count - window;
+                    ladder_sync[slot].attempts = 1;
+                } else if (current_stage == 1 && count_diff <= 25) {
+                    int window = ((count_diff * 4) + 8) * 4;
+                    if (window < 64) window = 64;
+                    if (rec->count > window) start_idx = rec->count - window;
+                    ladder_sync[slot].attempts = 2;
+                    log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                              "Widening gap healing window to %d alerts for %s", window, hash_b64);
+                } else {
+                    start_idx = 0;
+                    ladder_sync[slot].attempts = 0;
+                    log_event("WARN", sub->sock, sub->ip_address, sub->port, 
+                              "Deep gap detected for %s. Escalating to FULL CHAIN recovery!", hash_b64);
+                }
+                ladder_sync[slot].last_attempt = now_lad;
                 int pushed = 0;
                 for (int j = start_idx; j < rec->count; j++) {
                     send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
                     pushed++;
                 }
                 log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                          "Healed peer gap: Pushed adaptive tail of %d alerts (from pos %d) for %s", 
+                          "Healed peer gap: Pushed %s of %d alerts (from pos %d) for %s", 
+                          (start_idx == 0) ? "FULL CHAIN" : (current_stage == 0 ? "adaptive tail" : "extended tail"), 
                           pushed, start_idx, hash_b64);
                 free(raw_hash);
                 free(rest);
