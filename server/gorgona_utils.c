@@ -375,20 +375,30 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ С ИСЦЕЛЕНИЕМ (FIX STORM) --- */
+    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ С ИСЦЕЛЕНИЕМ ХЭШЕЙ --- */
     int dup_idx = find_alert_index_by_id(rec, final_id);
     if (dup_idx != -1) {
-        /* Если это репликация от пира, мы ОБЯЗАНЫ исправить локально поврежденные хеши */
+        /* Если это репликация от пира и хэш цепи отличается — принимаем исправление! */
         if (forced_id > 0 && remote_curr_hash != 0) {
-            if (rec->alerts[dup_idx].prev_hash != remote_prev_hash ||
-                rec->alerts[dup_idx].curr_hash != remote_curr_hash) {
-                log_event("WARN_QUIET", client_fd, client_ip, client_port,
-                          "CHAIN HEALING: Overwriting corrupted hashes for existing ID %" PRIu64, final_id);
+            if (rec->alerts[dup_idx].curr_hash != remote_curr_hash ||
+                rec->alerts[dup_idx].prev_hash != remote_prev_hash) {
                 rec->alerts[dup_idx].prev_hash = remote_prev_hash;
                 rec->alerts[dup_idx].curr_hash = remote_curr_hash;
-                if (dup_idx == rec->count - 1) {
-                    rec->last_hash = remote_curr_hash;
+                /* Каскадно пересчитываем все последующие алерты до верхушки */
+                uint64_t running_prev = remote_curr_hash;
+                for (int k = dup_idx + 1; k < rec->count; k++) {
+                    rec->alerts[k].prev_hash = running_prev;
+                    rec->alerts[k].curr_hash = alert_chain_compute_link(
+                        rec->alerts[k].id, rec->alerts[k].prev_hash, rec->alerts[k].content_hash);
+                    running_prev = rec->alerts[k].curr_hash;
                 }
+                rec->last_hash = running_prev;
+                if (use_disk_db) {
+                    alert_db_sync(rec);
+                }
+                log_event("INFO", client_fd, client_ip, client_port,
+                          "CHAIN HEALED: Realigned divergent hashes for ID %" PRIu64 " up to tip 0x%" PRIx64, 
+                          final_id, rec->last_hash);
             }
         }
         return -4; 
@@ -940,9 +950,7 @@ void run_global_maintenance(void) {
             if (client_sockets[i] > 0 && 
                 subscribers[i].type == SUB_TYPE_PEER && 
                 subscribers[i].auth_state == AUTH_OK) {
-                
                 mesh_request_chain_sync(i);
-                break; /* Достаточно запустить сверку с одним доверенным пиром */
             }
         }
     }

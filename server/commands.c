@@ -1056,7 +1056,6 @@ static void process_sync_chain(int i, char *buffer) {
     char *hash_b64 = strtok(rest, "|");
     char *id_str = strtok(NULL, "|");
     char *hash_str = strtok(NULL, "|");
-    char *count_str = strtok(NULL, "|"); 
     if (!hash_b64 || !id_str || !hash_str) { 
         free(rest); 
         return; 
@@ -1070,129 +1069,54 @@ static void process_sync_chain(int i, char *buffer) {
     uint64_t remote_last_id = strtoull(id_str, NULL, 10);
     uint64_t remote_last_hash = strtoull(hash_str, NULL, 10);
     Recipient *rec = find_recipient(raw_hash);
-    int remote_count = count_str ? atoi(count_str) : 0;
+
     if (rec && rec->count > 0) {
         Alert *my_last = &rec->alerts[rec->count - 1];
-        /* Выходим ТОЛЬКО если совпали ID, Хэш И КОЛИЧЕСТВО алертов! */
+
+        /* 1. Если верхушка (ID и хэш) совпала — цепочка на 100% валидна!
+         * Разница в count допустима из-за естественного вытеснения старых алертов по TTL. */
         if (my_last->id == remote_last_id && my_last->curr_hash == remote_last_hash) {
-            if (remote_count == 0 || rec->count == remote_count) {
-                free(raw_hash);
-                free(rest);
-                return; /* Реально полная идентичность */
-            }
-            /* Если концы равны, а количество РАЗНОЕ — это внутренняя скрытая дыра! */
-            log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                      "Chain Tip matches but count differs (Local: %d, Remote: %d) for %s. Healing...",
-                      rec->count, remote_count, hash_b64);
-            /* 1. Если у нас алертов БОЛЬШЕ - лечим пира плавной 3-ступенчатой лесенкой */
-            if (rec->count > remote_count) {
-                int count_diff = rec->count - remote_count;
-                int start_idx = 0;
-                static struct {
-                    int peer_sock;
-                    unsigned char hash[PUBKEY_HASH_LEN];
-                    int attempts;
-                    time_t last_attempt;
-                } ladder_sync[64];
-                static int ladder_idx = 0;
-                time_t now_lad = time(NULL);
-                int current_stage = 0;
-                int slot = -1;
-                for (int s = 0; s < 64; s++) {
-                    if (ladder_sync[s].peer_sock == sub->sock &&
-                        memcmp(ladder_sync[s].hash, rec->hash, PUBKEY_HASH_LEN) == 0) {
-                        if (now_lad - ladder_sync[s].last_attempt < 60) {
-                            current_stage = ladder_sync[s].attempts;
-                        } else {
-                            current_stage = 0;
-                        }
-                        slot = s;
-                        break;
-                    }
-                }
-                if (slot == -1) {
-                    slot = ladder_idx;
-                    ladder_idx = (ladder_idx + 1) % 64;
-                    ladder_sync[slot].peer_sock = sub->sock;
-                    memcpy(ladder_sync[slot].hash, rec->hash, PUBKEY_HASH_LEN);
-                    current_stage = 0;
-                }
-                if (current_stage == 0 && count_diff <= 25) {
-                    int window = (count_diff * 4) + 8;
-                    if (rec->count > window) start_idx = rec->count - window;
-                    ladder_sync[slot].attempts = 1;
-                } else if (current_stage == 1 && count_diff <= 25) {
-                    int window = ((count_diff * 4) + 8) * 4;
-                    if (window < 64) window = 64;
-                    if (rec->count > window) start_idx = rec->count - window;
-                    ladder_sync[slot].attempts = 2;
-                    log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                              "Widening gap healing window to %d alerts for %s", window, hash_b64);
-                } else {
-                    start_idx = 0;
-                    ladder_sync[slot].attempts = 0;
-                    log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                              "Deep gap detected for %s. Escalating to FULL CHAIN recovery!", hash_b64);
-                }
-                ladder_sync[slot].last_attempt = now_lad;
-                int pushed = 0;
-                for (int j = start_idx; j < rec->count; j++) {
-                    send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
-                    pushed++;
-                }
-                log_event("INFO", sub->sock, sub->ip_address, sub->port, 
-                          "Healed peer gap: Pushed %s of %d alerts (from pos %d) for %s", 
-                          (start_idx == 0) ? "FULL CHAIN" : (current_stage == 0 ? "adaptive tail" : "extended tail"), 
-                          pushed, start_idx, hash_b64);
-                free(raw_hash);
-                free(rest);
-                return;
-            }
-            /* 2. Если у нас алертов МЕНЬШЕ */
-            if (rec->count < remote_count) {
-                /* Если отставание микроскопическое (до 25 шт), не дергаем тяжелый SYNC_REC:
-                 * более свежий пир сам запушит адаптивное окно в своем такте синка! */
-                if ((remote_count - rec->count) > 25) {
-                    char heal_cmd[512];
-                    int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
-                    enqueue_message(i, heal_cmd, (size_t)h_len);
-                }
-                free(raw_hash);
-                free(rest);
-                return;
-            }
-        }
-        if (my_last->id > remote_last_id) {
-            int sent_gap = 0;
-            for (int j = 0; j < rec->count; j++) {
-                /* Передаем только те алерты, которые новее remote_last_id И которые реально активны */
-                if (rec->alerts[j].id > remote_last_id && rec->alerts[j].active) {
-                    send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
-                    sent_gap++;
-                }
-            }
-            if (verbose) {
-                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                          "Peer is behind on %s. Pushed %d missing alerts (after ID %" PRIu64 ")", 
-                          hash_b64, sent_gap, remote_last_id);
+            if (subscribers[i].sock == chain_sync_owner_fd) {
+                chain_sync_in_progress = false;
+                chain_sync_owner_fd = -1;
             }
             free(raw_hash);
             free(rest);
             return;
         }
-        /* Всегда начинаем с небольшого sample вместо немедленного Full Sync */
+
+        /* 2. Если мы впереди — досылаем пиру недостающие свежие алерты */
+        if (my_last->id > remote_last_id) {
+            int sent_gap = 0;
+            for (int j = 0; j < rec->count; j++) {
+                if (rec->alerts[j].id > remote_last_id && rec->alerts[j].active) {
+                    send_alert_to_peer(i, rec->hash, &rec->alerts[j]);
+                    sent_gap++;
+                }
+            }
+            if (sent_gap > 0) {
+                if (subscribers[i].sock == chain_sync_owner_fd) {
+                    chain_sync_in_progress = false;
+                    chain_sync_owner_fd = -1;
+                }
+                free(raw_hash);
+                free(rest);
+                return;
+            }
+        }
+
+        /* 3. Если верхушки РАЗНЫЕ — ищем общего предка через сэмплы */
         char req[512];
         snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|40", hash_b64);
         enqueue_message(i, req, strlen(req));
+
         if (verbose) {
             log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                      "Chain divergence for %s. (MyHash: %" PRIx64 ", Remote: %" PRIx64 "). Healing started.", 
+                      "Chain divergence for %s. Local tip: 0x%" PRIx64 ", Remote tip: 0x%" PRIx64 ". Requesting sample...", 
                       hash_b64, my_last->curr_hash, remote_last_hash);
         }
     } else {
-        /* Мы пустые по этому ключу.
-         * Кулдаун 20 секунд должен действовать НА КОНКРЕТНЫЙ КЛЮЧ,
-         * а не блокировать синхронизацию всех остальных ключей! */
+        /* Cold start */
         static time_t last_empty_sync[64] = {0};
         static unsigned char last_empty_hashes[64][PUBKEY_HASH_LEN];
         static int empty_sync_idx = 0;
@@ -1200,9 +1124,7 @@ static void process_sync_chain(int i, char *buffer) {
         bool allowed = true;
         for (int k = 0; k < 64; k++) {
             if (memcmp(last_empty_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
-                if (now - last_empty_sync[k] < 20) {
-                    allowed = false;
-                }
+                if (now - last_empty_sync[k] < 20) allowed = false;
                 break;
             }
         }
@@ -1213,10 +1135,6 @@ static void process_sync_chain(int i, char *buffer) {
             char heal_cmd[512];
             int h_len = snprintf(heal_cmd, sizeof(heal_cmd), "SYNC_REC|%s", hash_b64);
             enqueue_message(i, heal_cmd, (size_t)h_len);
-            if (verbose) {
-                log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
-                          "Cold start: Requesting full sync for empty key %s", hash_b64);
-            }
         }
     }
     free(raw_hash);
@@ -1339,4 +1257,5 @@ void handle_command(int sub_index, char *buffer) {
         log_event("WARN", sub->sock, sub->ip_address, sub->port, "Unknown command: %.64s", buffer);
     }
 }
+
 
