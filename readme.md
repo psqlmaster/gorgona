@@ -1,4 +1,7 @@
-<img src="gorgona.png" alt="" width="100%">
+<p align="center">
+  <img src="gorgona.png" alt="Gorgona" width="100%">
+</p>
+
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/psqlmaster/gorgona?style=flat-square&color=blue)](https://github.com/psqlmaster/gorgona/releases)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-orange?style=flat-square)](license.txt)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-238636?style=flat-square&logo=github)](SECURITY.md)
