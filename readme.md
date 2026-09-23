@@ -2,6 +2,7 @@
 ---
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/psqlmaster/gorgona?style=flat-square&color=blue)](https://github.com/psqlmaster/gorgona/releases)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-orange?style=flat-square)](license.txt)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-238636?style=flat-square&logo=github)](SECURITY.md)
 [![GitHub repo size](https://img.shields.io/github/repo-size/psqlmaster/gorgona?style=flat-square&color=yellow&label=size)](https://github.com/psqlmaster/gorgona)
 [![Language: C11](https://img.shields.io/badge/Language-C11-00599C?style=flat-square&logo=c)](https://en.cppreference.com/w/c/11)
 [![Dependencies: OpenSSL only](https://img.shields.io/badge/Dependencies-OpenSSL%20only-brightgreen?style=flat-square)](Makefile)
