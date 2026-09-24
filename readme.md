@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="gorgona.png" alt="Gorgona" width="100%">
+  <img src="gorgona.jpg" alt="Gorgona" width="100%">
 </p>
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/psqlmaster/gorgona?style=flat-square&color=blue)](https://github.com/psqlmaster/gorgona/releases)
