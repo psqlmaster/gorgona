@@ -110,4 +110,3 @@ The `examples/` directory contains practical integration use-cases:
 
 - **`cscli_decisions_list.sh`**: Periodically pipes active CrowdSec security decisions into an encrypted, time-locked Gorgona alert and sends them to a recipient public key.
   Uses BSD `date -v+3d` syntax for native FreeBSD compatibility.
-```
