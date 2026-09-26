@@ -20,6 +20,8 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <errno.h>
+#include <signal.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/tcp.h>
@@ -30,7 +32,7 @@
 #include <ctype.h> 
 #include <unistd.h>
 #include <time.h>
-#define _POSIX_C_SOURCE 200809L
+// #define _POSIX_C_SOURCE 200809L
 #define SNOWFLAKE_EPOCH 1735689600000ULL  /* 1 January 2025 в ms (из snowflake.h) */
 #define STICKY_NODE_PATH "/dev/shm/gorgona_sticky_node"
 

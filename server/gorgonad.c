@@ -239,7 +239,12 @@ int main(int argc, char *argv[]) {
     /* Sub-systems Initialization */
     mesh_init(sync_psk);
     metrics_init_ssl(); 
-    mesh_load_peers_cache();
+    int cached_peers = mesh_load_peers_cache();
+    if (cached_peers > 0) {
+        log_event("INFO", -1, NULL, 0, "Mesh network initialized (%d peer(s) loaded from cache)", cached_peers);
+    } else {
+        log_event("INFO", -1, NULL, 0, "Mesh network initialized (no cached peers found)");
+    }
     log_event("INFO", -1, NULL, 0, "Gorgona Server %s is starting...", VERSION);
 
     /* Initialize internal data structures */

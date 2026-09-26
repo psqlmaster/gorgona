@@ -14,6 +14,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netdb.h>
 
@@ -469,15 +473,13 @@ void mesh_save_peers_cache() {
 
 /**
  * Loads previously cached peers into the mesh table.
- * These nodes are treated as temporary seeds to ensure stability.
+ * Returns the number of successfully loaded peers.
  */
-void mesh_load_peers_cache() {
+int mesh_load_peers_cache(void) {
     char cache_path[512];
     snprintf(cache_path, sizeof(cache_path), "%s/peers.cache", gorgona_data_dir);
-    
     FILE *fp = fopen(cache_path, "r");
-    if (!fp) return;
-
+    if (!fp) return 0;
     char line[128];
     int loaded = 0;
     while (fgets(line, sizeof(line), fp)) {
@@ -488,14 +490,12 @@ void mesh_load_peers_cache() {
         *colon = '\0';
         char *ip = line;
         int port = atoi(colon + 1);
-
         bool exists = false;
         for (int i = 0; i < cluster_node_count; i++) {
             if (mesh_addr_compare(&cluster_nodes[i], ip)) {
                 exists = true; break;
             }
         }
-
         if (!exists && cluster_node_count < (MAX_PEERS * 4)) {
             MeshNode *n = &cluster_nodes[cluster_node_count++];
             memset(n, 0, sizeof(MeshNode));
@@ -509,6 +509,7 @@ void mesh_load_peers_cache() {
         }
     }
     fclose(fp);
+    return loaded;
 }
 
 int mesh_get_logical_port_by_ip(const char *ip) {

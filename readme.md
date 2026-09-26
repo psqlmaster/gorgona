@@ -27,7 +27,8 @@
 - [Configuration](#configuration)
   - [Server Configuration (gorgonad.conf)](#server-configuration-gorgonadconf)
   - [Client Configuration (gorgona.conf)](#client-configuration-gorgonaconf)
-  - [Service Installation (systemd)](#service-installation-systemd)
+      - [Service Installation (systemd)](#service-installation-systemd)
+      - [Service Installation (FreeBSD rc.d) ↗](FreeBSD/README.md#4-setting-up-the-background-service-rcd)
 - [Usage](#usage)
   - [Flags](#flags)
   - [Generate Keys](#generate-keys)
@@ -106,7 +107,9 @@ Gorgona is designed to survive total infrastructure failures:
 - **Penalty Box**: If a node misbehaves or drops the connection during handshake, the client applies a temporary 5-minute "penalty," automatically excluding it from the connection race to favor stable providers.
 
 #### Multi-Platform support (Embedded Friendly)
+
 Gorgona is engineered for standard Linux servers and restricted embedded systems:
+- **FreeBSD & OPNsense Native**: Native build system via `gmake` (Clang), dedicated `rc.d` service supervisor, and CrowdSec automation -> [View FreeBSD Guide](FreeBSD/README.md).
 - **Native OpenWrt support**: Cross-compiled binaries available for `x86_64` and `aarch64` (OpenWrt 23.05/24.10).
 - **OpenBMC ready**: Extremely low footprint and zero-dependency C implementation make it ideal for Baseboard Management Controllers (BMC).
 - **Storage longevity**: Optimized `mmap` I/O significantly reduces Flash memory wear-leveling cycles on routers and IoT devices.
@@ -186,6 +189,7 @@ Install dependencies (OpenSSL required):
 - On REDOS: `sudo yum install openssl11 openssl11-devel`
 - On centos: `sudo yum install -y git gcc make pkgconfig check check-devel openssl-devel`
 - On macOS: `brew install openssl`
+- On FreeBSD / OPNsense: `pkg install -y gmake git` *(Clang & OpenSSL included in base system)*. See [FreeBSD Build Guide](FreeBSD/README.md).
 
 > Note: Tested on Debian, Fedora, Centos and RED OS.
 > Binary Compatibility
@@ -362,6 +366,11 @@ TimeoutStopSec=30
 [Install]
 WantedBy=multi-user.target
 ```
+
+##### Service Installation on FreeBSD / OPNsense (rc.d)
+For FreeBSD and OPNsense, use the native `rc.d` daemon supervisor:
+See the **[FreeBSD rc.d Service Guide](FreeBSD/README.md#4-setting-up-the-background-service-rcd)**.
+
 ---
 #### Usage
 
@@ -1168,5 +1177,6 @@ stop greenplum  = /bin/systemctl stop greenplum
 ---
 
 The end
+
 
 

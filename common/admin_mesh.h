@@ -100,7 +100,7 @@ uint8_t* mesh_decrypt(const uint8_t *cipher, int len, const uint8_t *iv, const u
 void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac);
 
 /* Persistence (Bootstrapping) */
-void mesh_load_peers_cache(void);
+int mesh_load_peers_cache(void);
 void mesh_save_peers_cache(void);
 
 #endif /* ADMIN_MESH_H */
