@@ -1,0 +1,48 @@
+#!/bin/sh
+
+# PROVIDE: gorgona
+# REQUIRE: NETWORKING SERVERS DAEMON
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="gorgona"
+rcvar="gorgona_enable"
+
+load_rc_config $name
+
+: ${gorgona_enable:="NO"}
+: ${gorgona_user:="root"}
+: ${gorgona_args:="-e listen new"}
+: ${gorgona_logfile:="/var/log/gorgona.log"}
+
+pidfile="/var/run/${name}.pid"
+procname="/usr/local/bin/gorgona"
+command="/usr/sbin/daemon"
+command_args="-r -P ${pidfile} -o ${gorgona_logfile} -t ${name} ${procname} ${gorgona_args}"
+
+status_cmd="${name}_status"
+stop_cmd="${name}_stop"
+
+gorgona_status() {
+    if [ -f "${pidfile}" ] && kill -0 $(cat "${pidfile}") 2>/dev/null; then
+        echo "${name} is running as pid $(cat ${pidfile})."
+    else
+        echo "${name} is not running."
+        return 1
+    fi
+}
+
+gorgona_stop() {
+    if [ -f "${pidfile}" ]; then
+        echo "Stopping ${name}."
+        kill -TERM $(cat "${pidfile}") 2>/dev/null
+        pkill -f "${procname}" 2>/dev/null
+        rm -f "${pidfile}"
+    else
+        echo "${name} is not running."
+    fi
+}
+
+run_rc_command "$1"
+
