@@ -28,7 +28,7 @@
   - [Server Configuration (gorgonad.conf)](#server-configuration-gorgonadconf)
   - [Client Configuration (gorgona.conf)](#client-configuration-gorgonaconf)
       - [Service Installation (systemd)](#service-installation-systemd)
-      - [Service Installation (FreeBSD rc.d) ↗](FreeBSD/README.md#4-setting-up-the-background-service-rcd)
+      - [Service Installation (FreeBSD rc.d) ↗](FreeBSD/readme.md#4-setting-up-the-background-service-rcd)
 - [Usage](#usage)
   - [Flags](#flags)
   - [Generate Keys](#generate-keys)
@@ -109,7 +109,7 @@ Gorgona is designed to survive total infrastructure failures:
 #### Multi-Platform support (Embedded Friendly)
 
 Gorgona is engineered for standard Linux servers and restricted embedded systems:
-- **FreeBSD & OPNsense Native**: Native build system via `gmake` (Clang), dedicated `rc.d` service supervisor, and CrowdSec automation -> [View FreeBSD Guide](FreeBSD/README.md).
+- **FreeBSD & OPNsense Native**: Native build system via `gmake` (Clang), dedicated `rc.d` service supervisor, and CrowdSec automation -> [View FreeBSD Guide](FreeBSD/readme.md).
 - **Native OpenWrt support**: Cross-compiled binaries available for `x86_64` and `aarch64` (OpenWrt 23.05/24.10).
 - **OpenBMC ready**: Extremely low footprint and zero-dependency C implementation make it ideal for Baseboard Management Controllers (BMC).
 - **Storage longevity**: Optimized `mmap` I/O significantly reduces Flash memory wear-leveling cycles on routers and IoT devices.
