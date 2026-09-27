@@ -43,11 +43,19 @@ curl -k -X POST https://127.0.0.1:8000/api/webhook/send \
      -d '{"hash":"RECIPIENT_HASH","text":"Test message expire 3 days","unlock_at":'$(date -u +%s)',"expire_at":'$(date -u -d "+3 days" +%s)'}'
 ```
 
+Check token 
+```bash
+❯ echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .exp
+1885139760
+❯ date -d @1885139760
+Wed Sep 26 08:56:00 PM MSK 2029
+```
+
 #### Example 
 ```bash
 ❯ TOKEN=$(curl -k -s -X POST https://192.168.1.200:8000/api/login \
      -H "Content-Type: application/json" \
-     -d '{"username": "admin", "password": "admin"}' | jq -r .access_token)
+     -d '{"username": "admin", "password": "super_password"}' | jq -r .access_token)
 ❯ echo $TOKEN
 eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImV4cCI6MTc4MDU4MTM0M30.pFBCqyKYARQiaJIcXM4hhYVy7ZByqA1B_Kq3YPSPnpA
 

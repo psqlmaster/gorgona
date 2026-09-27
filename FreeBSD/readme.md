@@ -253,3 +253,100 @@ gorgona listen new
 +---------+----------+-------------------+--------------------------------------+--------+---------+----------------------------------+--------+------------+----------+
 4 duplicated entries skipped
 ```
+---
+
+## 7. Real-Time CrowdSec Ban Notifications in Gorgona Stheno Web UI
+
+Once you have configured remote log forwarding from your infrastructure (e.g., via Syslog UDP) to CrowdSec and enabled automated threat detection scenarios, you can stream real-time remediation alerts directly into the [Gorgona Stheno Web UI](../README.md#quick-start-gorgona-stheno).
+
+---
+
+### 7.1. Obtain an API Access Token
+
+On your OPNsense / FreeBSD host, authenticate against the Gorgona Stheno API (`https://<STHENO_IP>:8000`) to retrieve a Bearer JWT token:
+
+```bash
+sh
+TOKEN=$(curl -k -s -X POST https://192.168.1.200:8000/api/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "admin", "password": "super_strong_password"}' | jq -r .access_token)
+
+echo "$TOKEN"
+```
+
+---
+
+### 7.2. Configure the HTTP Notification Plugin
+
+Create the CrowdSec notification definition at `/usr/local/etc/crowdsec/notifications/gorgona.yaml`.
+
+This configuration includes:
+- `skip_tls_verification: true` to support self-signed certificates.
+- A multi-alert loop that guarantees valid JSON even when multiple threats are grouped together.
+- Automatic 3-day (`259200s`) expiration timestamp for the P2P alert.
+
+```yaml
+type: http
+name: gorgona_alert
+log_level: info
+skip_tls_verification: true
+
+format: |
+  {
+    "hash": "RWTPQzuhzBw=",
+    "text": "CrowdSec: {{range $i, $a := .}}{{if $i}} | {{end}}{{$a.Scenario}} from {{$a.Source.IP}} ({{$a.Source.Cn}}){{end}}",
+    "unlock_at": {{ now.Unix }},
+    "expire_at": {{ add now.Unix 259200 }}
+  }
+
+url: https://192.168.1.200:8000/api/webhook/send
+method: POST
+headers:
+  Content-Type: application/json
+  Authorization: Bearer YOUR_GENERATED_JWT_TOKEN_HERE
+timeout: 10s
+```
+
+> **Note:** Replace `https://192.168.1.200:8000` with the actual IP address and port of your Gorgona Stheno instance, and insert your token generated in step 7.1.
+
+---
+
+### 7.3. Link Notification to Remediation Profiles
+
+Activate the notification hook inside `/usr/local/etc/crowdsec/profiles.yaml` under the active remediation profile:
+
+```yaml
+name: default_ip_remediation
+filters:
+ - Alert.Remediation == true && Alert.GetScope() == "Ip"
+decisions:
+ - type: ban
+   duration: 4h
+notifications:
+ - gorgona_alert
+on_success: break
+```
+
+Restart CrowdSec to apply the profile configuration:
+
+```bash
+service crowdsec restart
+```
+
+---
+
+### 7.4. Verification and Live Alerts
+
+Send a synthetic test alert to verify connectivity:
+
+```bash
+cscli notifications test gorgona_alert
+```
+
+When an attack is detected and a ban decision is triggered, an encrypted real-time card with the attacking IP, scenario, and geolocation country will immediately pop up in your Gorgona Stheno dashboard:
+
+<p align="center">
+  <img src="ban_alert.jpg" alt="CrowdSec Ban Alert in Gorgona Stheno" width="100%">
+</p>
+
+
