@@ -257,7 +257,7 @@ gorgona listen new
 
 ## 7. Real-Time CrowdSec Ban Notifications in Gorgona Stheno Web UI
 
-Once you have configured remote log forwarding from your infrastructure (e.g., via Syslog UDP) to CrowdSec and enabled automated threat detection scenarios, you can stream real-time remediation alerts directly into the [Gorgona Stheno Web UI](../README.md#quick-start-gorgona-stheno).
+Once you have configured remote log forwarding from your infrastructure (e.g., via Syslog UDP) to CrowdSec and enabled automated threat detection scenarios, you can stream real-time remediation alerts directly into the [Gorgona Stheno Web UI](../readme.md#quick-start-gorgona-stheno).
 
 ---
 
