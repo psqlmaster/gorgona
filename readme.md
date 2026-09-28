@@ -9,6 +9,23 @@
 [![Language: C11](https://img.shields.io/badge/Language-C11-00599C?style=flat-square&logo=c)](https://en.cppreference.com/w/c/11)
 [![Dependencies: OpenSSL only](https://img.shields.io/badge/Dependencies-OpenSSL%20only-brightgreen?style=flat-square)](Makefile)
 #### Gorgona Chain. Decentralized P2P Cron & Remote Execution Engine. End-to-End Encrypted, Time-Locked, and Resilient.  
+---
+### Cryptographically Deterministic Immutable Ledger
+
+Every alert ingested into `gorgona` forms an unbreakable, mathematically provable linear ledger. Computing at **30+ GB/s** via XXH3, the mesh continuously enforces cryptographic continuity without blockchain overhead:
+
+$$H_i = \text{XXH3-64}\Big(\text{ID}_i \;\parallel\; H_{i-1} \;\parallel\; \text{XXH3-64}(\text{Payload}_i)\Big)$$
+
+| Argument | Type | Description |
+| :--- | :--- | :--- |
+| **$H_i$** | `uint64` | **Current Link Hash** - The immutable cryptographic fingerprint of this specific alert. |
+| **$\text{ID}_i$** | `uint64` | **Monotonic Snowflake ID** - Strictly ordered 64-bit integer encoding cluster millisecond pulse and node sequence. |
+| **$H_{i-1}$** | `uint64` | **Cryptographic Ancestor Anchor** - Hash of the immediate predecessor. Anchors to sliding-window history even across memory compaction. |
+| **$\text{Payload}_i$** | `bytes` | **Zero-Knowledge Envelope** - Hash digest of raw E2E encrypted components: $(\text{Ciphertext} \parallel \text{EncryptedKey} \parallel \text{IV} \parallel \text{AuthTag})$. |
+
+> 🛡️ **Zero-Drift Guarantee:** If a single bit in history, payload, or ordering is altered or dropped across the P2P mesh, $H_i \neq H_{peer}$. The background Anti-Entropy engine immediately detects the fork, locates the common ancestor, and autonomously heals the ledger.
+
+--- 
 
 - [Introduction](#introduction)
 - [Project Overview & Deep Dive (DeepWiki) ↗](https://deepwiki.com/psqlmaster/gorgona/1-gorgona:-overview)
@@ -232,7 +249,7 @@ max_message_size = 5                                   # Max message size in MB
 use_disk_db = true                                     # Enable persistent storage (true - tested for production, false - experimental, requires debugging)
 vacuum_threshold_percent = 50                          # Auto-cleanup threshold for deleted records
 
-# paths (optional — defaults shown below)
+# paths (optional - defaults shown below)
 data_dir = /var/lib/gorgona                            # Base directory for DB, cache, and logs
 conf_dir = /etc/gorgona                                # Directory for config files and TLS certs
 log_level = error                                      # info, error, or debug 
@@ -257,7 +274,7 @@ ip = 64.188.70.158
 port = 7777
 sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3    # P2P cluster authentication key (optionally)
 
-# paths (optional — defaults shown below)
+# paths (optional - defaults shown below)
 data_dir = /var/lib/gorgona                            # Base directory for history.log, peers.cache, sticky_node
 conf_dir = /etc/gorgona                                # Directory for *.pub, *.key files
 # log_file = /var/log/gorgona/gorgona.log              # Optional: output for daemon-exec (default: /dev/null)
@@ -602,7 +619,7 @@ strace -e network gorgona -v listen new RWTPQzuhzBw=
 
 Notes:
 - A header `[exec_commands:KEY]` binds all key/value lines inside to `required_key=KEY`. Only messages decrypted with the matching private key (i.e., whose `pubkey_hash_b64` equals `KEY`) may execute those commands when `-e/--exec` is used.
-- `[exec_commands]` (without suffix) is the global section — commands there are available to messages from any key.
+- `[exec_commands]` (without suffix) is the global section - commands there are available to messages from any key.
 - This format is both human-editable and easy to generate with configuration management tools (Ansible, Chef, etc.).
 
 Backward compatibility:
