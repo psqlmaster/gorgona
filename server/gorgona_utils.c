@@ -251,18 +251,15 @@ void clean_expired_alerts_logic(Recipient *rec, time_t reference_time) {
     int changes_made = 0; /* We detect any data deletion from RAM */
     for (int i = 0; i < rec->count; ) {
         /* Delete if it is NO LONGER active (Revoke) OR if the time has expired */
-        if (!rec->alerts[i].active || rec->alerts[i].expire_at <= reference_time) {
-            
+        if (rec->alerts[i].expire_at <= reference_time && rec->alerts[i].expire_at != 0) { 
             if (use_disk_db && rec->alerts[i].active) {
                 /* If an alert was active but has expired, we mark it as inactive in the database before removing it from memory */
                 alert_db_deactivate_alert(&rec->alerts[i]);
                 rec->waste_count++;
             }
-
             free_alert(&rec->alerts[i]);
             memmove(&rec->alerts[i], &rec->alerts[i + 1], sizeof(Alert) * (rec->count - i - 1));
             rec->count--;
-            
             changes_made++; /* was deleted from RAM */
         } else {
             i++;

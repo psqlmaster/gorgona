@@ -14,11 +14,12 @@ void alert_chain_recompute_all(Recipient *rec) {
         rec->last_hash = 0;
         return;
     }
-
-    uint64_t running_prev = 0;
+    /* В плавающем окне нулевой элемент сохраняет свой якорный prev_hash
+     * от вытесненной истории (если это не абсолютный генезис с 0) */
+    uint64_t running_prev = rec->alerts[0].prev_hash;
     for (int i = 0; i < rec->count; i++) {
         Alert *a = &rec->alerts[i];
-        a->content_hash = alert_chain_compute_content(a);   // на всякий случай
+        a->content_hash = alert_chain_compute_content(a);
         a->prev_hash = running_prev;
         a->curr_hash = alert_chain_compute_link(a->id, a->prev_hash, a->content_hash);
         running_prev = a->curr_hash;
@@ -54,17 +55,23 @@ uint64_t alert_chain_compute_link(uint64_t id, uint64_t prev_h, uint64_t cont_h)
 void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
                                     uint64_t remote_prev_hash,
                                     uint64_t remote_curr_hash) {
-    (void)remote_prev_hash;
-    (void)remote_curr_hash;
     new_alert->content_hash = alert_chain_compute_content(new_alert);
     int pos = find_insert_position(rec, new_alert->id);
-    if (pos == 0) {
-        new_alert->prev_hash = 0;
+    /* 1. Если алерт пришел из сети (репликация) и у него уже есть эталонные хеши */
+    if (remote_curr_hash != 0) {
+        new_alert->prev_hash = remote_prev_hash;
+        new_alert->curr_hash = remote_curr_hash;
     } else {
-        new_alert->prev_hash = rec->alerts[pos - 1].curr_hash;
+        /* 2. Локальный алерт от клиента (SEND) — рассчитываем с нуля */
+        if (pos == 0) {
+            new_alert->prev_hash = (rec->count > 0) ? rec->alerts[0].prev_hash : 0;
+        } else {
+            new_alert->prev_hash = rec->alerts[pos - 1].curr_hash;
+        }
+        new_alert->curr_hash = alert_chain_compute_link(
+            new_alert->id, new_alert->prev_hash, new_alert->content_hash);
     }
-    new_alert->curr_hash = alert_chain_compute_link(
-        new_alert->id, new_alert->prev_hash, new_alert->content_hash);
+    /* 3. Re-chaining последующих алертов (если была вставка в середину) */
     uint64_t running_prev = new_alert->curr_hash;
     for (int i = pos + 1; i <= rec->count; i++) {
         Alert *cur = &rec->alerts[i];
