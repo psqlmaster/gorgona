@@ -54,13 +54,10 @@ uint64_t alert_chain_compute_link(uint64_t id, uint64_t prev_h, uint64_t cont_h)
 void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
                                     uint64_t remote_prev_hash,
                                     uint64_t remote_curr_hash) {
-    (void)remote_prev_hash;  /* Игнорируем — цепь детерминистична */
+    (void)remote_prev_hash;
     (void)remote_curr_hash;
-    /* content_hash — всегда локально пересчитываем */
     new_alert->content_hash = alert_chain_compute_content(new_alert);
-    /* Находим позицию вставки по ID через БИНАРНЫЙ ПОИСК (O(log N)) */
     int pos = find_insert_position(rec, new_alert->id);
-    /* ВСЕГДА пересчитываем цепь локально для всех последующих алертов */
     if (pos == 0) {
         new_alert->prev_hash = 0;
     } else {
@@ -68,19 +65,13 @@ void alert_chain_process_insertion(Recipient *rec, Alert *new_alert,
     }
     new_alert->curr_hash = alert_chain_compute_link(
         new_alert->id, new_alert->prev_hash, new_alert->content_hash);
-    /* Re-chaining ВСЕХ последующих алертов */
     uint64_t running_prev = new_alert->curr_hash;
-    for (int i = pos; i < rec->count; i++) {
+    for (int i = pos + 1; i <= rec->count; i++) {
         Alert *cur = &rec->alerts[i];
         cur->prev_hash = running_prev;
         cur->curr_hash = alert_chain_compute_link(
             cur->id, cur->prev_hash, cur->content_hash);
         running_prev = cur->curr_hash;
     }
-    /* Обновляем last_hash */
-    if (rec->count > 0) {
-        rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
-    } else {
-        rec->last_hash = new_alert->curr_hash;
-    }
+    rec->last_hash = running_prev;
 }

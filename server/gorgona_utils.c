@@ -375,32 +375,10 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
         }
     }
 
-    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ С ИСЦЕЛЕНИЕМ ХЭШЕЙ --- */
+    /* --- ПРОВЕРКА НА ДУБЛИКАТЫ --- */
     int dup_idx = find_alert_index_by_id(rec, final_id);
     if (dup_idx != -1) {
-        /* Если это репликация от пира и хэш цепи отличается — принимаем исправление! */
-        if (forced_id > 0 && remote_curr_hash != 0) {
-            if (rec->alerts[dup_idx].curr_hash != remote_curr_hash ||
-                rec->alerts[dup_idx].prev_hash != remote_prev_hash) {
-                rec->alerts[dup_idx].prev_hash = remote_prev_hash;
-                rec->alerts[dup_idx].curr_hash = remote_curr_hash;
-                /* Каскадно пересчитываем все последующие алерты до верхушки */
-                uint64_t running_prev = remote_curr_hash;
-                for (int k = dup_idx + 1; k < rec->count; k++) {
-                    rec->alerts[k].prev_hash = running_prev;
-                    rec->alerts[k].curr_hash = alert_chain_compute_link(
-                        rec->alerts[k].id, rec->alerts[k].prev_hash, rec->alerts[k].content_hash);
-                    running_prev = rec->alerts[k].curr_hash;
-                }
-                rec->last_hash = running_prev;
-                if (use_disk_db) {
-                    alert_db_sync(rec);
-                }
-                log_event("INFO", client_fd, client_ip, client_port,
-                          "CHAIN HEALED: Realigned divergent hashes for ID %" PRIu64 " up to tip 0x%" PRIx64, 
-                          final_id, rec->last_hash);
-            }
-        }
+        /* Алерт уже есть в базе — это штатный дубликат из gossip-сети */
         return -4; 
     }
 
@@ -485,8 +463,14 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     /* 6. PERSISTENCE */
     if (use_disk_db) {
-        if (alert_db_save_alert(rec, alert) != 0) {
-            log_event("ERROR", client_fd, client_ip, client_port, "Persistence failed");
+        if (is_backfill) {
+            /* При вставке в середину вся последующая цепочка была пересчитана в памяти,
+             * поэтому атомарно синхронизируем весь recipient на диск */
+            alert_db_sync(rec);
+        } else {
+            if (alert_db_save_alert(rec, alert) != 0) {
+                log_event("ERROR", client_fd, client_ip, client_port, "Persistence failed");
+            }
         }
     } else {
         alert->is_mmaped = false;

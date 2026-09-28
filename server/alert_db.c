@@ -5,6 +5,7 @@
 */
 
 #include "alert_db.h"
+#include "alert_chaining.h"
 #include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -273,14 +274,16 @@ int alert_db_load_recipients(void) {
                 offset += (88 + payload);
             }
 
-            /* Сортировка массива по ID (возрастание) для корректной работы бинарного поиска
-             * и корректное определение хвоста цепи (last_hash).
-             * Хеш-цепь НЕ пересчитываем — оставляем как есть с диска,
-             * чтобы не создавать расхождений с другими нодами кластера. */
+            /* Сортируем массив строго по возрастанию ID и ВСЕГДА
+             * детерминированно пересчитываем цепочку хешей от нулевого элемента.
+             * Это гарантирует, что одинаковый набор алертов на ЛЮБОЙ ноде
+             * даст абсолютно одинаковые хеши, исправляя любые исторические расхождения на диске. */
             if (rec->count > 0) {
                 qsort(rec->alerts, rec->count, sizeof(Alert), cmp_alert_id_asc);
-                /* Хэши с диска не трогаем! Берем актуальный хэш хвоста прямо из сохраненных данных */
-                rec->last_hash = rec->alerts[rec->count - 1].curr_hash;
+                alert_chain_recompute_all(rec);
+                if (use_disk_db) {
+                    alert_db_sync(rec);
+                }
             } else {
                 rec->last_hash = 0;
             }
@@ -419,8 +422,11 @@ int alert_db_sync(Recipient *rec) {
     if (rec->count == 0) {
         if (rec->mmap_ptr) munmap(rec->mmap_ptr, rec->mmap_size);
         if (rec->fd >= 0) close(rec->fd);
-        unlink(filename); unlink(tmp);
+        rec->fd = -1;
+        rec->mmap_ptr = NULL;
+        rec->mmap_size = 0;
         rec->used_size = 0;
+        unlink(filename); unlink(tmp);
         free(hash_b64);
         return 1;
     }

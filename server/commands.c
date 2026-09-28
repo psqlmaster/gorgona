@@ -146,6 +146,20 @@ static void process_chain_sample(int i, char *buffer) {
             memcpy(last_range_hashes[range_idx], raw_hash, PUBKEY_HASH_LEN);
             last_range_sync[range_idx] = now;
             range_idx = (range_idx + 1) % 64;
+            /* Обрезаем локальную рассинхронизированную ветку после предка (как git reset --hard ancestor_id).
+             * Это освобождает место, чтобы входящие алерты не отбрасывались проверкой dup_idx! */
+            int anc_idx = find_alert_index_by_id(rec, ancestor_id);
+            if (anc_idx != -1 && anc_idx < rec->count - 1) {
+                for (int j = anc_idx + 1; j < rec->count; j++) {
+                    free_alert(&rec->alerts[j]);
+                }
+                rec->count = anc_idx + 1;
+                rec->last_hash = rec->alerts[anc_idx].curr_hash;
+                if (use_disk_db) {
+                    alert_db_sync(rec);
+                }
+            }
+            /* ================================================= */
             char req[512];
             int req_len = snprintf(req, sizeof(req), "SYNC_RANGE|%s|%" PRIu64, hash_b64, ancestor_id);
             enqueue_message(i, req, (size_t)req_len);
@@ -190,11 +204,26 @@ static void process_chain_sample(int i, char *buffer) {
                 memcpy(last_full_hashes[full_sync_idx], raw_hash, PUBKEY_HASH_LEN);
                 last_full_sync[full_sync_idx] = now;
                 full_sync_idx = (full_sync_idx + 1) % 64;
+                /* === СБРОС РАССИНХРОНИЗИРОВАННОЙ ЦЕПОЧКИ === 
+                 * Так как расхождение превысило окно max_alerts, наша локальная
+                 * ветка необратимо повреждена. Очищаем её перед скачиванием эталона,
+                 * чтобы входящие алерты от донора не отбрасывались как дубликаты! */
+                if (rec) {
+                    for (int j = 0; j < rec->count; j++) {
+                        free_alert(&rec->alerts[j]);
+                    }
+                    rec->count = 0;
+                    rec->last_hash = 0;
+                    rec->waste_count = 0;
+                    if (use_disk_db) {
+                        alert_db_sync(rec);
+                    }
+                }
                 char req[512];
                 int req_len = snprintf(req, sizeof(req), "SYNC_REC|%s", hash_b64);
                 enqueue_message(i, req, (size_t)req_len);
                 log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                          "Chain Sync: Divergence exceeds window for %s. Falling back to Full Sync (cooldown 45s).", hash_b64);
+                          "Chain Sync: Divergence exceeds window for %s. Resetting local chain and requesting Full Sync.", hash_b64);
             }
         }
     }
@@ -729,48 +758,25 @@ static void process_repl(int i, char *buffer) {
                             }
                             free(plain_payload);
                         }
-                        /* --- конец EVENT-SOURCING TOMBSTONE --- */
-                        if (a->prev_hash != remote_prev_hash) {
-                            /* Защита от шторма: не слать GET_CHAIN_SAMPLE на каждый алерт из пачки */
-                            static time_t last_gap_req[64] = {0};
-                            static unsigned char last_gap_hashes[64][PUBKEY_HASH_LEN];
-                            static int gap_req_idx = 0;
-                            time_t now_gap = time(NULL);
-                            bool allow_sample = true;
-
-                            for (int k = 0; k < 64; k++) {
-                                if (memcmp(last_gap_hashes[k], ph, PUBKEY_HASH_LEN) == 0) {
-                                    if (now_gap - last_gap_req[k] < 5) {
-                                        allow_sample = false;
-                                    }
-                                    break;
-                                }
-                            }
-
-                            if (allow_sample) {
-                                memcpy(last_gap_hashes[gap_req_idx], ph, PUBKEY_HASH_LEN);
-                                last_gap_req[gap_req_idx] = now_gap;
-                                gap_req_idx = (gap_req_idx + 1) % 64;
-
-                                if (verbose) {
-                                    log_event("WARN", sub->sock, sub->ip_address, sub->port, 
-                                              "Chain Gap Detected! ID %" PRIu64 " expects PrevHash %" PRIu64 ", local is %" PRIu64 ". Healing...",
-                                              original_id, remote_prev_hash, a->prev_hash);
-                                }
-                                char req[512];
-                                snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|50", hash_b64);
-                                enqueue_message(i, req, strlen(req));
-                            }
-                        }
-
 
                         if (res >= 0 && incoming_active) {
+                            /*    Оповещаем локальных подписчиков (клиентов gorgona listen),
+                             *    так как алерт успешно валидирован и добавлен в память */
                             notify_subscribers(ph, a);
                             time_t now = time(NULL);
+                            /*    Защита от репликационного шторма (Gossip Freshness Gate):
+                             *    Реплицируем дальше по P2P-сети ТОЛЬКО живые события, созданные
+                             *    не более 120 секунд назад. Исторические алерты, приходящие 
+                             *    пачками при начальной синхронизации ноды, имеют старый c_at 
+                             *    и дальше бродкаститься не будут. */
                             bool is_fresh = (abs((int)(now - c_at)) < 120);
-                            bool is_append = (res == rec->count - 1);
-                            
-                            if (is_append && is_fresh) {
+                            /*    я убрал проверку "bool is_append = (res == rec->count - 1)".
+                             *    Причина: если в одну секунду приходит пачка из 2-3 алертов,
+                             *    из-за миллисекундных таймстемпов Snowflake более ранний алерт 
+                             *    может встать на позицию (count - 2) или (count - 3) в отсортированном 
+                             *    массиве (backfill). Он обязан быть отреплицирован соседям, 
+                             *    так как является абсолютно свежим (is_fresh == true). */
+                            if (is_fresh) {
                                 broadcast_replication(ph, a, sub->sock);
                             }
                         }
