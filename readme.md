@@ -134,7 +134,7 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 
 #### Quick Start Gorgona Stheno 
 
-[![docs/gorgona_stheno.png](docs/gorgona_stheno.png)](https://46.138.247.148:8000/)
+[![docs/gorgona_stheno.png](docs/gorgona_stheno.png)](https://xn--b1aqlh3dm.xn--p1ai:8000)
 
 > **Note:** Use the following credentials for demo access:
 > - **Username:** `demo`
