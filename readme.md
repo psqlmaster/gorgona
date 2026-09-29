@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="gorgona.jpg" alt="Gorgona" width="100%">
+  <a href="https://xn--b1aqlh3dm.xn--p1ai:8000" target="_blank" rel="noopener noreferrer">
+    <img src="gorgona.jpg" alt="Gorgona" width="100%">
+  </a>
 </p>
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/psqlmaster/gorgona?style=flat-square&color=blue)](https://github.com/psqlmaster/gorgona/releases)
