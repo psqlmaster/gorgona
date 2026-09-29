@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://xn--b1aqlh3dm.xn--p1ai:8000" target="_blank" rel="noopener noreferrer">
+  <a href="http://gorgonad.mooo.com" target="_blank" rel="noopener noreferrer">
     <img src="gorgona.jpg" alt="Gorgona" width="100%">
   </a>
 </p>
@@ -136,7 +136,7 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 
 #### Quick Start Gorgona Stheno 
 
-[![docs/gorgona_stheno.png](docs/gorgona_stheno.png)](https://xn--b1aqlh3dm.xn--p1ai:8000)
+[![docs/gorgona_stheno.png](docs/gorgona_stheno.png)](http://gorgonad.mooo.com)
 
 > **Note:** Use the following credentials for demo access:
 > - **Username:** `demo`
