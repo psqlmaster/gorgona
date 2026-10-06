@@ -26,5 +26,6 @@ uint64_t generate_snowflake_id(void);
  * Note: Implementation should be in snowflake.c
  */
 time_t snowflake_to_timestamp(uint64_t id);
+time_t get_cluster_logical_time(void);
 
 #endif

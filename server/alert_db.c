@@ -6,6 +6,8 @@
 
 #include "alert_db.h"
 #include "alert_chaining.h"
+#include "gorgona_utils.h"
+#include "snowflake.h"
 #include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +23,8 @@
 extern int verbose;
 extern int max_alerts;
 extern uint64_t global_max_alert_id; 
+extern int vacuum_threshold; 
+extern int max_alert_ttl;
 
 static int cmp_alert_id_asc(const void *a, const void *b) {
     uint64_t id_a = ((const Alert *)a)->id;
@@ -273,7 +277,26 @@ int alert_db_load_recipients(void) {
                 rec->count++; 
                 offset += (88 + payload);
             }
-
+            /* --- HEALING LEGACY ALERTS --- */
+//            time_t now = time(NULL);
+            time_t logical_now = get_cluster_logical_time();
+            int healed_count = 0;
+            for (int i = 0; i < rec->count; i++) {
+                Alert *a = &rec->alerts[i];
+                if (a->expire_at == 0) {
+                    time_t reasonable_expire = a->create_at + max_alert_ttl;
+                    if (reasonable_expire < logical_now + 3600) {
+                        reasonable_expire = logical_now + 3600;
+                    }
+                    a->expire_at = reasonable_expire;
+                    healed_count++;
+                }
+            }
+            if (healed_count > 0) {
+                log_event("INFO", -1, NULL, 0,
+                          "[HEAL] Recipient %s: healed %d legacy eternal alerts (expire_at was 0)",
+                          b64, healed_count);
+            }
             /* Сортируем массив строго по возрастанию ID и ВСЕГДА
              * детерминированно пересчитываем цепочку хешей от нулевого элемента.
              * Это гарантирует, что одинаковый набор алертов на ЛЮБОЙ ноде
@@ -288,13 +311,12 @@ int alert_db_load_recipients(void) {
                 rec->last_hash = 0;
             }
 
-            time_t now = time(NULL);
             rec->waste_count = 0;
             for (int i = 0; i < rec->count; i++) {
                 if (!rec->alerts[i].active) {
                     rec->waste_count++;
                 } else if (rec->alerts[i].expire_at != 0 && 
-                           rec->alerts[i].expire_at <= now) {
+                           rec->alerts[i].expire_at <= logical_now) {
                     rec->waste_count++;
                 }
             }
@@ -340,35 +362,37 @@ int alert_db_sync(Recipient *rec) {
     char filename[512], tmp[512];
     char *hash_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
     if (!hash_b64) return -1;
-
     snprintf(filename, sizeof(filename), "%s/alerts/%s.alerts", gorgona_data_dir, hash_b64);
     snprintf(tmp, sizeof(tmp), "%s/alerts/%s.alerts.tmp", gorgona_data_dir, hash_b64);
-
-    time_t now = time(NULL);
+//    time_t now = time(NULL);
+    time_t logical_now = get_cluster_logical_time();
     int t_fd = open(tmp, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (t_fd < 0) {
         free(hash_b64);
         return -1;
     }
-
     size_t packed_size = 0;
     int j = 0;
-
     /* Filter expired records; keep deactivated ones to preserve chain continuity */
     for (int i = 0; i < rec->count; i++) {
         Alert *a = &rec->alerts[i];
-
-        /* Physical removal criteria: expiry time reached */
-        if (a->expire_at <= now && a->expire_at != 0) {
+        /* 
+         * Критерии физического удаления:
+         * Алерт истек по времени (expire_at != 0 && <= now)
+         * ИЛИ это старый tombstone (active == 0 и старше max_alert_ttl)
+         * Это предотвращает бесконечное раздувание файла отозванными алертами,
+         * сохраняя при этом недавние tombstones для целостности P2P-цепи.
+         */
+        bool is_time_expired = (a->expire_at != 0 && a->expire_at <= logical_now);
+        bool is_old_tombstone = (!a->active && (logical_now - a->create_at > max_alert_ttl));
+        if (is_time_expired || is_old_tombstone) {
             if (!a->is_mmaped) {
                 free(a->text); free(a->encrypted_key); free(a->iv);
             }
-            continue; 
+            continue; /*Пропускаем запись, она не попадет в новый файл */
         }
-
         /* Shift valid records in memory array */
         if (i != j) rec->alerts[j] = rec->alerts[i];
-        
         uint64_t v64;
         /* Write 88-byte fixed header */
         v64 = a->id; write(t_fd, &v64, 8);
@@ -379,25 +403,20 @@ int alert_db_sync(Recipient *rec) {
         v64 = (uint64_t)a->text_len;   write(t_fd, &v64, 8);
         v64 = (uint64_t)a->encrypted_key_len; write(t_fd, &v64, 8);
         v64 = (uint64_t)a->iv_len;     write(t_fd, &v64, 8);
-        
         /* Persistent hash chain links */
         v64 = a->content_hash; write(t_fd, &v64, 8);
         v64 = a->prev_hash;    write(t_fd, &v64, 8);
         v64 = a->curr_hash;    write(t_fd, &v64, 8);
-
         /* Write variable payload */
         write(t_fd, a->text, a->text_len);
         write(t_fd, a->encrypted_key, a->encrypted_key_len);
         write(t_fd, a->iv, a->iv_len);
         write(t_fd, a->tag, 16);
-        
         uint32_t del = ALERT_RECORD_DELIMITER; 
         write(t_fd, &del, 4);
-
         packed_size += (88 + a->text_len + a->encrypted_key_len + a->iv_len + 16 + 4);
         j++;
     }
-
     rec->count = j;
     /* Хэш-цепь не обнуляем — пересчитываем только связи при удалении протухших, 
      * либо просто берем хвост сохраненной цепи */
@@ -417,7 +436,6 @@ int alert_db_sync(Recipient *rec) {
     }
     fsync(t_fd);
     close(t_fd);
-
     /* Handle empty recipient storage */
     if (rec->count == 0) {
         if (rec->mmap_ptr) munmap(rec->mmap_ptr, rec->mmap_size);
@@ -430,7 +448,6 @@ int alert_db_sync(Recipient *rec) {
         free(hash_b64);
         return 1;
     }
-
     /* Atomic swap of the database file */
     if (rec->mmap_ptr) munmap(rec->mmap_ptr, rec->mmap_size);
     if (rec->fd >= 0) close(rec->fd);
@@ -438,7 +455,6 @@ int alert_db_sync(Recipient *rec) {
         free(hash_b64);
         return -1;
     }
-
     /* Re-establish memory mapping */
     rec->fd = open(filename, O_RDWR, 0600);
     if (rec->fd < 0) {
@@ -446,33 +462,175 @@ int alert_db_sync(Recipient *rec) {
         return -1;
     }
     ftruncate(rec->fd, packed_size);
-    
     rec->used_size = packed_size;
     rec->mmap_size = packed_size; 
     rec->mmap_ptr = mmap(NULL, rec->mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, rec->fd, 0);
-    
     if (rec->mmap_ptr == MAP_FAILED) {
         rec->mmap_ptr = NULL;
         free(hash_b64);
         return -1;
     }
-    
     /* Relink memory structures to the new mmap region */
     unsigned char *base = (unsigned char *)rec->mmap_ptr;
     size_t off = 0; 
     for (int i = 0; i < rec->count; i++) {
         Alert *a = &rec->alerts[i];
         unsigned char *p = base + off;
-        
         a->active_ptr = (uint64_t *)(p + 32); 
         a->text = p + 88;
         a->encrypted_key = a->text + a->text_len;
         a->iv = a->encrypted_key + a->encrypted_key_len;
         a->is_mmaped = true;
-        
         off += (88 + a->text_len + a->encrypted_key_len + a->iv_len + 16 + 4);
     }
-    
     free(hash_b64);
     return 0; 
+}
+
+/**
+ * Smart background vacuum.
+ * Checks if the amount of physically expired records justifies a file rewrite.
+ * Prevents disk thrashing by using size and percentage thresholds.
+ * Additionally forces vacuum for large files with high waste_count
+ * (even if some tombstones are still young) to prevent multi-hundred-MB bloat.
+ */
+void alert_db_background_vacuum(void) {
+//    time_t now = time(NULL);
+    time_t logical_now = get_cluster_logical_time();
+    log_event("DEBUG", -1, NULL, 0,
+              "[VACUUM] Background check started: recipients=%d, threshold=%d%%, now=%ld",
+              recipient_count, vacuum_threshold, (long)logical_now);
+
+    for (int r = 0; r < recipient_count; r++) {
+        Recipient *rec = &recipients[r];
+        log_event("DEBUG", -1, NULL, 0,
+                  "[VACUUM] Recipient[%d]: fd=%d, count=%d, used_size=%zu bytes (%.2f MB), waste_count=%d",
+                  r, rec->fd, rec->count, rec->used_size,
+                  rec->used_size / (1024.0 * 1024.0), rec->waste_count);
+
+        /* Skip closed, empty or small files */
+        if (rec->fd < 0) {
+            log_event("DEBUG", -1, NULL, 0, "[VACUUM] Recipient[%d]: SKIP - fd < 0", r);
+            continue;
+        }
+        if (rec->count == 0) {
+            log_event("DEBUG", -1, NULL, 0, "[VACUUM] Recipient[%d]: SKIP - count == 0", r);
+            continue;
+        }
+        if (rec->used_size < 5 * 1024 * 1024) {
+            log_event("DEBUG", -1, NULL, 0,
+                      "[VACUUM] Recipient[%d]: SKIP - used_size < 5MB (%.2f MB)",
+                      r, rec->used_size / (1024.0 * 1024.0));
+            continue;
+        }
+
+        /* Calculate reclaimable space.
+         * Tombstones younger than max_alert_ttl are intentionally kept
+         * for P2P hash-chain integrity. */
+        size_t reclaimable_size = 0;
+        int expired_count = 0;
+        int total_with_expire = 0;
+        int reclaimable_count = 0;
+
+        for (int i = 0; i < rec->count; i++) {
+            size_t rec_size = 88 + rec->alerts[i].text_len +
+                              rec->alerts[i].encrypted_key_len +
+                              rec->alerts[i].iv_len + GCM_TAG_LEN + 4;
+
+            if (rec->alerts[i].expire_at != 0)
+                total_with_expire++;
+
+            bool is_time_expired = (rec->alerts[i].expire_at != 0 &&
+                                    rec->alerts[i].expire_at <= logical_now);
+            bool is_old_tombstone = (!rec->alerts[i].active &&
+                                     (logical_now - rec->alerts[i].create_at > max_alert_ttl));
+
+            if (is_time_expired)
+                expired_count++;
+
+            if (is_time_expired || is_old_tombstone) {
+                reclaimable_size += rec_size;
+                reclaimable_count++;
+            }
+        }
+
+        log_event("DEBUG", -1, NULL, 0,
+                  "[VACUUM] Recipient[%d]: expired=%d/%d (with expire_at), "
+                  "reclaimable=%d alerts / %zu bytes (%.2f MB)",
+                  r, expired_count, total_with_expire,
+                  reclaimable_count, reclaimable_size,
+                  reclaimable_size / (1024.0 * 1024.0));
+
+        /* --- Decision logic --- */
+        int waste_percent_by_size = 0;
+        if (reclaimable_size > 0 && rec->used_size > 0)
+            waste_percent_by_size = (int)((reclaimable_size * 100ULL) / rec->used_size);
+
+        int waste_percent_by_count = 0;
+        if (rec->count > 0)
+            waste_percent_by_count = (int)((rec->waste_count * 100) / rec->count);
+
+        bool should_vacuum = false;
+        const char *trigger_reason = NULL;
+
+        /* Classic path: enough physically reclaimable bytes */
+        if (waste_percent_by_size >= vacuum_threshold) {
+            should_vacuum = true;
+            trigger_reason = "reclaimable_size";
+        }
+        /* Aggressive path for large files: high waste_count even if
+           some tombstones are still young. Prevents 100+ MB bloat. */
+        else if (rec->used_size > 20 * 1024 * 1024 &&
+                 waste_percent_by_count >= vacuum_threshold) {
+            should_vacuum = true;
+            trigger_reason = "waste_count (force)";
+        }
+
+        if (should_vacuum) {
+            if (strcmp(trigger_reason, "waste_count (force)") == 0) {
+                log_event("INFO", -1, NULL, 0,
+                          "[VACUUM] TRIGGERED for Recipient[%d] via waste_count (force): "
+                          "count_waste=%d%% (threshold=%d%%), used=%.2f MB, "
+                          "waste_count=%d/%d (reclaimable_now=%.2f MB, will free what is eligible)",
+                          r, waste_percent_by_count, vacuum_threshold,
+                          rec->used_size / (1024.0 * 1024.0),
+                          rec->waste_count, rec->count,
+                          reclaimable_size / (1024.0 * 1024.0));
+            } else {
+                log_event("INFO", -1, NULL, 0,
+                          "[VACUUM] TRIGGERED for Recipient[%d] via reclaimable_size: "
+                          "size_waste=%d%% (threshold=%d%%), reclaimable=%.2f MB, "
+                          "used=%.2f MB, expired=%d",
+                          r, waste_percent_by_size, vacuum_threshold,
+                          reclaimable_size / (1024.0 * 1024.0),
+                          rec->used_size / (1024.0 * 1024.0),
+                          expired_count);
+            }
+            int sync_result = alert_db_sync(rec);
+            if (sync_result == 0) {
+                log_event("INFO", -1, NULL, 0,
+                          "[VACUUM] Successfully completed for Recipient[%d]", r);
+            } else if (sync_result == 1) {
+                log_event("INFO", -1, NULL, 0,
+                          "[VACUUM] File deleted (empty recipient) for Recipient[%d]", r);
+            } else {
+                log_event("ERROR", -1, NULL, 0,
+                          "[VACUUM] FAILED for Recipient[%d]", r);
+            }
+        } else {
+            if (reclaimable_size == 0) {
+                log_event("DEBUG", -1, NULL, 0,
+                          "[VACUUM] Recipient[%d]: SKIP - no reclaimable space "
+                          "(reclaimable=0, used_size=%zu, waste_count=%d)",
+                          r, rec->used_size, rec->waste_count);
+            } else {
+                log_event("DEBUG", -1, NULL, 0,
+                          "[VACUUM] Recipient[%d]: SKIP - size_waste=%d%% count_waste=%d%% "
+                          "< threshold %d%%",
+                          r, waste_percent_by_size, waste_percent_by_count, vacuum_threshold);
+            }
+        }
+    }
+
+    log_event("DEBUG", -1, NULL, 0, "[VACUUM] Background check completed");
 }

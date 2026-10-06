@@ -11,6 +11,7 @@
 #include "client_history.h"
 #include "admin_mesh.h"
 #include "peer_manager.h"
+#include "file_sync.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -476,6 +477,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         }
          return; 
     }   
+
     /* -------------------------------------------------------------------------
      * 2. PROTOCOL FILTERING: P2P NOISE REDUCTION
      * -------------------------------------------------------------------------
@@ -612,11 +614,11 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         free(copy);
         return;
     }
+
     /* -------------------------------------------------------------------------
-    * 9. DECRYPTION & EXECUTION
-    * -------------------------------------------------------------------------
-    * If we reach here, the alert is unlocked and valid.
-    */
+     * 9. DECRYPTION & EXECUTION
+     * -------------------------------------------------------------------------
+     */
     size_t e_len, k_len, i_len, t_len;
     unsigned char *e_raw = base64_decode(encrypted_text, &e_len);
     unsigned char *k_raw = base64_decode(encrypted_key, &k_len);
@@ -626,6 +628,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         log_event("ERROR", -1, NULL, 0, "Base64 decoding failed for alert ID %" PRIu64, id);
         goto decryption_cleanup;
     }
+
     /* --- ПЕРЕХВАТ СОБЫТИЙ-МОГИЛЬЩИКОВ (EVENT-SOURCING TOMBSTONE) --- */
     if (e_len >= 10 && memcmp(e_raw, "TOMBSTONE|", 10) == 0) {
         char *t_str = malloc(e_len - 10 + 1);
@@ -643,28 +646,50 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
             }
             free(t_str);
         }
-        /* Успешно обработано, выходим без попытки RSA-расшифровки */
         goto decryption_cleanup;
     }
-    /* --------------------------------------------------------------- */
+
     char priv_path[256];
     snprintf(priv_path, sizeof(priv_path), "/etc/gorgona/%s.key", pubkey_hash_b64);
-    char *plaintext = NULL;
-    int status = decrypt_message(e_raw, e_len, k_raw, k_len, i_raw, i_len, t_raw, 
-                                 &plaintext, priv_path, verbose);
+
+    /* ВАЖНО: uint8_t*, а не char* */
+    uint8_t *plaintext = NULL;
+    size_t plain_len = 0;
+
+    int status = decrypt_message_bin(e_raw, e_len,
+                                     k_raw, k_len,
+                                     i_raw, i_len,
+                                     t_raw, t_len,
+                                     &plaintext, &plain_len,
+                                     priv_path, verbose);
+
     if (status == 0 && plaintext) {
+        /* ===== ФАЙЛОВАЯ СИНХРОНИЗАЦИЯ ===== */
+        if (file_sync_is_file_payload(plaintext, plain_len)) {
+            file_sync_handle_incoming(pubkey_hash_b64, plaintext, plain_len, verbose);
+            free(plaintext);
+            goto decryption_cleanup;
+        }
+
+        /* Дальше работаем как с текстом.
+           Добавляем нуль-терминатор на всякий случай (decrypt_message_bin его не ставит). */
+        uint8_t *tmp = realloc(plaintext, plain_len + 1);
+        if (tmp) {
+            plaintext = tmp;
+            plaintext[plain_len] = '\0';
+        }
+
+        char *text = (char *)plaintext;   /* удобный алиас */
+
         if (!execute) {
-            printf("Decrypted Content:\n%s\n", plaintext);
+            printf("Decrypted Content:\n%s\n", text);
         } else {
             client_history_record(id);
-            /* Command Execution Logic */
+
             char *final_cmd = NULL;
             if (config->exec_count == 0) {
-                /* No ACLs defined: run raw message as command (no time_limit available) */
-                final_cmd = strdup(plaintext);
+                final_cmd = strdup(text);
             } else {
-                /* ACL Check: match message to allowed scripts */
-                /* check whether a personal section has been defined in the configuration for this key */
                 bool has_specific_acl = false;
                 if (pubkey_hash_b64) {
                     for (int j = 0; j < config->exec_count; j++) {
@@ -675,47 +700,47 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                         }
                     }
                 }
-                /* check whether the message matches any of the allowed commands */
+
                 for (int j = 0; j < config->exec_count; j++) {
                     ExecCommand *ec = &config->exec_commands[j];
-                    /* ISOLATION: If the key has its own section -> block any global commands */
-                    if (has_specific_acl && ec->required_key[0] == '\0') {
+
+                    if (has_specific_acl && ec->required_key[0] == '\0')
                         continue;
-                    }
-                    /* SECURITY: Ignore any unfamiliar, specific commands */
+
                     if (ec->required_key[0] != '\0') {
-                        if (pubkey_hash_b64 == NULL || strcmp(ec->required_key, pubkey_hash_b64) != 0) {
+                        if (pubkey_hash_b64 == NULL ||
+                            strcmp(ec->required_key, pubkey_hash_b64) != 0)
                             continue;
-                        }
                     }
+
                     size_t k_match_len = strlen(ec->key);
-                    if (strncmp(plaintext, ec->key, k_match_len) == 0) {
-                        /* Check for boundary match: exact string or followed by space */
-                        if (plaintext[k_match_len] == '\0' || isspace((unsigned char)plaintext[k_match_len])) {
-                            const char *args = plaintext + k_match_len;
+                    if (strncmp(text, ec->key, k_match_len) == 0) {
+                        if (text[k_match_len] == '\0' ||
+                            isspace((unsigned char)text[k_match_len])) {
+
+                            const char *args = text + k_match_len;
                             while (isspace((unsigned char)*args)) args++;
-                            /* Generate sanitized command with arguments */
+
                             char *raw_cmd = sanitize_and_concat(ec->value, args);
                             if (raw_cmd) {
-                                /* Apply time_limit if set (> 0) using the 'timeout' utility.
-                                 * This prevents the client from hanging if the script freezes. */
                                 if (ec->time_limit > 0) {
                                     size_t len = strlen(raw_cmd) + 64;
                                     final_cmd = malloc(len);
-                                    if (final_cmd) {
-                                        snprintf(final_cmd, len, "timeout -s KILL %d %s", ec->time_limit, raw_cmd);
-                                    }
+                                    if (final_cmd)
+                                        snprintf(final_cmd, len,
+                                                 "timeout -s KILL %d %s",
+                                                 ec->time_limit, raw_cmd);
                                     free(raw_cmd);
                                 } else {
                                     final_cmd = raw_cmd;
                                 }
                             }
-                            break; /* Found a match, exit the loop */
+                            break;
                         }
                     }
                 }
             }
-            /* Execute the final command (either raw or wrapped in timeout) */
+
             if (final_cmd) {
                 if (daemon_exec_flag) {
                     log_event("INFO", -1, NULL, 0, "Execution: Launching daemon: %s", final_cmd);
@@ -724,26 +749,23 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
                     log_event("INFO", -1, NULL, 0, "Execution: Running: %s", final_cmd);
                     int res = system(final_cmd);
                     int exit_status = WEXITSTATUS(res);
-                    /* 
-                     * 124 - стандартный код timeout. 
-                     * 137 - если таймаут убил процесс через KILL (128 + SIGKILL).
-                     */
+
                     if (WIFEXITED(res) && (exit_status == 124 || exit_status == 137)) {
                         char feedback[512];
                         int limit = 0;
-                        /* Ищем, какой лимит времени был задан в конфиге для этой команды */
                         for (int j = 0; j < config->exec_count; j++) {
-                            if (strncmp(plaintext, config->exec_commands[j].key, strlen(config->exec_commands[j].key)) == 0) {
+                            if (strncmp(text, config->exec_commands[j].key,
+                                        strlen(config->exec_commands[j].key)) == 0) {
                                 limit = config->exec_commands[j].time_limit;
                                 break;
                             }
                         }
-                        snprintf(feedback, sizeof(feedback), "Error: execution timed out! Limit in config file for this command: %d seconds. Command aborted.", limit);
+                        snprintf(feedback, sizeof(feedback),
+                                 "Error: execution timed out! Limit in config file for this command: %d seconds. Command aborted.",
+                                 limit);
                         log_event("ERROR", -1, NULL, 0, "Alert ID %" PRIu64 ": %s", id, feedback);
-                        /* SENDING AN ENCRYPTED REPLY BACK TO THE SENDER */
                         internal_reply_error(sock, pubkey_hash_b64, feedback, verbose);
-                    } 
-                    else if (res != 0) {
+                    } else if (res != 0) {
                         log_event("WARN", -1, NULL, 0, "Execution: Process exited with code %d", exit_status);
                     }
                 }
@@ -756,6 +778,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     } else {
         log_event("ERROR", -1, NULL, 0, "RSA/AES Decryption failed for alert ID %" PRIu64, id);
     }
+
 decryption_cleanup:
     free(e_raw); free(k_raw); free(i_raw); free(t_raw);
     free(copy);
@@ -849,9 +872,9 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         /* Layer 2 initialization (GCM Encryption + PEX system) */
         mesh_init(config.sync_psk);
         mesh_force_save = true; /* We want the client to persist peers.cache for future use */
-        log_event("INFO", -1, NULL, 0, "Client: Smart Mesh Mode enabled (Layer 2 initialized)");
+        log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Client: Smart Mesh Mode enabled (Layer 2 initialized)");
     } else {
-        log_event("INFO", -1, NULL, 0, "Client: Legacy Mode enabled (Layer 2 disabled)");
+        log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Client: Legacy Mode enabled (Layer 2 disabled)");
     }
     
     /* Execution History (Idempotency) is initialized regardless of mode for safety */
@@ -921,7 +944,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
             }
 
-            log_event("INFO", -1, current_ip, ntohs(p_addr.sin_port), "Connection established");
+            log_event(MESH_LOG_LEVEL, -1, current_ip, ntohs(p_addr.sin_port), "Connection established");
 
             /* --- 2.2 LAYER 2 HANDSHAKE --- */
             if (l2_mesh_enabled) {
@@ -954,7 +977,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                         ssize_t read_bytes = recv(sock, a_buf, a_resp_len, MSG_WAITALL);
                         if (read_bytes > 0) {
                             a_buf[read_bytes] = '\0';
-                            log_event("INFO", -1, NULL, 0, "Mesh Status: %s", a_buf);
+                            log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Mesh Status: %s", a_buf);
 
                             /* Safety: check if the server explicitly rejected us */
                             if (strstr(a_buf, "Error:")) {
@@ -966,7 +989,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                     }
                 }
             } else {
-                log_event("INFO", -1, NULL, 0, "Mesh Status: Skipping L2 Handshake (Legacy Mode Active)");
+                log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Mesh Status: Skipping L2 Handshake (Legacy Mode Active)");
             }
 
             /* --- 2.3 STANDARD COMMAND (LISTEN/SUBSCRIBE) --- */

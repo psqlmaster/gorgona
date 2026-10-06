@@ -37,7 +37,8 @@ TEST_LDFLAGS   := $(LDFLAGS) $(shell $(PKG_CONFIG_ENV) pkg-config --libs check 2
 # --- Source File Definitions ---
 COMMON_SRC := $(ROOT_DIR)/common/encrypt.c \
               $(ROOT_DIR)/common/common.c \
-              $(ROOT_DIR)/common/admin_mesh.c
+              $(ROOT_DIR)/common/admin_mesh.c \
+              $(ROOT_DIR)/common/lz4.c
 
 CLIENT_SRC := $(ROOT_DIR)/client/gorgona.c \
               $(ROOT_DIR)/client/globals.c \
@@ -46,6 +47,7 @@ CLIENT_SRC := $(ROOT_DIR)/client/gorgona.c \
               $(ROOT_DIR)/client/config.c \
               $(ROOT_DIR)/client/client_history.c \
               $(ROOT_DIR)/client/peer_manager.c \
+              $(ROOT_DIR)/client/file_sync.c \
               $(COMMON_SRC)
 
 SERVER_SRC := $(ROOT_DIR)/server/gorgonad.c \
@@ -93,13 +95,13 @@ $(SERVER_BIN): $(SERVER_OBJ)
 	@ln -sf $@ ./gorgonad
 	@echo ">> Gorgonad Server $(SERVER_VER) built successfully for FreeBSD: $@"
 
-# Client object compilation
+# Client object files
 %.client.o: %.c
-	$(CC) $(CFLAGS) -DVERSION=\"$(CLIENT_VER)\" -c $< -o $@
+	$(CC) $(CFLAGS) -DVERSION=\"$(CLIENT_VER)\" -DGORGONA_CLIENT -c $< -o $@
 
-# Server object compilation
+# Server object files
 %.server.o: %.c
-	$(CC) $(CFLAGS) -DVERSION=\"$(SERVER_VER)\" -c $< -o $@
+	$(CC) $(CFLAGS) -DVERSION=\"$(SERVER_VER)\" -DGORGONA_SERVER -c $< -o $@
 
 # Test object compilation
 $(ROOT_DIR)/test/%.o: $(ROOT_DIR)/test/%.c

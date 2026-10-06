@@ -77,7 +77,7 @@ void mesh_init(const char *psk) {
     for (int i = 0; i < cluster_node_count; i++) {
         mesh_resolve_node(&cluster_nodes[i]);
     }
-    log_event("INFO", -1, NULL, 0, "Layer 2 Mesh: Init successful");
+    log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Layer 2 Mesh: Init successful");
 }
 
 void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac) {
@@ -128,7 +128,7 @@ void mesh_recalculate_scores() {
             l_score = exp(-n->metrics.last_rtt / 100.0);
         }
         /* SEED Status Bonus from the Config */
-        double seed_bonus = n->is_seed ? 0.2 : 0.0;
+        double seed_bonus = n->is_seed ? 0.7 : 0.0;
         n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY) + seed_bonus;
     }
     if (should_retry_dns) last_dns_retry = now;
@@ -138,19 +138,28 @@ void mesh_recalculate_scores() {
 }
 
 void mesh_update_speed(const char *ip, size_t bytes, double seconds) {
-    if (seconds < 0.000001) seconds = 0.000001;
+    (void)seconds;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
     for (int i = 0; i < cluster_node_count; i++) {
-        /* [FIX] Передаем указатель на узел &cluster_nodes[i] */
         if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             MeshMetrics *m = &cluster_nodes[i].metrics;
+            /* Инициализация окна при первом пакете */
+            if (m->window_start.tv_sec == 0 && m->window_start.tv_nsec == 0) {
+                m->window_start = now;
+            }
             m->window_bytes += bytes;
-            m->window_time += seconds;
-            if (m->window_bytes >= 262144 || m->window_time >= 0.5) {
-                double current_sample = (double)m->window_bytes / m->window_time;
+            /* Вычисляем реальное астрономическое время окна */
+            double elapsed = (double)(now.tv_sec - m->window_start.tv_sec) +
+                             (double)(now.tv_nsec - m->window_start.tv_nsec) / 1e9;
+            /* Фиксируем срез строго по истечении временного интервала (например, 0.5 сек) */
+            if (elapsed >= 0.5) {
+                double current_sample = (double)m->window_bytes / elapsed;
+                /* Экспоненциальное сглаживание EWMA */
                 m->rolling_avg_speed = (m->rolling_avg_speed < 1.0) ? 
                                         current_sample : (m->rolling_avg_speed * 0.7) + (current_sample * 0.3);
                 m->window_bytes = 0;
-                m->window_time = 0;
+                m->window_start = now;
             }
             cluster_nodes[i].last_seen = time(NULL);
             m->last_success = time(NULL);
@@ -205,7 +214,7 @@ void mesh_run_garbage_collector() {
             evict = true;
         }
         if (evict) {
-            log_event("DEBUG", -1, n->addr, n->port, "Layer 2 GC: Removing %s node from memory", 
+            log_event(MESH_LOG_LEVEL, -1, n->addr, n->port, "Layer 2 GC: Removing %s node from memory", 
                       n->is_cached ? "stale CACHED" : "unresponsive PEX");
             if (i < cluster_node_count - 1) 
                 memcpy(&cluster_nodes[i], &cluster_nodes[cluster_node_count - 1], sizeof(MeshNode));
@@ -322,7 +331,7 @@ void mesh_discover_nodes(const char *payload, const char *sender_ip) {
             n->discovered_at = time(NULL);
             n->last_seen = time(NULL);
             n->status = PEER_STATUS_OFFLINE;
-            log_event("INFO", -1, n->addr, n->port, "L2 Mesh: New neighbor discovered");
+            log_event(MESH_LOG_LEVEL, -1, n->addr, n->port, "L2 Mesh: New neighbor discovered");
         }
         token = strtok(NULL, "|");
     }
@@ -467,7 +476,7 @@ void mesh_save_peers_cache() {
 
     fclose(fp);
     if (verbose) {
-        log_event("INFO", -1, NULL, 0, "Mesh: Cache file updated (%d nodes saved)", saved);
+        log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Mesh: Cache file updated (%d nodes saved)", saved);
     }
 }
 

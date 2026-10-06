@@ -23,25 +23,39 @@ int    chain_sync_owner_fd   = -1;   /* fd пира, с которым сейч�
                                             //
 /* When an authorization packet (AUTH or AUTH_SUCCESS) arrives, we need to find the best entry in the table for that IP address */
 MeshNode* mesh_find_and_merge(const char *ip) {
+    int best_idx = -1;
     int seed_idx = -1;
-    int pex_idx = -1;
     for (int i = 0; i < cluster_node_count; i++) {
-        if (mesh_addr_compare(&cluster_nodes[i], ip)) {
-            if (cluster_nodes[i].is_seed) seed_idx = i;
-            else pex_idx = i;
+        if (!mesh_addr_compare(&cluster_nodes[i], ip))
+            continue;
+        if (cluster_nodes[i].is_seed) {
+            if (seed_idx == -1)
+                seed_idx = i;
+            else {
+                /* Второй SEED с тем же IP > убиваем дубль */
+                cluster_nodes[i].status = PEER_STATUS_BANNED;
+                cluster_nodes[i].metrics.gorgona_score = -1.0;
+            }
+        } else {
+            if (best_idx == -1)
+                best_idx = i;
+            else {
+                /* Лишний PEX/CACHE > тоже баним */
+                cluster_nodes[i].status = PEER_STATUS_BANNED;
+                cluster_nodes[i].metrics.gorgona_score = -1.0;
+            }
         }
     }
-    /* If you find a SEED, that's the priority */
     if (seed_idx != -1) {
-        /* If there was a temporary PEX entry, we mark it for deletion (via GC)
-           or simply deactivate it so it doesn't interfere with the status */
-        if (pex_idx != -1) {
-            cluster_nodes[pex_idx].status = PEER_STATUS_BANNED;
-            cluster_nodes[pex_idx].metrics.gorgona_score = -1.0;
+        /* Если был PEX рядом с SEED > баним PEX */
+        if (best_idx != -1) {
+            cluster_nodes[best_idx].status = PEER_STATUS_BANNED;
+            cluster_nodes[best_idx].metrics.gorgona_score = -1.0;
         }
         return &cluster_nodes[seed_idx];
     }
-    if (pex_idx != -1) return &cluster_nodes[pex_idx];
+    if (best_idx != -1)
+        return &cluster_nodes[best_idx];
     return NULL;
 }
 
@@ -146,26 +160,15 @@ static void process_chain_sample(int i, char *buffer) {
             memcpy(last_range_hashes[range_idx], raw_hash, PUBKEY_HASH_LEN);
             last_range_sync[range_idx] = now;
             range_idx = (range_idx + 1) % 64;
-            /* Обрезаем локальную рассинхронизированную ветку после предка (как git reset --hard ancestor_id).
-             * Это освобождает место, чтобы входящие алерты не отбрасывались проверкой dup_idx! */
-            int anc_idx = find_alert_index_by_id(rec, ancestor_id);
-            if (anc_idx != -1 && anc_idx < rec->count - 1) {
-                for (int j = anc_idx + 1; j < rec->count; j++) {
-                    free_alert(&rec->alerts[j]);
-                }
-                rec->count = anc_idx + 1;
-                rec->last_hash = rec->alerts[anc_idx].curr_hash;
-                if (use_disk_db) {
-                    alert_db_sync(rec);
-                }
-            }
-            /* ================================================= */
+            /* просим Range Sync. Дедупликация по ID
+              (return -4 в add_alert) и backfill-логика сами разберутся.  */
             char req[512];
             int req_len = snprintf(req, sizeof(req), "SYNC_RANGE|%s|%" PRIu64, hash_b64, ancestor_id);
             enqueue_message(i, req, (size_t)req_len);
             if (verbose) {
-                log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                          "Chain Sync: Ancestor found at ID %" PRIu64 " for %s. Requesting Range Sync.", 
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                          "Chain Sync: Ancestor found at ID %" PRIu64 " for %s. "
+                          "Requesting Range Sync (no local truncate).",
                           ancestor_id, hash_b64);
             }
         }
@@ -634,6 +637,7 @@ static void process_auth(int i, char *buffer) {
         }
         
         sub->auth_state = AUTH_OK;
+        sub->close_after_send = false; /* клиент будет слать SEND на том же сокете */
         
         log_event("INFO", sub->sock, sub->ip_address, sub->port, "Auth OK [%s]", 
                   (sub->type == SUB_TYPE_PEER) ? "Mesh Peer" : "Binary Client");
@@ -656,12 +660,11 @@ static void process_auth(int i, char *buffer) {
  * 3. State-Change Revocation: Only broadcast revocations if the 'active' status actually changes.
  */
 static void process_repl(int i, char *buffer) {
-    struct timeval start_tv, end_tv;
+    struct timeval start_tv;
     gettimeofday(&start_tv, NULL);
-    
     Subscriber *sub = &subscribers[i];
     if (sub->auth_state != AUTH_OK) return;
-
+    size_t repl_bytes = strlen(buffer);
     char *rest = strdup(buffer + 5);
     if (!rest) return;
 
@@ -693,15 +696,13 @@ static void process_repl(int i, char *buffer) {
             int res = add_alert(ph, atol(unlock_str), atol(expire_str), text_b64, key_b64, iv_b64, tag_b64, 
                                 sub->sock, original_id, c_at, incoming_active, 
                                 remote_prev_hash, remote_curr_hash);
-            
-            /* ====== ИЗМЕРЕНИЕ ВРЕМЕНИ ====== */
-            if (res >= 0 || res == -4) {
-                gettimeofday(&end_tv, NULL);  // <-- Засекаем время окончания
-                double delta = (double)(end_tv.tv_sec - start_tv.tv_sec) +
-                               (double)(end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
-                mesh_update_speed(sub->ip_address, strlen(buffer), delta);
+            /* ====== ОБНОВЛЕНИЕ СКОРОСТИ МЕША ====== */
+            /* Если алерт успешно принят (res >= 0), учитываем объем репликации.
+             * admin_mesh с window_start сам замерит время окна. delta передаем 0.0 */
+            if (res >= 0) {
+                mesh_update_speed(sub->ip_address, repl_bytes, 0.0);
             }
-            /* =============================== */
+            /* ====================================== */
             Recipient *rec = find_recipient(ph);
             if (rec) {
                 for (int j = 0; j < rec->count; j++) {
@@ -1023,12 +1024,13 @@ static void process_revoke(int i, char *buffer) {
     char *dummy_iv  = base64_encode((unsigned char*)"000000000000", 12);
     char *dummy_tag = base64_encode((unsigned char*)"0000000000000000", 16);
     uint64_t tombstone_id = generate_snowflake_id();
-    time_t now = time(NULL);
+    // time_t now = time(NULL);
+    time_t logical_now = get_cluster_logical_time();
     /* 5. Вставляем Tombstone в САМЫЙ ХВОСТ ЦЕПИ как новое событие!
      * Это меняет last_hash и гарантирует синхронизацию даже после выхода из офлайна */
-    int res = add_alert(calculated_hash, now, now + max_alert_ttl, 
+    int res = add_alert(calculated_hash, logical_now, logical_now + max_alert_ttl, 
                         b64_text, dummy_key, dummy_iv, dummy_tag,
-                        sub->sock, tombstone_id, now, 1, 0, 0);
+                        sub->sock, tombstone_id, logical_now, 1, 0, 0);
     if (res >= 0 && res < rec->count) {
         Alert *tomb_alert = &rec->alerts[res];
         /* Рассылаем Tombstone пирам (если в онлайне) */
@@ -1054,17 +1056,22 @@ static void process_revoke(int i, char *buffer) {
 /**
  * Processes incoming SYNC_CHAIN command.
  * Analyzes the Tip of the remote chain.
+ *
+ * Smart count-mismatch logic:
+ * - First time (or after cooldown) any difference (diff >= 1) triggers a sample.
+ * - While in cooldown — uses dynamic threshold (5–30) to avoid storms.
  */
 static void process_sync_chain(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     char *rest = strdup(buffer + 11);
     if (!rest) return;
-    char *hash_b64 = strtok(rest, "|");
-    char *id_str = strtok(NULL, "|");
-    char *hash_str = strtok(NULL, "|");
-    if (!hash_b64 || !id_str || !hash_str) { 
-        free(rest); 
-        return; 
+    char *hash_b64   = strtok(rest, "|");
+    char *id_str     = strtok(NULL, "|");
+    char *hash_str   = strtok(NULL, "|");
+    char *count_str  = strtok(NULL, "|");   /* optional, sent by modern peers */
+    if (!hash_b64 || !id_str || !hash_str) {
+        free(rest);
+        return;
     }
     size_t hlen;
     unsigned char *raw_hash = base64_decode(hash_b64, &hlen);
@@ -1072,26 +1079,84 @@ static void process_sync_chain(int i, char *buffer) {
         free(rest);
         return;
     }
-    uint64_t remote_last_id = strtoull(id_str, NULL, 10);
+    uint64_t remote_last_id   = strtoull(id_str, NULL, 10);
     uint64_t remote_last_hash = strtoull(hash_str, NULL, 10);
+    int remote_count = (count_str) ? atoi(count_str) : -1;
     Recipient *rec = find_recipient(raw_hash);
-
     if (rec && rec->count > 0) {
         Alert *my_last = &rec->alerts[rec->count - 1];
-
-        /* 1. Если верхушка (ID и хэш) совпала — цепочка на 100% валидна!
-         * Разница в count допустима из-за естественного вытеснения старых алертов по TTL. */
+        /* 1. Tip matches */
         if (my_last->id == remote_last_id && my_last->curr_hash == remote_last_hash) {
-            if (subscribers[i].sock == chain_sync_owner_fd) {
-                chain_sync_in_progress = false;
-                chain_sync_owner_fd = -1;
+            /* Даже при одинаковом tip — если count сильно отличается,
+             * в середине цепочки есть дыры (после старого truncate или разного vacuum). Запрашиваем sample. */
+            bool count_mismatch = false;
+            if (remote_count >= 0) {
+                int diff = abs(rec->count - remote_count);
+                /* Статический кэш на 64 ключа: когда последний раз делали sample из-за count */
+                static time_t last_count_check[64] = {0};
+                static unsigned char last_count_hashes[64][PUBKEY_HASH_LEN];
+                static int count_check_idx = 0;
+                time_t now = time(NULL);
+                bool recently_checked = false;
+                int slot = -1;
+                for (int k = 0; k < 64; k++) {
+                    if (memcmp(last_count_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
+                        slot = k;
+                        if (now - last_count_check[k] < 75) {   // 75 сек cooldown
+                            recently_checked = true;
+                        }
+                        break;
+                    }
+                }
+                if (!recently_checked) {
+                    /* Первый раз (или cooldown прошёл) — реагируем даже на diff == 1 */
+                    if (diff >= 1) {
+                        count_mismatch = true;
+                        /* Запоминаем, что только что проверили этот ключ */
+                        if (slot == -1) {
+                            slot = count_check_idx;
+                            count_check_idx = (count_check_idx + 1) % 64;
+                            memcpy(last_count_hashes[slot], raw_hash, PUBKEY_HASH_LEN);
+                        }
+                        last_count_check[slot] = now;
+                    }
+                } else {
+                    /* Уже недавно проверяли — используем обычный динамический порог */
+                    int threshold = rec->count / 20;      // 5 %
+                    if (threshold < 5)  threshold = 5;
+                    if (threshold > 30) threshold = 30;
+                    if (diff > threshold) {
+                        count_mismatch = true;
+                        /* Обновляем время, чтобы не дёргать слишком часто */
+                        if (slot != -1) last_count_check[slot] = now;
+                    }
+                }
             }
+            if (!count_mismatch) {
+                /* Полное совпадение — считаем синхронным */
+                if (subscribers[i].sock == chain_sync_owner_fd) {
+                    chain_sync_in_progress = false;
+                    chain_sync_owner_fd = -1;
+                }
+                free(raw_hash);
+                free(rest);
+                return;
+            }
+            /* count сильно отличается → копаем глубже */
+            if (verbose) {
+                log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                          "Chain tip matches for %s but count differs "
+                          "(local=%d remote=%d). Requesting sample to heal gap.",
+                          hash_b64, rec->count, remote_count);
+            }
+            char req[512];
+            snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|40", hash_b64);
+            enqueue_message(i, req, strlen(req));
             free(raw_hash);
             free(rest);
             return;
         }
-
-        /* 2. Если мы впереди — досылаем пиру недостающие свежие алерты */
+        /* 2. Мы впереди — досылаем пиру недостающие свежие алерты */
         if (my_last->id > remote_last_id) {
             int sent_gap = 0;
             for (int j = 0; j < rec->count; j++) {
@@ -1110,15 +1175,14 @@ static void process_sync_chain(int i, char *buffer) {
                 return;
             }
         }
-
-        /* 3. Если верхушки РАЗНЫЕ — ищем общего предка через сэмплы */
+        /* 3. Верхушки разные — ищем общего предка через сэмплы */
         char req[512];
         snprintf(req, sizeof(req), "GET_CHAIN_SAMPLE|%s|0|40", hash_b64);
         enqueue_message(i, req, strlen(req));
-
         if (verbose) {
-            log_event("DEBUG", sub->sock, sub->ip_address, sub->port, 
-                      "Chain divergence for %s. Local tip: 0x%" PRIx64 ", Remote tip: 0x%" PRIx64 ". Requesting sample...", 
+            log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                      "Chain divergence for %s. Local tip: 0x%" PRIx64
+                      ", Remote tip: 0x%" PRIx64 ". Requesting sample...",
                       hash_b64, my_last->curr_hash, remote_last_hash);
         }
     } else {
@@ -1234,9 +1298,9 @@ void handle_command(int sub_index, char *buffer) {
     }
     else if (strncmp(buffer, "AUTH|", 5) == 0) {
         process_auth(sub_index, buffer);
-        if (sub->auth_state == AUTH_OK) {
+        if (sub->auth_state == AUTH_OK && sub->type == SUB_TYPE_PEER) {
             for (int n = 0; n < cluster_node_count; n++) {
-                if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) { 
+                if (mesh_addr_compare(&cluster_nodes[n], sub->ip_address)) {
                     cluster_nodes[n].status = PEER_STATUS_AUTHENTICATED;
                     sub->node_ptr = &cluster_nodes[n];
                     break;

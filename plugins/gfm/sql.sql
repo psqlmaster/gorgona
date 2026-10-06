@@ -101,3 +101,41 @@ unflushed_bytes      | 0
 total_received_bytes | 800
 last_receipt_ago     | 00:00:16.828925
 */
+
+-- тестировние
+CREATE TABLE test_table (
+    id          SERIAL PRIMARY KEY,
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    description TEXT
+);
+-- вставка
+for i in $(seq 1 10); do
+  # 60 секунд непрерывных вставок
+  end=$((SECONDS + 60))
+  while [ $SECONDS -lt $end ]; do
+    sudo -iu postgres psql -p 5432 -c \
+      "INSERT INTO test_table (created_at, description) VALUES (NOW(), 'Запись от $(date '+%H:%M:%S')');" >/dev/null
+  done
+  echo "Минута $i: непрерывные вставки завершены"
+  # пауза 3 сек (кроме последней итерации)
+  [ "$i" -lt 10 ] && sleep 3
+done
+
+CREATE TABLE test777 (                                                
+    field1 TEXT,
+    field2 TEXT
+);
+
+INSERT INTO test777 (field1, field2)
+SELECT
+    md5(random()::text),
+    md5(random()::text)
+FROM
+    generate_series(1, 1000000);
+
+-- Удаляем первые 1 000 000 строк по ctid
+DELETE FROM test777
+WHERE ctid IN (
+    SELECT ctid
+    FROM test777
+    LIMIT 500000);

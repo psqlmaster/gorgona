@@ -34,6 +34,7 @@ int verbose = 0;
 int port;  
 int sync_interval = DEFAULT_SYNC_INTERVAL; 
 int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
+int vacuum_check_interval = DEFAULT_VACUUM_CHECK_INTERVAL;
 
 /**
  * Shutdown handler for graceful exit.
@@ -102,15 +103,17 @@ void print_server_help(const char *program_name) {
 
     printf("\n" CLR_BOLD "Configuration (" CLR_CYAN "/etc/gorgona/gorgonad.conf" CLR_RESET "):\n");
     printf(" " CLR_MAGENTA "[server]" CLR_RESET "\n");
-    printf("  " CLR_CYAN "port" CLR_RESET " = <port>           Listen port (default: 5555)\n");
-    printf("  " CLR_CYAN "max_alerts" CLR_RESET " = <number>   Storage limit per recipient key\n");
-    printf("  " CLR_CYAN "max_alert_ttl" CLR_RESET " = <sec>   Global cluster-wide TTL limit (default: 30 days)\n");
-    printf("  " CLR_CYAN "max_clients" CLR_RESET " = <number>  Total TCP connection limit (Clients + Peers)\n");
-    printf("  " CLR_CYAN "use_disk_db" CLR_RESET " = <bool>    Persistence in " CLR_YELLOW "<data_dir>/alerts/" CLR_RESET "\n");
-    printf("  " CLR_CYAN "log_level" CLR_RESET " = <level>     \"info\" (standard) or \"debug\" (full P2P trace)\n");
-    printf("  " CLR_CYAN "vacuum_threshold_percent" CLR_RESET " = <%%>  Trigger database compression (1-100)\n");
-    printf("  " CLR_CYAN "data_dir" CLR_RESET " = <path>       Data directory (default: " CLR_YELLOW "/var/lib/gorgona" CLR_RESET ")\n");
-    printf("  " CLR_CYAN "conf_dir" CLR_RESET " = <path>       Config/Certs directory (default: " CLR_YELLOW "/etc/gorgona" CLR_RESET ")\n");
+    printf("  " CLR_CYAN "port" CLR_RESET " = <port>           Listen port (default: 5555, requires restart)\n");
+    printf("  " CLR_CYAN "max_alerts" CLR_RESET " = <number>   Storage limit per recipient key (reloadable)\n");
+    printf("  " CLR_CYAN "max_alert_ttl" CLR_RESET " = <sec>   Global cluster-wide TTL limit (default: 30 days, reloadable)\n");
+    printf("  " CLR_CYAN "max_clients" CLR_RESET " = <number>  Total TCP connection limit (Clients + Peers, reloadable)\n");
+    printf("  " CLR_CYAN "max_log_size" CLR_RESET " = <MB>     Log rotation size in MB (reloadable)\n");
+    printf("  " CLR_CYAN "max_message_size" CLR_RESET " = <MB> Max inbound message size in MB (reloadable via systemctl reload)\n");
+    printf("  " CLR_CYAN "use_disk_db" CLR_RESET " = <bool>    Persistence in " CLR_YELLOW "<data_dir>/alerts/" CLR_RESET " (requires restart)\n");
+    printf("  " CLR_CYAN "log_level" CLR_RESET " = <level>     \"info\", \"error\" or \"debug\" (systemctl reload gorgonad)\n");
+    printf("  " CLR_CYAN "vacuum_threshold_percent" CLR_RESET " = <%%>  Trigger database compression (1-100, reloadable)\n");
+    printf("  " CLR_CYAN "data_dir" CLR_RESET " = <path>       Data directory (default: " CLR_YELLOW "/var/lib/gorgona" CLR_RESET ", requires restart)\n");
+    printf("  " CLR_CYAN "conf_dir" CLR_RESET " = <path>       Config/Certs directory (default: " CLR_YELLOW "/etc/gorgona" CLR_RESET ", requires restart)\n");
 
     printf("\n " CLR_MAGENTA "[replication]" CLR_RESET "\n");
     printf("  " CLR_CYAN "sync_psk" CLR_RESET " = <key>        Cluster-wide secret for Layer 2 encryption (AES-256-GCM)\n");
@@ -124,6 +127,7 @@ void print_server_help(const char *program_name) {
 
     printf("\n" CLR_BOLD "Diagnostic Commands (via " CLR_CYAN "nc/telnet" CLR_RESET "):\n");
     printf(" " CLR_YELLOW "status" CLR_RESET " <sync_psk>        Detailed L1/L2 metrics and cluster topology map.\n");
+    printf(" " CLR_YELLOW "sync" CLR_RESET "   <sync_psk>        Trigger immediate Mesh Anti-Entropy chain sync.\n");
     printf(" " CLR_YELLOW "info" CLR_RESET "                     Brief uptime and identification.\n");
     printf(" " CLR_YELLOW "help" CLR_RESET "                     Lists available plaintext commands.\n");
 
@@ -192,17 +196,18 @@ int main(int argc, char *argv[]) {
 
 
     /* Load configuration */
-    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config; 
+    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config, vacuum_check_interval_config; 
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
 
     read_config(config_path, &port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
-                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config); 
+                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config, &vacuum_check_interval_config); 
     
     sync_interval = sync_interval_tmp;
     max_alerts = max_alerts_config;
     max_alert_ttl = max_ttl_config;
     vacuum_threshold = vacuum_threshold_config;
+    vacuum_check_interval = vacuum_check_interval_config;
     max_clients = (max_clients_config > MAX_CLIENTS) ? MAX_CLIENTS : max_clients_config;
     max_log_size = max_log_size_config;
     max_message_size = max_message_size_config;

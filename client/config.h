@@ -7,6 +7,8 @@ All rights reserved.
 #define GORGONA_CLIENT_CONFIG_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <limits.h>
 
 #define DEFAULT_SERVER_IP ""
 #define DEFAULT_SERVER_PORT 7777
@@ -29,6 +31,29 @@ typedef struct {
     int exec_count;
     char sync_psk[64];
 } Config;
+
+typedef struct sync_config {
+    char pubkey[128];
+    char dir[PATH_MAX];
+    char direction[8];      /* "ro", "wo", "rw" */
+    char on_change[256];
+    size_t max_file_size;
+    struct sync_config *next;
+} sync_config_t;
+
+/* Глобальный список правил синхронизации */
+extern sync_config_t *sync_rules_head;
+
+/* Создать или найти правило по pubkey.
+ * Возвращает указатель на правило или NULL при ошибке выделения памяти. */
+sync_config_t *get_or_create_sync_rule(const char *pubkey);
+
+/* Применить глобальный лимит max_file_size ко всем правилам,
+ * у которых он ещё не задан (равен 0). */
+void apply_global_max_file_size(size_t global_limit);
+
+/* Существующий прототип оставляем */
+const sync_config_t *config_get_sync_rule(const char *pubkey);
 
 void read_config(const char *config_path, Config *config, int verbose);
 

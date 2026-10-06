@@ -80,3 +80,13 @@ time_t snowflake_to_timestamp(uint64_t id) {
     uint64_t ms_from_custom_epoch = (id >> 12);
     return (time_t)((ms_from_custom_epoch + SNOWFLAKE_EPOCH) / 1000);
 }
+
+/* Возвращает логическое время кластера (Cluster Pulse) */
+time_t get_cluster_logical_time(void) {
+    uint64_t max_id = get_max_alert_id();
+    if (max_id > 0) {
+        return snowflake_to_timestamp(max_id);
+    }
+    /* Фоллбэк на локальное время, если база Completely empty (Cold Start) */
+    return time(NULL); 
+}

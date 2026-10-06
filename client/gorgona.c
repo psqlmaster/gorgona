@@ -7,6 +7,7 @@
 #include "encrypt.h"
 #include "admin_mesh.h"
 #include "config.h"
+#include "file_sync.h"
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
@@ -66,18 +67,35 @@ void print_help(const char *program_name) {
     printf("    " CLR_CYAN "last" CLR_RESET "   - the most recent [<count>] message(s), (count defaults to 1), optionally filtered by pubkey_hash_b64\n");
     printf("    " CLR_CYAN "new" CLR_RESET "    - only new messages received after connection, optionally filtered by pubkey_hash_b64\n");
     printf("    " CLR_MAGENTA "*" CLR_RESET " If pubkey_hash_b64 is provided, filters by it (mandatory for single and last modes)\n\n");
+    printf("  " CLR_YELLOW "send-file" CLR_RESET " " CLR_CYAN "[<unlock> <expire>] <filepath> <pubkey>" CLR_RESET "\n");
+    printf("    Sends a file (LZ4-compressed + encrypted). Times are optional (default: now … now+1h).\n");
+    printf("    Optional: --name <relative_path> to set the name on the receiver side.\n\n");
 
     printf("  " CLR_YELLOW "revoke" CLR_RESET " " CLR_CYAN "<alert_id> <pubkey_hash_b64>" CLR_RESET "\n");
     printf("    Cancels a previously sent time-locked message, also for the “Dead Hand” scenario.\n");
 
     printf("\n" CLR_BOLD "Configuration:" CLR_RESET "\n");
-    printf("  The file " CLR_CYAN "/etc/gorgona/gorgona.conf" CLR_RESET " contains server settings and optional execution mappings.\n");
+    printf("  The file " CLR_CYAN "/etc/gorgona/gorgona.conf" CLR_RESET " contains server settings, execution mappings and file-sync rules.\n");
     printf("  " CLR_BOLD "Format:" CLR_RESET "\n");
     printf("    " CLR_MAGENTA "[server]" CLR_RESET "\n");
-    printf("    ip = <IP_address>   (example: " CLR_CYAN "64.188.70.158" CLR_RESET ")\n");
-    printf("    port = <port>       (example: " CLR_CYAN "7777" CLR_RESET ")\n");
-    printf("    " CLR_MAGENTA "[exec_commands]" CLR_RESET "\n");
-    printf("    <key> = <script_path> " CLR_YELLOW "time_limit" CLR_RESET " = <sec> (example: " CLR_CYAN "app start = /bin/lsblk.sh time_limit = 10" CLR_RESET ")\n");
+    printf("    ip = <IP_address>          (example: " CLR_CYAN "64.188.70.158" CLR_RESET ")\n");
+    printf("    port = <port>              (example: " CLR_CYAN "7777" CLR_RESET ")\n");
+    printf("    sync_psk = <shared_secret> (optional, enables Layer-2 mesh)\n");
+    printf("    data_dir = /var/lib/gorgona\n");
+    printf("    conf_dir = /etc/gorgona\n\n");
+
+    printf("    " CLR_MAGENTA "[exec_commands]" CLR_RESET " / " CLR_MAGENTA "[exec_commands:<pubkey>]" CLR_RESET "\n");
+    printf("    <key> = <script_path> time_limit = <sec>\n");
+    printf("    (example: " CLR_CYAN "app start = /usr/local/bin/app_start.sh time_limit = 60" CLR_RESET ")\n\n");
+
+    printf("    " CLR_MAGENTA "[sync]" CLR_RESET "\n");
+    printf("    max_file_size = 10485760   # global limit (bytes), default 10 MiB\n\n");
+
+    printf("    " CLR_MAGENTA "[sync:<pubkey>]" CLR_RESET "\n");
+    printf("    dir = /etc/nginx/conf.d    # root directory for this key\n");
+    printf("    direction = rw             # ro (receive only), wo (send only), rw (both)\n");
+    printf("    on_change = nginx -s reload  # command after successful file sync\n");
+    printf("    max_file_size = 5242880    # optional per-key limit\n");
 
     printf("\n" CLR_BOLD "Examples:" CLR_RESET "\n");
     printf("  " CLR_WHITE_BOLD "%s listen single RWTPQzuhzBw=" CLR_RESET "\n", program_name);
@@ -88,7 +106,9 @@ void print_help(const char *program_name) {
     printf("  " CLR_WHITE_BOLD "%s -ve listen new RWTPQzuhzBw=" CLR_RESET "       # Listens, executes, and shows verbose output\n", program_name);
     printf("  " CLR_WHITE_BOLD "%s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"hello world\" \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
     printf("  " CLR_WHITE_BOLD "%s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"app start\" \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
-    printf("  " CLR_WHITE_BOLD "df -h | %s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" - \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
+    printf("   " CLR_WHITE_BOLD "df -h | %s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" - \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
+    printf("  " CLR_WHITE_BOLD "%s send-file /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub" CLR_RESET "\n", program_name);
+    printf("  " CLR_WHITE_BOLD "%s send-file --name conf.d/new_name_site.conf /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub" CLR_RESET "\n", program_name);
     printf("  " CLR_WHITE_BOLD "%s revoke 170119927746560 RWTPQzuhzBw=" CLR_RESET "\n", program_name);
 
     #undef CLR_RESET
@@ -115,7 +135,7 @@ int main(int argc, char *argv[]) {
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "vheVdc:", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "+vheVdc:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'c':
                 if (!optarg) {
@@ -168,16 +188,20 @@ int main(int argc, char *argv[]) {
     read_config(config_path, &cfg, verbose);
 
     /* Process commands */
-    if (strcmp(argv[optind], "genkeys") == 0) {
+    const char *cmd = argv[optind];
+
+    if (strcmp(cmd, "send-file") == 0) {
+        return cmd_send_file(argc - optind, argv + optind);
+    } else if (strcmp(cmd, "genkeys") == 0) {
         return generate_rsa_keys(verbose);
-    } else if (strcmp(argv[optind], "send") == 0) {
+    } else if (strcmp(cmd, "send") == 0) {
         return send_alert(argc - optind, argv + optind, verbose);
-    } else if (strcmp(argv[optind], "listen") == 0) {
+    } else if (strcmp(cmd, "listen") == 0) {
         return listen_alerts(argc - optind, argv + optind, verbose, execute, daemon_exec_flag);
-    } else if (strcmp(argv[optind], "revoke") == 0) {
-        return send_revocation(argc - optind, argv + optind, verbose);  
+    } else if (strcmp(cmd, "revoke") == 0) {
+        return send_revocation(argc - optind, argv + optind, verbose);
     } else {
-        fprintf(stderr, "Unknown command: %s\n", argv[optind]);
+        fprintf(stderr, "Unknown command: %s\n", cmd);
         print_help(argv[0]);
         return 1;
     }

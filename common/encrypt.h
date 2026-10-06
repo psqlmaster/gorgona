@@ -47,4 +47,18 @@ int sign_message_id(uint64_t id, const char *priv_key_path, char *out_b64, size_
 int compute_raw_pubkey_hash(unsigned char *pub_raw, size_t pub_len, unsigned char *out_hash);
 /* Verifies the message ID signature using the sent key */
 int verify_id_signature(uint64_t id, unsigned char *pub_raw, size_t pub_len, const char *sig_b64);
+/* Бинарные версии (для файлов и любого raw payload) */
+int encrypt_message_bin(const uint8_t *data, size_t data_len,
+                        unsigned char **encrypted, size_t *encrypted_len,
+                        unsigned char **encrypted_key, size_t *encrypted_key_len,
+                        unsigned char **iv, size_t *iv_len,
+                        unsigned char **tag, size_t *tag_len,
+                        const char *pubkey_file, int verbose);
+
+int decrypt_message_bin(unsigned char *encrypted, size_t encrypted_len,
+                        unsigned char *encrypted_key, size_t encrypted_key_len,
+                        unsigned char *iv, size_t iv_len,
+                        unsigned char *tag, size_t tag_len,
+                        uint8_t **plaintext, size_t *plaintext_len,
+                        const char *privkey_file, int verbose);
 #endif

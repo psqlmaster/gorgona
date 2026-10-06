@@ -12,7 +12,7 @@ SERVER_VER := $(shell git describe --tags --match "gorgonad-v*" --abbrev=0 2>/de
 
 # Define source paths relative to this directory (../../)
 # 1. COMMON_SRC: Now includes admin_mesh.c since it's shared in the common folder
-COMMON_SRC  = ../../common/encrypt.c ../../common/common.c ../../common/admin_mesh.c
+COMMON_SRC  = ../../common/encrypt.c ../../common/common.c ../../common/admin_mesh.c ../../common/lz4.c
 
 # 2. CLIENT_SRC: Added globals.c and peer_manager.c
 CLIENT_SRC  = ../../client/gorgona.c \
@@ -22,6 +22,7 @@ CLIENT_SRC  = ../../client/gorgona.c \
               ../../client/config.c \
               ../../client/client_history.c \
               ../../client/peer_manager.c \
+              ../../client/file_sync.c \
               $(COMMON_SRC)
 
 # 3. SERVER_SRC: Corrected paths to point to current architecture
@@ -70,7 +71,7 @@ build-one:
 		\
 		# Build Gorgona Client for the current target OS version \
 		$${CC} -Oz -std=c99 -Wall -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L \
-			-DVERSION=\"$(CLIENT_VER)\" \
+			-DVERSION=\"$(CLIENT_VER)\" -DGORGONA_CLIENT \
 			-I../../common -I../../client \
 			-I$${TARGET_DIR}/usr/include \
 			$(CLIENT_SRC) -o gorgona_owrt_$$V \
@@ -78,7 +79,7 @@ build-one:
 		\
 		# Build Gorgona Server for the current target OS version \
 		$${CC} -Oz -std=c99 -Wall -pthread -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L \
-			-DVERSION=\"$(SERVER_VER)\" \
+			-DVERSION=\"$(SERVER_VER)\" -DGORGONA_SERVER \
 			-I../../common -I../../client -I"../../server" \
 			-I$${TARGET_DIR}/usr/include \
 			$(SERVER_SRC) -o gorgonad_owrt_$$V \

@@ -16,8 +16,8 @@ typedef enum {
 } ConfigSection;
 
 void read_config(const char *config_path, int *port, int *max_alerts, int *max_clients, size_t *max_log_size,
-                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, 
-                 int *sync_interval, int *max_ttl) {
+                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold,
+                 int *sync_interval, int *max_ttl, int *vacuum_check_interval) {
     
     *port = DEFAULT_SERVER_PORT;
     *max_alerts = DEFAULT_MAX_ALERTS;
@@ -28,6 +28,7 @@ void read_config(const char *config_path, int *port, int *max_alerts, int *max_c
     *vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
     *sync_interval = DEFAULT_SYNC_INTERVAL;
     *max_ttl = DEFAULT_MAX_ALERT_TTL;
+    *vacuum_check_interval = DEFAULT_VACUUM_CHECK_INTERVAL;
 
     strncpy(gorgona_data_dir, DEFAULT_DATA_DIR, sizeof(gorgona_data_dir) - 1);
     gorgona_data_dir[sizeof(gorgona_data_dir) - 1] = '\0';
@@ -119,6 +120,10 @@ void read_config(const char *config_path, int *port, int *max_alerts, int *max_c
             else if (strcmp(key, "log_file") == 0) {   // ← НОВЫЙ БЛОК
                 strncpy(gorgona_log_file, value, sizeof(gorgona_log_file) - 1);
                 gorgona_log_file[sizeof(gorgona_log_file) - 1] = '\0';
+            }
+            else if (strcmp(key, "vacuum_check_interval") == 0) {
+                *vacuum_check_interval = atoi(value);
+                if (*vacuum_check_interval < 60) *vacuum_check_interval = 60; /* Защита: не чаще 1 минуты */
             }
         }
         else if (current_section == SECTION_REPLICATION) {

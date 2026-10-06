@@ -21,10 +21,12 @@
 #define DEFAULT_CONF_DIR "/etc/gorgona"
 #define DEFAULT_CONFIG_FILE "/etc/gorgona/gorgonad.conf"
 #define DEFAULT_LOG_FILE ""   /* пусто = использовать <data_dir>/gorgonad.log */
+#define DEFAULT_VACUUM_CHECK_INTERVAL 300
 
 extern char gorgona_log_file[512];
 extern char config_file_path[512];
 void read_config(const char *config_path, int *port, int *max_alerts, int *max_clients, size_t *max_log_size,
-                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold, int *sync_interval, int *max_ttl); 
+                 char *log_level, size_t *max_message_size, int *use_disk_db, int *vacuum_threshold,
+                 int *sync_interval, int *max_ttl, int *vacuum_check_interval); 
 
 #endif

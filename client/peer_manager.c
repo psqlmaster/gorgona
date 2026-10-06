@@ -33,6 +33,11 @@
 */
 
 #define _GNU_SOURCE
+#ifdef GORGONA_CLIENT
+    #define MESH_LOG_LEVEL "DEBUG"
+#else
+    #define MESH_LOG_LEVEL "INFO"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

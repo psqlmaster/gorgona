@@ -10,9 +10,12 @@
 #include "admin_mesh.h" 
 #include "snowflake.h"
 #include "metrics.h"
+#include "alert_db.h"
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
@@ -29,10 +32,16 @@ extern volatile sig_atomic_t reload_cfg_requested;
 extern int verbose;
 extern FILE *log_file;
 extern int max_clients;
+extern int port;
 extern size_t max_message_size;
 extern char log_level[32];
 extern int client_sockets[];
 extern Subscriber subscribers[];
+extern int vacuum_check_interval;
+extern int vacuum_threshold;
+extern int use_disk_db;
+extern Recipient *recipients;
+extern int recipient_count;
 
 time_t server_start_time = 0;
 
@@ -66,7 +75,14 @@ static void set_tcp_keepalive(int fd) {
 void cleanup_subscriber(int index) {
     int sd = client_sockets[index];
     if (sd <= 0) return;
-
+    log_event("DEBUG", sd, subscribers[index].ip_address, subscribers[index].port,
+              "cleanup_subscriber: type=%d auth=%d",
+              subscribers[index].type, subscribers[index].auth_state);
+    /* если оффлайн ушел пир, с которым шел синк > снимаем блокировку! */
+    if (sd == chain_sync_owner_fd) {
+        chain_sync_in_progress = false;
+        chain_sync_owner_fd = -1;
+    }
     Subscriber *sub = &subscribers[index];
     /* We synchronize the port before the structure is used */
     if (sub->node_ptr && sub->node_ptr->port > 0) {
@@ -269,14 +285,15 @@ void free_out_queue(int sub_index) {
 
 void try_connect_peers() {
     static time_t last_check = 0;
-    time_t now = time(NULL);
-    if (now - last_check < PEER_RECONNECT_INTERVAL) return;
-    last_check = now;
+//    time_t now = time(NULL);
+    time_t logical_now = get_cluster_logical_time();
+    if (logical_now - last_check < PEER_RECONNECT_INTERVAL) return;
+    last_check = logical_now;
 
     for (int p = 0; p < cluster_node_count; p++) {
         MeshNode *node = &cluster_nodes[p];
         if (node->status == PEER_STATUS_BANNED || node->status == PEER_STATUS_HANDSHAKE) continue;
-        if (node->port <= 0 || node->penalty_until > now) continue;
+        if (node->port <= 0 || node->penalty_until > logical_now) continue;
 
         /* ПРОВЕРКА 1: Проверяем адрес в конфиге/кэше еще до резолва */
         if (is_local_ip(node->addr)) {
@@ -392,32 +409,124 @@ void run_server(int server_fd) {
         if (reload_cfg_requested) {
             reload_cfg_requested = 0;
             log_event("INFO", -1, NULL, 0, "SIGHUP received, reloading configuration...");
-            
-            int p_tmp, ma_tmp, mc_tmp, vt_tmp, si_tmp, ttl_tmp, db_tmp;
+
+            /* Snapshot current values for change reporting */
+            int    old_max_alerts        = max_alerts;
+            int    old_sync_interval     = sync_interval;
+            int    old_vacuum_threshold  = vacuum_threshold;
+            int    old_max_alert_ttl     = max_alert_ttl;
+            int    old_max_clients       = max_clients;
+            int old_vacuum_check_interval = vacuum_check_interval;
+            size_t old_max_log_size      = max_log_size;
+            size_t old_max_message_size  = max_message_size;
+            char   old_log_level[32];
+            strncpy(old_log_level, log_level, sizeof(old_log_level) - 1);
+            old_log_level[sizeof(old_log_level) - 1] = '\0';
+
+            int p_tmp, ma_tmp, mc_tmp, vt_tmp, si_tmp, ttl_tmp, db_tmp, vci_tmp;
             size_t mls_tmp, mms_tmp;
             char lvl_tmp[32];
-            
-            read_config(config_file_path, &p_tmp, &ma_tmp, &mc_tmp, &mls_tmp, lvl_tmp, 
-                        &mms_tmp, &db_tmp, &vt_tmp, &si_tmp, &ttl_tmp);
-            
-            max_alerts = ma_tmp;
-            sync_interval = si_tmp;
+
+            read_config(config_file_path, &p_tmp, &ma_tmp, &mc_tmp, &mls_tmp, lvl_tmp,
+                        &mms_tmp, &db_tmp, &vt_tmp, &si_tmp, &ttl_tmp, &vci_tmp);
+
+            max_alerts       = ma_tmp;
+            sync_interval    = si_tmp;
             vacuum_threshold = vt_tmp;
-            max_alert_ttl = ttl_tmp;
-            max_log_size = mls_tmp;
+            vacuum_check_interval = vci_tmp; 
+            max_alert_ttl    = ttl_tmp;
+            max_log_size     = mls_tmp;
             max_message_size = mms_tmp;
             strncpy(log_level, lvl_tmp, 31);
             log_level[31] = '\0';
-            
-            if (mc_tmp > max_clients) {
-                if (mc_tmp > MAX_CLIENTS) mc_tmp = MAX_CLIENTS;
-                max_clients = mc_tmp;
+
+            /* max_clients: allow both increase and decrease (capped by MAX_CLIENTS) */
+            if (mc_tmp > MAX_CLIENTS) mc_tmp = MAX_CLIENTS;
+            if (mc_tmp < 1) mc_tmp = 1;
+            if (mc_tmp < max_clients) {
+                /* Slots beyond the new limit are no longer serviced — close them cleanly */
+                for (int i = mc_tmp; i < max_clients; i++) {
+                    if (client_sockets[i] > 0) {
+                        log_event("INFO", client_sockets[i],
+                                  subscribers[i].ip_address, subscribers[i].port,
+                                  "Closing connection due to max_clients decrease (%d -> %d)",
+                                  old_max_clients, mc_tmp);
+                        cleanup_subscriber(i);
+                    }
+                }
+            }
+            max_clients = mc_tmp;
+
+            if (p_tmp != port) {
+                log_event("WARN", -1, NULL, 0,
+                          "port change (%d -> %d) requires full restart. Ignoring.",
+                          port, p_tmp);
             }
             if (db_tmp != use_disk_db) {
-                log_event("WARN", -1, NULL, 0, "use_disk_db change requires full restart. Ignoring.");
+                log_event("WARN", -1, NULL, 0,
+                          "use_disk_db change requires full restart. Ignoring.");
             }
-            
-            log_event("INFO", -1, NULL, 0, "Configuration reloaded. Sync interval: %d, Log level: %s", sync_interval, log_level);
+
+            /* Per-parameter change log */
+            if (old_max_alerts != max_alerts)
+                log_event("INFO", -1, NULL, 0, "  max_alerts: %d -> %d", old_max_alerts, max_alerts);
+            if (old_max_alert_ttl != max_alert_ttl)
+                log_event("INFO", -1, NULL, 0, "  max_alert_ttl: %d -> %d", old_max_alert_ttl, max_alert_ttl);
+            if (old_max_clients != max_clients)
+                log_event("INFO", -1, NULL, 0, "  max_clients: %d -> %d", old_max_clients, max_clients);
+            if (old_max_log_size != max_log_size)
+                log_event("INFO", -1, NULL, 0, "  max_log_size: %zu MB -> %zu MB",
+                          old_max_log_size / (1024 * 1024), max_log_size / (1024 * 1024));
+            if (old_max_message_size != max_message_size)
+                log_event("INFO", -1, NULL, 0, "  max_message_size: %zu MB -> %zu MB",
+                          old_max_message_size / (1024 * 1024), max_message_size / (1024 * 1024));
+            if (old_vacuum_threshold != vacuum_threshold)
+                log_event("INFO", -1, NULL, 0, "  vacuum_threshold_percent: %d -> %d",
+                          old_vacuum_threshold, vacuum_threshold);
+            if (old_sync_interval != sync_interval)
+                log_event("INFO", -1, NULL, 0, "  sync_interval: %d -> %d", old_sync_interval, sync_interval);
+            if (strcasecmp(old_log_level, log_level) != 0)
+                log_event("INFO", -1, NULL, 0, "  log_level: %s -> %s", old_log_level, log_level);
+            if (old_vacuum_check_interval != vacuum_check_interval)
+                log_event("INFO", -1, NULL, 0, "  vacuum_check_interval: %d -> %d sec", old_vacuum_check_interval, vacuum_check_interval);
+
+            log_event("INFO", -1, NULL, 0,
+                      "Configuration reloaded. max_message_size=%zu MB, max_clients=%d, "
+                      "sync_interval=%d, log_level=%s, vacuum_threshold=%d%%",
+                      max_message_size / (1024 * 1024), max_clients,
+                      sync_interval, log_level, vacuum_threshold);
+
+            /* --- Force vacuum pass after reload (new threshold / disk bloat) --- */
+            if (use_disk_db && recipients && recipient_count > 0) {
+                for (int r = 0; r < recipient_count; r++) {
+                    Recipient *rec = &recipients[r];
+                    if (rec->fd < 0 && rec->count == 0)
+                        continue;
+                    int waste_limit = (max_alerts * vacuum_threshold) / 100;
+                    if (waste_limit < 1)
+                        waste_limit = 1;
+                    bool by_count = (rec->waste_count >= waste_limit);
+                    bool by_size  = false;
+                    if (rec->fd >= 0) {
+                        struct stat st;
+                        if (fstat(rec->fd, &st) == 0) {
+                            size_t disk = (size_t)st.st_size;
+                            /* диск заметно больше логически используемых данных */
+                            by_size = (disk > rec->used_size * 2 &&
+                                       disk > 4 * 1024 * 1024);
+                        }
+                    }
+                    if (by_count || by_size) {
+                        log_event("INFO", -1, NULL, 0,
+                                  "Reload vacuum: recipient waste=%d limit=%d "
+                                  "used=%zu (by_count=%d by_size=%d)",
+                                  rec->waste_count, waste_limit, rec->used_size,
+                                  (int)by_count, (int)by_size);
+                        alert_db_sync(rec);
+                    }
+                }
+            }
+
         }
 
         FD_ZERO(&readfds);
@@ -437,12 +546,13 @@ void run_server(int server_fd) {
             }
         }
         /* Dynamic timeout calculation */
-        time_t now = time(NULL);
+//        time_t now = time(NULL);
+        time_t logical_now = get_cluster_logical_time();
         static time_t last_maintenance = 0;
         /* When the program is first launched, we set the time of the last check to the current time */
-        if (last_maintenance == 0) last_maintenance = now;
+        if (last_maintenance == 0) last_maintenance = logical_now;
         /* Calculate the time remaining until the next synchronization */
-        int elapsed = (int)(now - last_maintenance);
+        int elapsed = (int)(logical_now - last_maintenance);
         int seconds_to_next_sync = sync_interval - elapsed;
         if (seconds_to_next_sync < 0) seconds_to_next_sync = 0;
         struct timeval timeout;
@@ -465,12 +575,27 @@ void run_server(int server_fd) {
         }
 
         /* Checking the timeout and service */
-        now = time(NULL);
-        if (activity == 0 || (now - last_maintenance) >= sync_interval) {
+//        now = time(NULL);
+        if ((logical_now - last_maintenance) >= sync_interval) {
             run_global_maintenance();
-            last_maintenance = now; 
-            continue;
-        } 
+            last_maintenance = logical_now;
+        }
+
+        /* --- УМНЫЙ ФОНОВЫЙ ВАКУУМ --- */
+        static time_t last_vacuum_check = 0;
+        if (last_vacuum_check == 0) last_vacuum_check = logical_now;
+
+        if ((logical_now - last_vacuum_check) >= vacuum_check_interval) {
+            if (use_disk_db && recipients && recipient_count > 0) {
+                alert_db_background_vacuum();
+            }
+            last_vacuum_check = logical_now; // Сбрасываем таймер независимо от того, был ли запущен вакуум
+        }
+
+        if (activity == 0) {
+            continue;   // idle timeout — нечего обрабатывать
+        }
+        /* иначе activity > 0 — идём обрабатывать readfds/writefds */
 
         /* Handle new incoming connection */
         if (FD_ISSET(server_fd, &readfds)) {
@@ -618,8 +743,15 @@ void run_server(int server_fd) {
                         }
 
                         /* 2. GORGONA CORE PROTOCOLS (Binary/Text) */
-                        char byte; /* Declared and initialized via read() below */
-                        if (read(sd, &byte, 1) <= 0) {
+                        char byte;
+                        ssize_t n = read(sd, &byte, 1);
+                        if (n <= 0) {
+                            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                                continue;   /* данных пока нет — ждём следующий select */
+                            }
+                            log_event("INFO", sd, sub->ip_address, sub->port,
+                                      "Connection closed while reading frame header (n=%zd errno=%d)",
+                                      n, errno);
                             cleanup_subscriber(i);
                             continue;
                         }
@@ -636,37 +768,77 @@ void run_server(int server_fd) {
                         /* 4. PROCESS GORGONA PAYLOAD (L1 DATA) */
                         sub->in_buffer[sub->in_pos++] = byte;
                         unsigned char protocol_first_byte = (unsigned char)sub->in_buffer[0];
-
                         /* --- BINARY MODE DETECTION --- */
-                        if (protocol_first_byte < 32 && protocol_first_byte != '\n' && protocol_first_byte != '\r' && protocol_first_byte != '\t') {
-                            if (sub->in_pos == 1 && sub->auth_state == AUTH_NONE) { 
-                                log_event("DEBUG", sd, sub->ip_address, sub->port, "Client identified: Gorgona Binary Protocol");
-                                sub->auth_state = 99; 
+                        if (protocol_first_byte < 32 && protocol_first_byte != '\n' &&
+                            protocol_first_byte != '\r' && protocol_first_byte != '\t') {
+                            if (sub->in_pos == 1 && sub->auth_state == AUTH_NONE) {
+                                log_event("DEBUG", sd, sub->ip_address, sub->port,
+                                          "Client identified: Gorgona Binary Protocol");
+                                sub->auth_state = 99;
                             }
-                            if (sub->in_pos == 4) {
+                            /*
+                             * Дочитываем оставшиеся байты 4-байтного length prefix.
+                             * Первый байт уже лежит в in_buffer[0] (in_pos == 1..4).
+                             * Сокет non-blocking: EAGAIN → ждём следующий select.
+                             */
+                            while (sub->in_pos < 4) {
+                                ssize_t r = read(sd, sub->in_buffer + sub->in_pos,
+                                                 (size_t)(4 - sub->in_pos));
+                                if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                                    break; /* length ещё не полный — выйдем и вернёмся */
+                                }
+                                if (r <= 0) {
+                                    log_event("INFO", sd, sub->ip_address, sub->port,
+                                              "Disconnect while reading binary length prefix (n=%zd errno=%d)",
+                                              r, (r < 0) ? errno : 0);
+                                    cleanup_subscriber(i);
+                                    continue;
+                                }
+                                sub->in_pos += (int)r;
+                            }
+                            if (sub->in_pos < 4) {
+                                continue; /* ждём остальные байты length на следующем select */
+                            }
+                            /* Ровно 4 байта length собраны */
+                            {
                                 uint32_t temp_len;
                                 memcpy(&temp_len, sub->in_buffer, 4);
                                 temp_len = ntohl(temp_len);
-                                
+                                log_event("DEBUG", sd, sub->ip_address, sub->port,
+                                          "Binary Frame: temp_len=%u bytes (%.2f MB), max_limit=%zu bytes (%.2f MB)",
+                                          temp_len, temp_len / (1024.0 * 1024.0),
+                                          max_message_size, max_message_size / (1024.0 * 1024.0));
                                 if (temp_len > max_message_size || temp_len == 0) {
+                                    log_event("WARN", sd, sub->ip_address, sub->port,
+                                              "Rejected message: size %u (%.2f MB) exceeds max_message_size %zu (%.2f MB)",
+                                              temp_len, temp_len / (1024.0 * 1024.0),
+                                              max_message_size, max_message_size / (1024.0 * 1024.0));
                                     char err_size[256];
-                                    int l = snprintf(err_size, sizeof(err_size), "Error: Message size (%u) exceeds limit.\n", temp_len);
+                                    int l = snprintf(err_size, sizeof(err_size),
+                                                     "Error: Message size (%u) exceeds limit (%zu bytes).\n",
+                                                     temp_len, max_message_size);
                                     enqueue_message(i, err_size, l);
-                                    sub->close_after_send = true; 
-                                    continue; 
+                                    sub->close_after_send = true;
+                                    sub->in_pos = 0;
+                                    if (sub->in_buffer) {
+                                        free(sub->in_buffer);
+                                        sub->in_buffer = NULL;
+                                    }
+                                    /* Клиент сразу увидит обрыв, а не «тихое» забивание окна */
+                                    shutdown(sd, SHUT_RD);
+                                    continue;
                                 }
-
                                 sub->expected_msg_len = temp_len;
-                                char *new_binary_buf = malloc(sub->expected_msg_len + 1);
+                                char *new_binary_buf = malloc((size_t)sub->expected_msg_len + 1);
                                 if (new_binary_buf) {
                                     free(sub->in_buffer);
                                     sub->in_buffer = new_binary_buf;
                                     sub->in_pos = 0;
                                     sub->read_state = READ_MSG;
                                 } else {
-                                    /* ДОБАВЛЯЕМ ЛОГ ОШИБКИ */
-                                    log_event("ERROR", sd, sub->ip_address, sub->port, 
-                                              "CRITICAL: Memory allocation failed for payload (%u bytes)", temp_len);
+                                    log_event("ERROR", sd, sub->ip_address, sub->port,
+                                              "CRITICAL: Memory allocation failed for payload (%u bytes)",
+                                              temp_len);
                                     cleanup_subscriber(i);
                                     continue;
                                 }
@@ -723,7 +895,8 @@ void run_server(int server_fd) {
 
                                             char status_msg[4096];
                                             int pos = 0; 
-                                            time_t now = time(NULL);
+//                                          time_t now = time(NULL);
+                                            time_t logical_now = get_cluster_logical_time();
 
                                             /* Получаем IP и порт сервера */
                                             struct sockaddr_in node_addr;
@@ -752,26 +925,90 @@ void run_server(int server_fd) {
                                             int total_waste = 0;
                                             size_t total_bytes = 0;
                                             time_t oldest_ts = 0;
-
+                                            /* Debug counters */
+                                            int dbg_active = 0;
+                                            int dbg_expired_active = 0;
+                                            int dbg_tombstone_active = 0;
+                                            int dbg_locked = 0;          /* unlock_at > now */
+                                            int dbg_normal_live = 0;
                                             for (int r = 0; r < recipient_count; r++) {
                                                 Recipient *rec = &recipients[r];
                                                 total_waste += rec->waste_count;
                                                 total_bytes += rec->used_size;
                                                 for (int a = 0; a < rec->count; a++) {
-                                                    if (rec->alerts[a].active) {
-                                                        /* Не считаем служебные Tombstone-события за живые пользовательские сообщения */
-                                                        if (rec->alerts[a].text && rec->alerts[a].text_len >= 10 &&
-                                                            strncmp((char*)rec->alerts[a].text, "TOMBSTONE|", 10) == 0) {
-                                                            continue;
-                                                        }
-
-                                                        live_alerts++;
-                                                        if (oldest_ts == 0 || rec->alerts[a].create_at < oldest_ts) {
-                                                            oldest_ts = rec->alerts[a].create_at;
-                                                        }
+                                                    Alert *al = &rec->alerts[a];
+                                                    if (!al->active)
+                                                        continue;
+                                                    dbg_active++;
+                                                    /* Просроченные, но ещё active */
+                                                    if (al->expire_at != 0 && al->expire_at <= logical_now) {
+                                                        dbg_expired_active++;
+                                                        continue;
                                                     }
+                                                    /* Tombstone detection (plaintext после decode в add_alert) */
+                                                    bool is_tomb = false;
+                                                    if (al->text && al->text_len >= 10) {
+                                                        if (strncmp((char*)al->text, "TOMBSTONE|", 10) == 0)
+                                                            is_tomb = true;
+                                                        /* на всякий случай — если вдруг лежит base64 */
+                                                        else if (al->text_len >= 14 && memcmp(al->text, "VE9NQlNUT05FfA", 14) == 0)
+                                                            is_tomb = true;
+                                                    }
+                                                    if (is_tomb) {
+                                                        dbg_tombstone_active++;
+                                                        continue;
+                                                    }
+                                                    /* Locked (ещё не unlock) */
+                                                    if (al->unlock_at > logical_now) {
+                                                        dbg_locked++;
+                                                        /* по желанию можно не считать их в live, как в режиме LIVE клиента */
+                                                        // continue;
+                                                    }
+                                                    live_alerts++;
+                                                    dbg_normal_live++;
+                                                    if (oldest_ts == 0 || al->create_at < oldest_ts)
+                                                        oldest_ts = al->create_at;
                                                 }
                                             }
+                                            /* Один раз за status — пишем разбивку */
+                                            log_event("DEBUG", -1, NULL, 0,
+                                                      "[STATUS] live_alerts breakdown: total_active=%d, expired_active=%d, "
+                                                      "tombstone_active=%d, locked=%d, normal_live=%d → reported_live=%d",
+                                                      dbg_active, dbg_expired_active, dbg_tombstone_active,
+                                                      dbg_locked, dbg_normal_live, live_alerts);
+                                            /* Per-recipient breakdown (только если log_level debug) */
+                                            if (log_level[0] == 'd' || log_level[0] == 'D') {
+                                                for (int r = 0; r < recipient_count; r++) {
+                                                    Recipient *rec = &recipients[r];
+                                                    int rec_live = 0;
+                                                    int rec_tomb = 0;
+                                                    int rec_active = 0;
+
+                                                    for (int a = 0; a < rec->count; a++) {
+                                                        Alert *al = &rec->alerts[a];
+                                                        if (!al->active) continue;
+                                                        rec_active++;
+
+                                                        bool is_tomb = (al->text && al->text_len >= 10 &&
+                                                                        strncmp((char*)al->text, "TOMBSTONE|", 10) == 0);
+                                                        if (is_tomb) {
+                                                            rec_tomb++;
+                                                            continue;
+                                                        }
+                                                        if (al->expire_at != 0 && al->expire_at <= logical_now)
+                                                            continue;
+
+                                                        rec_live++;
+                                                    }
+
+                                                    char *h_b64 = base64_encode(rec->hash, PUBKEY_HASH_LEN);
+                                                    log_event("DEBUG", -1, NULL, 0,
+                                                              "[STATUS] rec[%d] %s: count=%d active=%d tomb=%d live=%d last_id=%" PRIu64,
+                                                              r, h_b64 ? h_b64 : "?", rec->count, rec_active, rec_tomb, rec_live,
+                                                              rec->count > 0 ? rec->alerts[rec->count-1].id : 0);
+                                                    if (h_b64) free(h_b64);
+                                                }
+}
 
                                             /* 4. Formatting of Time Stamps (Cluster Pulse Time) */
                                             uint64_t current_max_id = get_max_alert_id();
@@ -787,7 +1024,7 @@ void run_server(int server_fd) {
                                                 if (gmtime_r(&oldest_ts, &tm_res)) strftime(oldest_time_str, 32, "%Y-%m-%d %H:%M:%S", &tm_res);
                                             }
 
-                                            double uptime_sec = difftime(now, server_start_time);
+                                            double uptime_sec = difftime(logical_now, server_start_time);
                                             int ud = (int)(uptime_sec/86400), uh = (int)(uptime_sec/3600)%24, um = (int)(uptime_sec/60)%60;
 
                                             /* 5. Финальная сборка в вашем оригинальном формате */
@@ -806,6 +1043,7 @@ void run_server(int server_fd) {
                                                 "  - Database Size: %.2f MB\n"
                                                 "  - Disk Waste (Awaiting Vacuum): %d\n"
                                                 "  - Vacuum Threshold: %d%%\n"
+                                                "  - Vacuum CHeck Interval: %d sec\n"
                                                 "  - History Starts From:  [%s UTC]\n"
                                                 "  - Last Data Ingest:     [%s UTC]\n"
                                                 "Operational Configuration:\n"
@@ -818,7 +1056,7 @@ void run_server(int server_fd) {
                                                 authenticated_peers, remote_peer_count,
                                                 use_disk_db ? "Persistent (Disk)" : "Ephemeral (Memory)",
                                                 recipient_count, live_alerts, current_max_id,
-                                                (double)total_bytes / (1024 * 1024), total_waste, vacuum_threshold,
+                                                (double)total_bytes / (1024 * 1024), total_waste, vacuum_threshold, vacuum_check_interval,
                                                 oldest_time_str, pulse_time_str,
                                                 max_alerts, max_alert_ttl, (double)max_alert_ttl / 86400.0,
                                                 (size_t)(max_message_size / (1024 * 1024)), log_level

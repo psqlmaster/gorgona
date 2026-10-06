@@ -3,7 +3,11 @@
  * BSD 3-Clause License
  * Copyright (c) 2025, Alexander Shcheglov
  */
-
+#ifdef GORGONA_CLIENT
+    #define MESH_LOG_LEVEL "DEBUG"
+#else
+    #define MESH_LOG_LEVEL "INFO"
+#endif
 #ifndef ADMIN_MESH_H
 #define ADMIN_MESH_H
 
@@ -49,6 +53,7 @@ typedef struct {
     uint32_t fail_count;
     time_t last_success;
     size_t window_bytes;
+    struct timespec window_start; 
     double window_time;
 } MeshMetrics;
 

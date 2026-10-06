@@ -13,7 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -23,8 +22,12 @@
 #include <sys/time.h>
 #include <signal.h> 
 #include <stdbool.h>
-
 extern int verbose;
+
+/* Отправка сырого зашифрованного payload указанному ключу */
+int alert_send_raw(const char *target_pubkey,
+                   const uint8_t *payload, size_t payload_len,
+                   time_t unlock_at, time_t expire_at);
 
 /**
  * Parses date and time in format "YYYY-MM-DD HH:MM:S"
@@ -245,7 +248,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
                 ssize_t read_bytes = read(sock, a_buf, a_r_l);
                 if (read_bytes > 0) {
                     a_buf[read_bytes] = '\0';
-                    log_event("INFO", -1, NULL, 0, "Mesh: Authentication successful (%s)", a_buf);
+                    log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Mesh: Authentication successful (%s)", a_buf);
                     /* Safety check: if server rejected PSK */
                     if (strstr(a_buf, "Error:")) {
                         log_event("ERROR", -1, NULL, 0, "Auth Error: %s", a_buf);
@@ -258,7 +261,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     gettimeofday(&tv_auth, NULL);
 
     /* 7. DATA TRANSMISSION (CHUNKED) */
-    log_event("INFO", -1, current_ip, 0, "Transmission: Sending %d bytes", total_len);
+    log_event(MESH_LOG_LEVEL, -1, current_ip, 0, "Transmission: Sending %d bytes", total_len);
     signal(SIGPIPE, SIG_IGN);
 
     uint32_t msg_len_net = htonl((uint32_t)total_len);
@@ -323,6 +326,207 @@ cleanup_all:
     free(encrypted); free(encrypted_key); free(iv); free(tag);
     free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
     return 0;
+}
+
+/**
+ * Отправка сырого бинарного payload (например, файла после file_sync_pack).
+ * Payload уже содержит заголовок GORGONA_FILE_MAGIC + сжатые данные.
+ * Мы просто шифруем его как обычное сообщение и отправляем через mesh.
+ *
+ * unlock_at / expire_at ставим «сейчас + 1 час», чтобы файл сразу был доступен.
+ */
+int alert_send_raw(const char *target_pubkey,
+                   const uint8_t *payload, size_t payload_len,
+                   time_t unlock_at, time_t expire_at)
+{
+    if (!target_pubkey || !payload || payload_len == 0) {
+        fprintf(stderr, "[sync] alert_send_raw: invalid arguments\n");
+        fprintf(stderr, "[decrypt_bin] FAIL at %s:%d — %s\n", __FILE__, __LINE__, ERR_error_string(ERR_get_error(), NULL));
+        return -1;
+    }
+    /* Если передали 0 — ставим разумные дефолты */
+    time_t now = time(NULL);
+    if (unlock_at == 0) unlock_at = now;
+    if (expire_at == 0) expire_at = now + 1800;   /* 30 minutes */
+
+    int result = -1;   /* по умолчанию ошибка */
+    char *buffer = NULL;
+    char *pubkey_hash_b64 = NULL;
+    unsigned char *encrypted = NULL, *encrypted_key = NULL, *iv = NULL, *tag = NULL;
+    char *encrypted_b64 = NULL, *encrypted_key_b64 = NULL, *iv_b64 = NULL, *tag_b64 = NULL;
+
+    /* 1. Путь к публичному ключу */
+    char full_pubkey_file[512];
+    if (strstr(target_pubkey, ".pub")) {
+        snprintf(full_pubkey_file, sizeof(full_pubkey_file), "%s/%s", gorgona_conf_dir, target_pubkey);
+    } else {
+        snprintf(full_pubkey_file, sizeof(full_pubkey_file), "%s/%s.pub", gorgona_conf_dir, target_pubkey);
+    }
+
+    FILE *pub_fp = fopen(full_pubkey_file, "rb");
+    if (!pub_fp) {
+        log_event("ERROR", -1, NULL, 0, "Failed to open public key: %s", full_pubkey_file);
+        return -1;
+    }
+    EVP_PKEY *pubkey = PEM_read_PUBKEY(pub_fp, NULL, NULL, NULL);
+    fclose(pub_fp);
+    if (!pubkey) {
+        log_event("ERROR", -1, NULL, 0, "Failed to parse RSA key: %s", full_pubkey_file);
+        return -1;
+    }
+
+    /* 2. Хэш ключа */
+    size_t hash_len;
+    unsigned char *pubkey_hash = compute_pubkey_hash(pubkey, &hash_len, verbose);
+    EVP_PKEY_free(pubkey);
+    if (!pubkey_hash) return -1;
+
+    pubkey_hash_b64 = base64_encode(pubkey_hash, hash_len);
+    free(pubkey_hash);
+    if (!pubkey_hash_b64) return -1;
+    sanitize_b64(pubkey_hash_b64);
+
+    /* Шифрование */
+    size_t e_len, k_len, i_len, t_len;
+    if (encrypt_message_bin(payload, payload_len,
+                            &encrypted, &e_len,
+                            &encrypted_key, &k_len,
+                            &iv, &i_len, &tag, &t_len,
+                            full_pubkey_file, verbose) != 0) {
+        goto cleanup;
+    }
+
+    encrypted_b64     = base64_encode(encrypted, e_len);
+    encrypted_key_b64 = base64_encode(encrypted_key, k_len);
+    iv_b64            = base64_encode(iv, i_len);
+    tag_b64           = base64_encode(tag, t_len);
+    sanitize_b64(encrypted_b64);
+    sanitize_b64(encrypted_key_b64);
+    sanitize_b64(iv_b64);
+    sanitize_b64(tag_b64);
+
+    /* Формируем пакет */
+    int total_len = snprintf(NULL, 0, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+                             pubkey_hash_b64, (long)unlock_at, (long)expire_at,
+                             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
+    if (total_len < 0) goto cleanup;
+
+    if ((size_t)total_len > 50 * 1024 * 1024) {
+        log_event("ERROR", -1, NULL, 0, "File payload exceeds 50MB limit after encryption");
+        goto cleanup;
+    }
+
+    buffer = malloc(total_len + 1);
+    if (!buffer) goto cleanup;
+
+    snprintf(buffer, total_len + 1, "SEND|%s|%ld|%ld|%s|%s|%s|%s",
+             pubkey_hash_b64, (long)unlock_at, (long)expire_at,
+             encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
+
+    /* Сеть */
+    Config config;
+    read_config(config_file_path, &config, verbose);
+    bool l2_enabled = (config.sync_psk[0] != '\0');
+    if (l2_enabled) mesh_init(config.sync_psk);
+
+    peer_manager_load_cache(&config);
+    int sock = peer_manager_get_best_connection();
+    if (sock < 0) {
+        log_event("ERROR", -1, NULL, 0, "Mesh: All node candidates are unreachable");
+        goto cleanup;
+    }
+
+    char current_ip[INET_ADDRSTRLEN] = "unknown";
+    struct sockaddr_in p_addr;
+    socklen_t p_l = sizeof(p_addr);
+    if (getpeername(sock, (struct sockaddr *)&p_addr, &p_l) == 0) {
+        inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
+    }
+
+    /* 7. L2 AUTH */
+    if (l2_enabled) {
+        char auth_req[256];
+        int al = snprintf(auth_req, sizeof(auth_req), "AUTH|%s|0|0|0", config.sync_psk);
+        uint32_t al_net = htonl(al);
+        if (send(sock, &al_net, 4, MSG_NOSIGNAL) != 4 ||
+            send(sock, auth_req, al, MSG_NOSIGNAL) != al) {
+            peer_manager_mark_bad(current_ip);
+            close(sock);
+            goto cleanup;
+        }
+
+        uint32_t a_r_l_n;
+        if (read(sock, &a_r_l_n, 4) == 4) {
+            size_t a_r_l = ntohl(a_r_l_n);
+            if (a_r_l < 1024) {
+                char a_buf[1024];
+                ssize_t rb = read(sock, a_buf, a_r_l);
+                if (rb > 0) {
+                    a_buf[rb] = '\0';
+                    if (strstr(a_buf, "Error:")) {
+                        log_event("ERROR", -1, NULL, 0, "Auth Error: %s", a_buf);
+                        close(sock);
+                        goto cleanup;
+                    }
+                }
+            }
+        }
+    }
+
+    /* 8. Отправка */
+    signal(SIGPIPE, SIG_IGN);
+    uint32_t msg_len_net = htonl((uint32_t)total_len);
+    if (send(sock, &msg_len_net, 4, MSG_NOSIGNAL) != 4) {
+        peer_manager_mark_bad(current_ip);
+        close(sock);
+        goto cleanup;
+    }
+
+    size_t total_sent = 0;
+    const size_t chunk_size = 65536;
+    bool aborted = false;
+
+    while (total_sent < (size_t)total_len) {
+        size_t to_send = ((size_t)total_len - total_sent > chunk_size)
+                             ? chunk_size : ((size_t)total_len - total_sent);
+        ssize_t sent = send(sock, buffer + total_sent, to_send, MSG_NOSIGNAL);
+        if (sent <= 0) {
+            aborted = true;
+            break;
+        }
+        total_sent += sent;
+    }
+
+    /* 9. ACK */
+    if (!aborted) {
+        struct timeval tv_to = {10, 0};
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv_to, sizeof(tv_to));
+        uint32_t resp_len_net;
+        if (read_n_bytes(sock, &resp_len_net, 4) == 4) {
+            size_t resp_len = ntohl(resp_len_net);
+            if (resp_len > 0 && resp_len < 2048) {
+                char *resp_buf = malloc(resp_len + 1);
+                if (resp_buf && read(sock, resp_buf, resp_len) == (ssize_t)resp_len) {
+                    resp_buf[resp_len] = '\0';
+                    if (verbose) printf("Server Result: %s\n", resp_buf);
+                }
+                free(resp_buf);
+            }
+        }
+        result = 0;   /* успех */
+    } else {
+        peer_manager_mark_bad(current_ip);
+        log_event("ERROR", -1, current_ip, 0, "Transmission failed");
+    }
+
+    close(sock);
+
+cleanup:
+    free(buffer);
+    free(pubkey_hash_b64);
+    free(encrypted); free(encrypted_key); free(iv); free(tag);
+    free(encrypted_b64); free(encrypted_key_b64); free(iv_b64); free(tag_b64);
+    return result;
 }
 
 /**

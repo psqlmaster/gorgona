@@ -353,7 +353,12 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
 
     /* Enforce TTL Policy */
     time_t local_ttl_limit = cluster_now + max_alert_ttl;
-    if (expire_at > local_ttl_limit) {
+    
+    /* Защита от "вечных" алертов.
+       Если клиент передал 0 или время уже истекло, применяем дефолтный TTL. */
+    if (expire_at == 0 || expire_at <= cluster_now) {
+        expire_at = local_ttl_limit;
+    } else if (expire_at > local_ttl_limit) {
         expire_at = local_ttl_limit;
     }
 
@@ -828,18 +833,31 @@ void run_global_maintenance(void) {
     /* --- LAYER 1: Storage & Memory Cleanup --- */
     for (int i = 0; i < recipient_count; ) {
         Recipient *rec = &recipients[i];
-        
-        /* 1. Purge expired alerts based on cluster logical time */
+        /* Снять expired из RAM + увеличить waste_count */
         clean_expired_alerts_logic(rec, cluster_now);
-
-        /* 2. Enforce hard limit on alert count per key */
-        while (rec->count > max_alerts && rec->count > 0) {
+        /* Лимит числа алертов на ключ */
+        while (rec->count > max_alerts && rec->count > 0)
             remove_oldest_alert(rec);
-        }
-
+        /* Vacuum: по числу waste ИЛИ по раздутому файлу на диске */
         int waste_limit = (max_alerts * vacuum_threshold) / 100;
-        if (rec->count == 0 || rec->waste_count >= waste_limit) {
+        if (waste_limit < 1)
+            waste_limit = 1;
+        bool need_sync = false;
+        if (rec->count == 0)
+            need_sync = true;
+        else if (rec->waste_count >= waste_limit)
+            need_sync = true;
+        else if (use_disk_db && rec->fd >= 0) {
+            struct stat st;
+            if (fstat(rec->fd, &st) == 0) {
+                size_t disk = (size_t)st.st_size;
+                if (disk > rec->used_size * 2 && disk > 4 * 1024 * 1024)
+                    need_sync = true;
+            }
+        }
+        if (need_sync && use_disk_db) {
             if (alert_db_sync(rec) == 1) {
+                /* файл пуст > recipient удалён с диска */
                 remove_recipient_at_index(i);
                 continue;
             }

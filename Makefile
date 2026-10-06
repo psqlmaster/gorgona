@@ -26,11 +26,11 @@ TEST_CFLAGS  := $(CFLAGS) $(shell pkg-config --cflags check 2>/dev/null || echo 
 TEST_LDFLAGS := $(LDFLAGS) $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck -lrt -lsubunit")
 #
 # --- Source File Definitions ---
-COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c
+COMMON_SRC  := common/encrypt.c common/common.c common/admin_mesh.c common/lz4.c
 
 CLIENT_SRC  := client/gorgona.c client/globals.c client/alert_send.c \
                client/alert_listen.c client/config.c client/client_history.c \
-               client/peer_manager.c $(COMMON_SRC)
+               client/peer_manager.c client/file_sync.c $(COMMON_SRC)
 
 SERVER_SRC  := server/gorgonad.c server/config.c server/gorgona_utils.c \
                server/server_handler.c server/snowflake.c server/alert_db.c \
@@ -69,11 +69,11 @@ gorgonad: $(SERVER_OBJ)
 
 # Client object files
 %.client.o: %.c
-	$(CC) $(CFLAGS) -DVERSION=\"$(CLIENT_VER)\" -c $< -o $@
+	$(CC) $(CFLAGS) -DVERSION=\"$(CLIENT_VER)\" -DGORGONA_CLIENT -c $< -o $@
 
 # Server object files
 %.server.o: %.c
-	$(CC) $(CFLAGS) -DVERSION=\"$(SERVER_VER)\" -c $< -o $@
+	$(CC) $(CFLAGS) -DVERSION=\"$(SERVER_VER)\" -DGORGONA_SERVER -c $< -o $@
 
 # Test objects
 test/%.o: test/%.c

@@ -242,30 +242,30 @@ Controls the `gorgonad` daemon behavior.
 # vim /etc/gorgona/gorgonad.conf
 [server]
 port = 7777                                            # Listen port
-max_alerts = 1000                                      # Max alerts stored per key
-max_alert_ttl = 7776000                                # (90 days) lifetime in seconds
-max_clients = 100                                      # Concurrent client connections
-max_log_size = 10                                      # Log rotation size in MB
+max_alerts = 1000                                      # Max alerts stored per key (systemctl reload gorgonad)
+max_alert_ttl = 7776000                                # (90 days) lifetime in seconds (systemctl reload gorgonad)
+max_clients = 100                                      # Concurrent client connections (systemctl reload gorgonad; decrease closes excess slots)
+max_log_size = 10                                      # Log rotation size in MB (systemctl reload gorgonad)
 log_level = info                                       # info, error, or debug (systemctl reload gorgonad)
-max_message_size = 5                                   # Max message size in MB
-use_disk_db = true                                     # Enable persistent storage (true - tested for production, false - experimental, requires debugging)
-vacuum_threshold_percent = 50                          # Auto-cleanup threshold for deleted records
-
-# paths (optional - defaults shown below)
+max_message_size = 5                                   # Max message size in MB (systemctl reload gorgonad)
+use_disk_db = true                                     # Enable persistent storage (requires restart to change)
+vacuum_threshold_percent = 50                          # Auto-cleanup threshold for deleted records (systemctl reload gorgonad)
+vacuum_check_interval = 300                            # Check the status every 300 seconds (5 minutes) 
+# paths
 data_dir = /var/lib/gorgona                            # Base directory for DB, cache, and logs
 conf_dir = /etc/gorgona                                # Directory for config files and TLS certs
-log_level = error                                      # info, error, or debug 
-# log_file = /var/log/gorgona/gorgonad.log             # Optional: override default log path (<data_dir>/gorgonad.log)
+log_file = /var/log/gorgona/gorgonad.log               # Optional; if log_file is not specified, <data_dir>/gorgonad.log (default: /var/lib/gorgona/gorgonad.log)
 
 [replication]
 # If sync_psk is set, the client joins the Layer 2 Mesh:
-# 1. Automatically discovers new nodes and updates <data_dir>/peers.cache
+# 1. Automatically discovers new nodes and updates <data_dir>/gorgona/peers.cache
 # 2. Uses parallel probes (Happy Eyeballs) to find the fastest entry point
 # 3. Prioritizes 127.0.0.1 if a local sidecar daemon is running
+# support (systemctl reload gorgonad)
 sync_psk = BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3    # P2P cluster authentication key
-sync_interval = 60                                     # Mesh maintenance frequency (sec). Controls PEX gossip, RTT heartbeats, and Anti-Entropy checks.
+sync_interval = 60                                     # Mesh maintenance frequency (sec) (systemctl reload gorgonad)
 peer = 64.188.70.158:7777                              # Remote peer address(seed) to sync with
-#peer = node-beta.gorgona.local:7777                   #Remote peer address(seed) to sync with
+#peer = node-beta.gorgona.local:7777                   # Remote peer (FQDN/DNS format)
 ```
 
 ##### Client Configuration (gorgona.conf)
@@ -291,6 +291,15 @@ start_app = /usr/local/bin/app_start.sh time_limit = 60
 [exec_commands]
 sysadmin = /usr/local/bin/gorgona_sysadmin.sh time_limit = 10
 status = /usr/bin/uptime
+
+# send-file section
+[sync]
+max_file_size = 10485760        # 10 MB limit to prevent overflow 
+# Synchronization section for a specific trusted key 
+[sync:<pubkey>]
+dir = /etc/nginx/conf.d         # The root synchronization folder for this key 
+direction = rw                  # ro (read-only), wo (write-only), rw (read-write) 
+on_change = nginx -s reload     # Command after the file has been successfully synchronized 
 ```
 
 - Create dir for file `/var/lib/gorgona/peers.cache`
@@ -484,6 +493,13 @@ gorgona listen <mode> [<count>] [pubkey_hash_b64]
 
 If `pubkey_hash_b64` is provided, filters by it (mandatory for `single` and `last`).
 
+#### send-file
+```bash
+send-file [<unlock> <expire>] <filepath> <pubkey>
+    Sends a file (LZ4-compressed + encrypted). Times are optional (default: now … now+1h).
+    Optional: --name <relative_path> to set the name on the receiver side.
+```
+
 #### Revoke (Cancel) Message
 
 ```bash
@@ -520,6 +536,19 @@ gorgona -edv listen lock RWTPQzuhzBw=  # Executes locked commands in background 
 # 1. Send a command to reboot the server in 1 hour
 # Output will provide the Alert ID, e.g., 170112816685056
 gorgona send "$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+2 days' '+%Y-%m-%d %H:%M:%S')" "sudo reboot" "RWTPQzuhzBw=.pub"
+# send-file 
+gorgona send-file /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub
+gorgona send-file --name conf.d/new_name_site.conf /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub
+gorgona send-file "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 minutes' '+%Y-%m-%d %H:%M:%S')" --name test_nginx1.conf /home/su/Downloads/test_nginx.conf RWTPQzuhzBw=.pub
+# for send-file add section in receiver to gorgona.conf
+#[sync]
+#max_file_size = 10485760        # 10 MB limit to prevent overflow 
+# Synchronization section for a specific trusted key 
+#[sync:<pubkey>]
+#dir = /etc/nginx/conf.d         # The root synchronization folder for this key 
+#direction = rw                  # ro (read-only), wo (write-only), rw (read-write) 
+#on_change = nginx -s reload     # Command after the file has been successfully synchronized 
+#
 # 2. If the maintenance was successful and reboot is no longer needed, cancel it:
 gorgona revoke 170112816685056 RWTPQzuhzBw=
 ```
@@ -556,6 +585,7 @@ Storage Metrics:
   - Database Size: 2.45 MB
   - Disk Waste (Awaiting Vacuum): 1
   - Vacuum Threshold: 50%
+  - Vacuum CHeck Interval: 300 sec
   - History Starts From:  [2026-04-05 12:51:59 UTC]
   - Last Data Ingest:     [2026-04-17 21:29:11 UTC]
 Operational Configuration:
@@ -579,6 +609,7 @@ Storage Metrics:
   - Cluster Pulse (MaxID): 167001095340032
   - Database Size: 2.45 MB
   - Disk Waste (Awaiting Vacuum): 1
+  - Vacuum CHeck Interval: 300 sec
   - Vacuum Threshold: 50%
   - History Starts From:  [2026-04-05 12:51:59 UTC]
   - Last Data Ingest:     [2026-04-17 21:29:11 UTC]
