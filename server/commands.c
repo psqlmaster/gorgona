@@ -141,7 +141,8 @@ static void process_chain_sample(int i, char *buffer) {
             }
         }
     }
-    time_t now = time(NULL);
+//    time_t now = time(NULL);
+    time_t logical_now = get_cluster_logical_time();
     if (ancestor_id > 0) {
         /* Общий предок найден -> Range Sync */
         static time_t last_range_sync[64] = {0};
@@ -150,7 +151,7 @@ static void process_chain_sample(int i, char *buffer) {
         bool allow_range = true;
         for (int k = 0; k < 64; k++) {
             if (memcmp(last_range_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
-                if (now - last_range_sync[k] < 3) {
+                if (logical_now - last_range_sync[k] < 3) {
                     allow_range = false;
                 }
                 break;
@@ -158,7 +159,7 @@ static void process_chain_sample(int i, char *buffer) {
         }
         if (allow_range) {
             memcpy(last_range_hashes[range_idx], raw_hash, PUBKEY_HASH_LEN);
-            last_range_sync[range_idx] = now;
+            last_range_sync[range_idx] = logical_now;
             range_idx = (range_idx + 1) % 64;
             /* просим Range Sync. Дедупликация по ID
               (return -4 в add_alert) и backfill-логика сами разберутся.  */
@@ -197,7 +198,7 @@ static void process_chain_sample(int i, char *buffer) {
             bool allow_full = true;
             for (int k = 0; k < 64; k++) {
                 if (memcmp(last_full_hashes[k], raw_hash, PUBKEY_HASH_LEN) == 0) {
-                    if (now - last_full_sync[k] < 45) {
+                    if (logical_now - last_full_sync[k] < 45) {
                         allow_full = false;
                     }
                     break;
@@ -205,7 +206,7 @@ static void process_chain_sample(int i, char *buffer) {
             }
             if (allow_full) {
                 memcpy(last_full_hashes[full_sync_idx], raw_hash, PUBKEY_HASH_LEN);
-                last_full_sync[full_sync_idx] = now;
+                last_full_sync[full_sync_idx] = logical_now;
                 full_sync_idx = (full_sync_idx + 1) % 64;
                 /* === СБРОС РАССИНХРОНИЗИРОВАННОЙ ЦЕПОЧКИ === 
                  * Так как расхождение превысило окно max_alerts, наша локальная

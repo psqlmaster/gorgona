@@ -217,28 +217,20 @@ int main(int argc, char *argv[]) {
         printf("DEBUG: sync_interval: %d seconds, max_clients: %d\n", sync_interval, max_clients);
     }
 
-    /* Initialize Logging System (Upto internal rotation) */
+    /* Initialize Logging System */
     char target_log[512];
     if (gorgona_log_file[0] != '\0') {
         strncpy(target_log, gorgona_log_file, sizeof(target_log) - 1);
     } else {
         snprintf(target_log, sizeof(target_log), "%s/gorgonad.log", gorgona_data_dir);
     }
-    
-    /* If running under systemd, stdout is usually redirected to journal,
-       but we want internal rotation to work, so we open the file explicitly. */
-    if (!isatty(STDOUT_FILENO)) {
-        log_file = fopen(target_log, "a");
-        if (!log_file) {
-            perror("Failed to open log file, falling back to stdout");
-            log_file = stdout;
-        } else {
-            /* Enable line buffering for immediate log visibility */
-            setvbuf(log_file, NULL, _IOLBF, 0);
-        }
+
+    log_file = fopen(target_log, "a");
+    if (!log_file) {
+        fprintf(stderr, "Warning: cannot open log file %s: %s\n", target_log, strerror(errno));
+        log_file = NULL;
     } else {
-        /* If started in terminal, log to console */
-        log_file = stdout;
+        setvbuf(log_file, NULL, _IOLBF, 0);
     }
 
     /* Sub-systems Initialization */
@@ -304,19 +296,16 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Server running on port %d\n", port);
     log_event("INFO", -1, NULL, 0, "Server is up and listening on port %d", port);
+    printf("[SERVER] Server is up and listening on port %d\n", port);
 
-    /* 7. Enter the main server loop */
+    /* Enter the main server loop */
     run_server(server_fd);
-
-    /* 8. Final Cleanup (Normally reached only via shutdown_handler) */
-    log_event("INFO", -1, NULL, 0, "Server shutting down cleanly");
     
-    if (log_file && log_file != stdout) {
-        fclose(log_file);
-    }
-    close(server_fd);
-
+    /* Cleanup */
+    if (use_disk_db) alert_db_close_all();
+    if (log_file && log_file != stdout) fclose(log_file);
+    close(server_fd); 
+    log_event("INFO", -1, NULL, 0, "Server shutting down cleanly");
     return 0;
 }

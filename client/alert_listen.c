@@ -548,7 +548,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     } 
     /* Snowflake ID Logic: 
      * Extract the timestamp (bits 63-12), add custom epoch, and convert to seconds. */
-    time_t create_at = ((id >> 12) + SNOWFLAKE_EPOCH) / 1000;
+    time_t create_at = (((id >> 12) & 0x1FFFFFFFFFFULL) + SNOWFLAKE_EPOCH) / 1000;
     time_t unlock_at = atol(unlock_at_str);
     time_t expire_at = atol(expire_at_str);
     time_t now = time(NULL);

@@ -400,6 +400,8 @@ void run_server(int server_fd) {
     fd_set readfds;
     fd_set writefds;
 
+    snowflake_init();
+
     if (server_start_time == 0) {
         server_start_time = time(NULL);
     }

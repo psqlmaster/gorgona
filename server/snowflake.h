@@ -20,6 +20,7 @@ extern uint64_t last_timestamp;
 
 /* Generating a Snowflake ID */
 uint64_t generate_snowflake_id(void);
+void snowflake_init(void);
 
 /**
  * Extracts timestamp from ID. 

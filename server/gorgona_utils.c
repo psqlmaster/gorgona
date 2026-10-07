@@ -395,11 +395,22 @@ int add_alert(const unsigned char *pubkey_hash, time_t unlock_at, time_t expire_
     }
 
     /* 3. DETERMINISTIC HOUSEKEEPING
-     * Теперь безопасно удаляем старые, так как мы точно знаем, что добавим новый уникальный алерт.
+     * To improve hash consistency between nodes, we do not aggressively 
+     * evict alerts during replication (forced_id > 0). We rely on run_global_maintenance 
+     * to clean up old alerts periodically across all nodes using the same logical clock.
+     * This prevents race conditions where Node A evicts Alert X before Node B receives it.
      */
     clean_expired_alerts_logic(rec, cluster_now);
-    while (rec->count >= max_alerts && rec->count > 0) {
-        remove_oldest_alert(rec);
+    if (forced_id == 0) {
+        while (rec->count >= max_alerts && rec->count > 0) {
+            remove_oldest_alert(rec);
+        }
+    } else {
+        /* For replicated alerts, allow slight overflow (e.g., up to 10% over limit) to ensure they can be inserted and synced before cleanup. */
+        int soft_limit = max_alerts + (max_alerts / 10);
+        while (rec->count > soft_limit && rec->count > 0) {
+            remove_oldest_alert(rec);
+        }
     }
 
     /* Anti-Replay Layer 1: Staleness Check (Local clients only) */
