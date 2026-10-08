@@ -125,7 +125,7 @@ static int build_prometheus_payload(char *buf, size_t max_len) {
             "gorgona_peer_status{target=\"%s\",origin=\"%s\"} %s\n"
             "gorgona_peer_rtt_milliseconds{target=\"%s\"} %.2f\n"
             "gorgona_peer_score{target=\"%s\"} %.2f\n"
-            "gorgona_peer_speed_bps{target=\"%s\"} %.0f\n",
+            "gorgona_peer_speed_bytes_per_sec{target=\"%s\"} %.0f\n",
             n->addr, origin, state,
             n->addr, n->metrics.last_rtt,
             n->addr, n->metrics.gorgona_score,

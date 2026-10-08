@@ -5,6 +5,9 @@
  */
 #define _GNU_SOURCE
 #define MAX_CACHE_PEERS 10
+/* Кольцевой буфер событий для расчёта скорости (time-windowed) */
+#define SPEED_WINDOW_SEC     60     /* Окно усреднения: 60 секунд */
+#define SPEED_EVENTS_MAX     256    /* Максимум событий в буфере на ноду */
 #include "admin_mesh.h"
 #include "common.h" 
 #include <openssl/evp.h>
@@ -25,6 +28,19 @@ static uint8_t mgmt_key[MGMT_K_LEN];
 MeshNode cluster_nodes[MAX_PEERS * 4];
 int cluster_node_count = 0;
 bool mesh_force_save = false; 
+
+typedef struct {
+    uint64_t timestamps[SPEED_EVENTS_MAX];
+    uint64_t bytes[SPEED_EVENTS_MAX];
+    int head;
+    int count;
+    double last_reported_speed;  /* Для деградации при простое */
+    uint64_t last_update_time;
+} SpeedTracker;
+
+/* Статический трекер на каждую ноду (по индексу в cluster_nodes) */
+static SpeedTracker speed_trackers[CLUSTER_MAX_NODES];
+static bool trackers_initialized = false;
 
 /**
  * Вспомогательная функция для обновления кэша IP узла.
@@ -137,35 +153,96 @@ void mesh_recalculate_scores() {
     }
 }
 
-void mesh_update_speed(const char *ip, size_t bytes, double seconds) {
-    (void)seconds;
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+static void init_speed_trackers(void) {
+    if (trackers_initialized) return;
+    memset(speed_trackers, 0, sizeof(speed_trackers));
+    trackers_initialized = true;
+}
+
+/* Находит индекс ноды по IP для привязки трекера */
+static int find_node_index_by_ip(const char *ip) {
     for (int i = 0; i < cluster_node_count; i++) {
         if (mesh_addr_compare(&cluster_nodes[i], ip)) {
-            MeshMetrics *m = &cluster_nodes[i].metrics;
-            /* Инициализация окна при первом пакете */
-            if (m->window_start.tv_sec == 0 && m->window_start.tv_nsec == 0) {
-                m->window_start = now;
-            }
-            m->window_bytes += bytes;
-            /* Вычисляем реальное астрономическое время окна */
-            double elapsed = (double)(now.tv_sec - m->window_start.tv_sec) +
-                             (double)(now.tv_nsec - m->window_start.tv_nsec) / 1e9;
-            /* Фиксируем срез строго по истечении временного интервала (например, 0.5 сек) */
-            if (elapsed >= 0.5) {
-                double current_sample = (double)m->window_bytes / elapsed;
-                /* Экспоненциальное сглаживание EWMA */
-                m->rolling_avg_speed = (m->rolling_avg_speed < 1.0) ? 
-                                        current_sample : (m->rolling_avg_speed * 0.7) + (current_sample * 0.3);
-                m->window_bytes = 0;
-                m->window_start = now;
-            }
-            cluster_nodes[i].last_seen = time(NULL);
-            m->last_success = time(NULL);
-            return;
+            return i;
         }
     }
+    return -1;
+}
+
+/**
+ * Updates the rolling average speed for a peer using a TIME-WINDOWED approach.
+ * 
+ * Unlike naive EMA (which is event-driven and distorts during bursts/idle),
+ * this method maintains a ring buffer of (timestamp, bytes) events and
+ * calculates speed as: sum(bytes_in_window) / window_duration.
+ * 
+ * This gives accurate bytes/second regardless of event frequency.
+ * 
+ * @param ip      Peer IP address
+ * @param bytes   Number of bytes transferred in this event
+ * @param delta   Unused (kept for API compatibility)
+ */
+void mesh_update_speed(const char *ip, size_t bytes, double delta) {
+    (void)delta;
+    init_speed_trackers();
+    
+    int node_idx = find_node_index_by_ip(ip);
+    if (node_idx < 0 || node_idx >= CLUSTER_MAX_NODES) return;
+    
+    SpeedTracker *t = &speed_trackers[node_idx];
+    uint64_t now_sec = (uint64_t)time(NULL);
+    
+    /* 1. Add new event to ring buffer */
+    t->timestamps[t->head] = now_sec;
+    t->bytes[t->head] = (uint64_t)bytes;
+    t->head = (t->head + 1) % SPEED_EVENTS_MAX;
+    if (t->count < SPEED_EVENTS_MAX) t->count++;
+    t->last_update_time = now_sec;
+    
+    /* 2. Calculate speed over the time window */
+    uint64_t window_start = (now_sec > SPEED_WINDOW_SEC) ? (now_sec - SPEED_WINDOW_SEC) : 0;
+    uint64_t total_bytes = 0;
+    uint64_t oldest_in_window = now_sec;
+    uint64_t newest_in_window = 0;
+    int events_in_window = 0;
+    
+    for (int i = 0; i < t->count; i++) {
+        uint64_t ts = t->timestamps[i];
+        if (ts >= window_start && ts <= now_sec) {
+            total_bytes += t->bytes[i];
+            if (ts < oldest_in_window) oldest_in_window = ts;
+            if (ts > newest_in_window) newest_in_window = ts;
+            events_in_window++;
+        }
+    }
+    
+    /* 3. Compute bytes/second */
+    double speed_bps = 0.0;
+    if (events_in_window > 0 && newest_in_window > oldest_in_window) {
+        double duration_sec = (double)(newest_in_window - oldest_in_window);
+        if (duration_sec > 0.0) {
+            speed_bps = (double)total_bytes / duration_sec;
+        }
+    } else if (events_in_window == 1) {
+        /* Single event: assume it happened within 1 second */
+        speed_bps = (double)total_bytes;
+    }
+    
+    /* 4. Idle degradation: if no data for a while, decay speed toward 0 */
+    uint64_t idle_sec = now_sec - t->last_update_time;
+    if (idle_sec > 5) {
+        /* Exponential decay: halve speed every 10 seconds of idle */
+        double decay = pow(0.5, (double)idle_sec / 10.0);
+        speed_bps = t->last_reported_speed * decay;
+    }
+    
+    /* 5. Smooth with EMA (alpha=0.3) to avoid jitter */
+    double alpha = 0.3;
+    double smoothed = (alpha * speed_bps) + ((1.0 - alpha) * t->last_reported_speed);
+    t->last_reported_speed = smoothed;
+    
+    /* 6. Write to MeshNode metrics */
+    cluster_nodes[node_idx].metrics.rolling_avg_speed = smoothed;
 }
 
 void mesh_update_rtt(const char *ip, double rtt_ms) {
