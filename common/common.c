@@ -21,12 +21,20 @@ void get_utc_time_str(char *buffer, size_t buffer_size) {
 }
 
 void trim_string(char *str) {
-    if (!str || *str == '\0') return;
-    
-    size_t len = strlen(str);
-    /* Удаляем пробелы, табы, переносы строк с конца */
-    while (len > 0 && isspace((unsigned char)str[len - 1])) {
-        str[len - 1] = '\0';
-        len--;
+    if (!str) return;
+    char *start = str;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
     }
+    if (*start == '\0') {
+        str[0] = '\0';
+        return;
+    }
+    char *end = start + strlen(start) - 1;
+    while (end > start && isspace((unsigned char)*end)) {
+        end--;
+    }
+    size_t len = end - start + 1;
+    memmove(str, start, len);
+    str[len] = '\0';
 }

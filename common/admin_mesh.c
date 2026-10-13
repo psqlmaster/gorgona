@@ -101,16 +101,6 @@ void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac) {
     HMAC(EVP_sha256(), mgmt_key, MGMT_K_LEN, nonce, CHALLENGE_LEN, out_hmac, &len);
 }
 
-/* Comparison function for qsort: descending by score */
-static int mesh_cmp_nodes(const void *a, const void *b) {
-    const MeshNode *nodeA = (const MeshNode *)a;
-    const MeshNode *nodeB = (const MeshNode *)b;
-    
-    if (nodeA->metrics.gorgona_score > nodeB->metrics.gorgona_score) return -1;
-    if (nodeA->metrics.gorgona_score < nodeB->metrics.gorgona_score) return 1;
-    return 0;
-}
-
 void mesh_recalculate_scores() {
     time_t now = time(NULL);
     extern int sync_interval;
@@ -148,9 +138,6 @@ void mesh_recalculate_scores() {
         n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY) + seed_bonus;
     }
     if (should_retry_dns) last_dns_retry = now;
-    if (cluster_node_count > 1) {
-        qsort(cluster_nodes, cluster_node_count, sizeof(MeshNode), mesh_cmp_nodes);
-    }
 }
 
 static void init_speed_trackers(void) {
@@ -247,14 +234,12 @@ void mesh_update_speed(const char *ip, size_t bytes, double delta) {
 
 void mesh_update_rtt(const char *ip, double rtt_ms) {
     for (int i = 0; i < cluster_node_count; i++) {
-        /* [FIX] Передаем указатель на узел &cluster_nodes[i] */
         if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             cluster_nodes[i].metrics.last_rtt = rtt_ms;
             cluster_nodes[i].last_seen = time(NULL);
             cluster_nodes[i].metrics.last_success = time(NULL);
             cluster_nodes[i].metrics.fail_count = 0;
             cluster_nodes[i].status = PEER_STATUS_AUTHENTICATED;
-            return;
         }
     }
 }
@@ -340,6 +325,11 @@ void mesh_discover_nodes(const char *payload, const char *sender_ip) {
     if (!copy) return;
     char *token = strtok(copy, "|");
     while (token) {
+        trim_string(token);
+        if (strlen(token) == 0) {
+            token = strtok(NULL, "|");
+            continue;
+        }
         char *colon = strchr(token, ':');
         if (!colon) { 
             token = strtok(NULL, "|"); 
@@ -370,14 +360,11 @@ void mesh_discover_nodes(const char *payload, const char *sender_ip) {
             continue;
         }
         /* 4. Strict Deduplication Loop */
-        bool found = false;
-        for (int i = 0; i < cluster_node_count; i++) {
+        int i;
+        for (i = 0; i < cluster_node_count; i++) {
             MeshNode *n = &cluster_nodes[i];
-            /* Match by logic:
-               - literal addresses match
-               - OR incoming IP matches our cached resolved_ip
-               - OR incoming addr matches our cached resolved_ip (cross-check)
-            */
+            
+            /* Match by logic: ... (ваша логика сравнения без изменений) */
             bool match = (strcmp(n->addr, incoming_addr) == 0);
             if (!match && incoming_resolved[0] != '\0') {
                 if (strcmp(n->resolved_ip, incoming_resolved) == 0) match = true;
@@ -386,18 +373,17 @@ void mesh_discover_nodes(const char *payload, const char *sender_ip) {
             if (!match && n->resolved_ip[0] != '\0') {
                 if (strcmp(n->resolved_ip, incoming_addr) == 0) match = true;
             }
+            
             if (match) {
                 n->last_seen = time(NULL);
-                /* If we have a name (FQDN) in table but got a better IP cache, update it */
                 if (n->resolved_ip[0] == '\0' && incoming_resolved[0] != '\0') {
                     strncpy(n->resolved_ip, incoming_resolved, sizeof(n->resolved_ip) - 1);
                 }
-                found = true; 
-                break;
+                break; // Выходим из цикла, i < cluster_node_count
             }
         }
-        /* 5. Add only if truly unique */
-        if (!found && cluster_node_count < CLUSTER_MAX_NODES) {
+        /* 5. Add only if truly unique (i reached the end of the array) */
+        if (i == cluster_node_count && cluster_node_count < CLUSTER_MAX_NODES) {
             MeshNode *n = &cluster_nodes[cluster_node_count++];
             memset(n, 0, sizeof(MeshNode));
             strncpy(n->addr, incoming_addr, sizeof(n->addr) - 1);
@@ -465,7 +451,6 @@ void mesh_mark_node_good(const char *ip) {
             cluster_nodes[i].consecutive_fails = 0;
             cluster_nodes[i].penalty_until = 0;
             cluster_nodes[i].status = PEER_STATUS_AUTHENTICATED;
-            return;
         }
     }
 }
@@ -477,12 +462,11 @@ const char* mesh_get_best_peer_ip() {
     time_t now = time(NULL);
     mesh_recalculate_scores(); 
     for (int i = 0; i < cluster_node_count; i++) {
-        /* We check both the logical address and the resolved IP address */
         if (is_local_ip(cluster_nodes[i].addr) || is_local_ip(cluster_nodes[i].resolved_ip)) {
-            cluster_nodes[i].status = PEER_STATUS_BANNED; 
             continue;
         }
         if (cluster_nodes[i].penalty_until > now) continue;
+        
         if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED) {
             if (cluster_nodes[i].metrics.gorgona_score > top_score) {
                 top_score = cluster_nodes[i].metrics.gorgona_score;
