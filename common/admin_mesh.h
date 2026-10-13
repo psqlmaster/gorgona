@@ -98,6 +98,7 @@ bool mesh_addr_compare(MeshNode *n, const char *phys_ip);
 void mesh_update_speed(const char *ip, size_t bytes, double seconds);
 void mesh_update_rtt(const char *ip, double rtt_ms);
 const char* mesh_get_best_peer_ip(void);
+int* mesh_get_sorted_indices(void);
 
 /* Crypto Wrappers */
 int mesh_encrypt(const uint8_t *plain, int len, uint8_t *out_cipher, uint8_t *out_iv, uint8_t *out_tag);

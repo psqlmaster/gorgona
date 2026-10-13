@@ -590,3 +590,25 @@ int mesh_get_logical_port_by_ip(const char *ip) {
     }
     return 0;
 }
+
+/* 
+ * Возвращает массив индексов, отсортированных по Score (по убыванию).
+ */
+int* mesh_get_sorted_indices(void) {
+    int *indices = malloc(sizeof(int) * cluster_node_count);
+    if (!indices) return NULL;
+    for (int i = 0; i < cluster_node_count; i++) {
+        indices[i] = i;
+    }
+    for (int i = 1; i < cluster_node_count; i++) {
+        int key = indices[i];
+        double key_score = cluster_nodes[key].metrics.gorgona_score;
+        int j = i - 1;
+        while (j >= 0 && cluster_nodes[indices[j]].metrics.gorgona_score < key_score) {
+            indices[j + 1] = indices[j];
+            j--;
+        }
+        indices[j + 1] = key;
+    }
+    return indices;
+}

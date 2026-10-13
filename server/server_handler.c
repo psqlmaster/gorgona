@@ -1065,25 +1065,31 @@ void run_server(int server_fd) {
                                             );
 
                                             /* 6. Секция L2 Топологии */
-                                            mesh_recalculate_scores(); 
+                                            mesh_recalculate_scores();
+                                            int *sorted_idx = mesh_get_sorted_indices();
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "--- L2 Cluster Topology (Known nodes: %d) ---\n", cluster_node_count);
-                                            for (int n = 0; n < cluster_node_count && pos < (int)sizeof(status_msg) - 256; n++) {
-                                                MeshNode *node = &cluster_nodes[n];
-                                                /* Формируем строку: Имя (IP если есть) */
-                                                char display_addr[1024];
-                                                if (node->resolved_ip[0] != '\0' && strcmp(node->addr, node->resolved_ip) != 0) {
-                                                    snprintf(display_addr, sizeof(display_addr), "%.500s (%.500s)", node->addr, node->resolved_ip); 
-                                                } else {
-                                                    snprintf(display_addr, sizeof(display_addr), "%.1023s", node->addr); 
-                                                }
 
-                                                pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
-                                                    "  [%-40s:%-5d] Score: %.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
-                                                    display_addr, node->port, node->metrics.gorgona_score,
-                                                    node->metrics.last_rtt, node->metrics.rolling_avg_speed / 1024.0,
-                                                    node->is_seed ? "SEED" : (node->is_cached ? "CACHE" : "PEX "),
-                                                    (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD"); 
+                                            if (sorted_idx) {
+                                                for (int k = 0; k < cluster_node_count && pos < (int)sizeof(status_msg) - 256; k++) {
+                                                    int n = sorted_idx[k];
+                                                    MeshNode *node = &cluster_nodes[n];
+                                                    
+                                                    char display_addr[1024];
+                                                    if (node->resolved_ip[0] != '\0' && strcmp(node->addr, node->resolved_ip) != 0) {
+                                                        snprintf(display_addr, sizeof(display_addr), "%.500s (%.500s)", node->addr, node->resolved_ip); 
+                                                    } else {
+                                                        snprintf(display_addr, sizeof(display_addr), "%.1023s", node->addr); 
+                                                    }
+                                                    
+                                                    pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
+                                                        "  [%-40s:%-5d] Score: %.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
+                                                        display_addr, node->port, node->metrics.gorgona_score,
+                                                        node->metrics.last_rtt, node->metrics.rolling_avg_speed / 1024.0,
+                                                        node->is_seed ? "SEED" : (node->is_cached ? "CACHE" : "PEX "),
+                                                        (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD");
+                                                }
+                                                free(sorted_idx);
                                             }
                                             pos += snprintf(status_msg + pos, sizeof(status_msg) - pos, 
                                                             "-----------------------------------------------------\n");

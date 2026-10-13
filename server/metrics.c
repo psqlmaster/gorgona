@@ -116,25 +116,28 @@ static int build_prometheus_payload(char *buf, size_t max_len) {
         my_max_id, (long)oldest_ts, (long)last_ingest_ts);
 
     /* 5. L2 CLUSTER TOPOLOGY (Dynamic Labels) */
-    for (int i = 0; i < cluster_node_count; i++) {
-        MeshNode *n = &cluster_nodes[i];
-        const char *state = (n->status == PEER_STATUS_AUTHENTICATED) ? "1" : "0";
-        const char *origin = n->is_seed ? "seed" : (n->is_cached ? "cache" : "pex");
-        
-        pos += snprintf(buf + pos, max_len - pos,
-            "gorgona_peer_status{target=\"%s\",origin=\"%s\"} %s\n"
-            "gorgona_peer_rtt_milliseconds{target=\"%s\"} %.2f\n"
-            "gorgona_peer_score{target=\"%s\"} %.2f\n"
-            "gorgona_peer_speed_bytes_per_sec{target=\"%s\"} %.0f\n",
-            n->addr, origin, state,
-            n->addr, n->metrics.last_rtt,
-            n->addr, n->metrics.gorgona_score,
-            n->addr, n->metrics.rolling_avg_speed);
-        
-        /* Response buffer overflow protection */
-        if (pos > (int)max_len - 512) break;
+    int *sorted_idx = mesh_get_sorted_indices();
+    if (sorted_idx) {
+        for (int k = 0; k < cluster_node_count; k++) {
+            int i = sorted_idx[k];
+            MeshNode *n = &cluster_nodes[i];
+            const char *state = (n->status == PEER_STATUS_AUTHENTICATED) ? "1" : "0";
+            const char *origin = n->is_seed ? "seed" : (n->is_cached ? "cache" : "pex");
+            
+            pos += snprintf(buf + pos, max_len - pos,
+                "gorgona_peer_status{target=\"%s\",origin=\"%s\"} %s\n"
+                "gorgona_peer_rtt_milliseconds{target=\"%s\"} %.2f\n"
+                "gorgona_peer_score{target=\"%s\"} %.2f\n"
+                "gorgona_peer_speed_bytes_per_sec{target=\"%s\"} %.0f\n",
+                n->addr, origin, state,
+                n->addr, n->metrics.last_rtt,
+                n->addr, n->metrics.gorgona_score,
+                n->addr, n->metrics.rolling_avg_speed);
+            
+            if (pos > (int)max_len - 512) break;
+        }
+        free(sorted_idx);
     }
-    
     return pos;
 }
 
