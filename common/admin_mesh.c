@@ -104,23 +104,26 @@ void mesh_get_hmac(const uint8_t *nonce, uint8_t *out_hmac) {
 void mesh_recalculate_scores() {
     time_t now = time(NULL);
     extern int sync_interval;
-    static time_t last_dns_retry = 0; /* Ограничитель частоты DNS-запросов */
+    static time_t last_dns_retry = 0;
     bool should_retry_dns = (now - last_dns_retry > 10);
     for (int i = 0; i < cluster_node_count; i++) {
         MeshNode *n = &cluster_nodes[i];
-        /* Lazy resolution for “Cold Start”
-         * If we have a SEED node without an IP address or a node that is offline, we try to update the IP address. This will synchronize the records once DNS is up and running. */
+        /* Lazy DNS resolution */
         if (n->resolved_ip[0] == '\0' || n->status == PEER_STATUS_OFFLINE) {
             if (should_retry_dns) {
                 mesh_resolve_node(n);
             }
         }
-        /* If the node is still offline or has been down for a long time > reset the count */
+        /* If the node is offline or stale */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
-            n->metrics.gorgona_score = 0.0;
+            /* Seed nodes get a minimal score to stay in the reconnection queue */
+            if (n->is_seed) {
+                n->metrics.gorgona_score = 0.01;  /* Minimal but non-zero */
+            } else {
+                n->metrics.gorgona_score = 0.0;
+            }
             continue;
         }
-        /* --- Calculation of Speed Score with Damping --- */
         double effective_speed = n->metrics.rolling_avg_speed;
         time_t idle_time = now - n->metrics.last_success;
         if (idle_time > 30) {
@@ -128,12 +131,10 @@ void mesh_recalculate_scores() {
         }
         double s_score = effective_speed / (10.0 * 1024.0 * 1024.0);
         if (s_score > 1.0) s_score = 1.0;
-        /* --- Calculating Latency (Latency Score) --- */
         double l_score = 0.0;
         if (n->metrics.last_rtt > 0.1) {
             l_score = exp(-n->metrics.last_rtt / 100.0);
         }
-        /* SEED Status Bonus from the Config */
         double seed_bonus = n->is_seed ? 0.7 : 0.0;
         n->metrics.gorgona_score = (s_score * WEIGHT_SPEED) + (l_score * WEIGHT_LATENCY) + seed_bonus;
     }
@@ -251,34 +252,29 @@ void mesh_run_garbage_collector() {
     for (int i = 0; i < cluster_node_count; ) {
         MeshNode *n = &cluster_nodes[i];
         bool evict = false;
-        /* SEED nodes have complete immunity */
+        /* SEED nodes have COMPLETE IMMUNITY — never evict */
         if (n->is_seed) {
-            /* If the user is offline, simply reset the score to zero, but do not delete the entry */
+            /* Just reset score if offline, but KEEP the entry */
             if (now - n->last_seen > sync_interval * 3) {
                 n->status = PEER_STATUS_OFFLINE;
-                n->metrics.gorgona_score = 0.0;
+                n->metrics.gorgona_score = 0.01;  /* Keep minimal score */
             }
             i++;
             continue;
         }
-        /* [DELETION POLICY FOR CACHE AND PEX] */
-        /* 1. If a node has been marked as offline for too long */
+        /* ... rest of GC logic for non-seed nodes ... */
         if (now - n->last_seen > PEER_TTL) {
             evict = true;
-        } 
-        /* 2. If a node has accumulated too many connection errors */
-        else if (n->metrics.fail_count > (n->is_cached ? 20 : 5)) {
-            /* We give cached nodes 20 chances, but new (PEX) nodes only 5 */
+        } else if (n->metrics.fail_count > (n->is_cached ? 20 : 5)) {
             evict = true;
-        }
-        /* 3. If the connection feels “toxic” (low chemistry) after 10 minutes of getting to know each other */
-        else if (now - n->discovered_at > 600 && n->metrics.gorgona_score < 0.01) {
+        } else if (now - n->discovered_at > 600 && n->metrics.gorgona_score < 0.01) {
             evict = true;
         }
         if (evict) {
-            log_event(MESH_LOG_LEVEL, -1, n->addr, n->port, "Layer 2 GC: Removing %s node from memory", 
-                      n->is_cached ? "stale CACHED" : "unresponsive PEX");
-            if (i < cluster_node_count - 1) 
+            log_event(MESH_LOG_LEVEL, -1, n->addr, n->port,
+                     "Layer 2 GC: Removing %s node from memory",
+                     n->is_cached ? "stale CACHED" : "unresponsive PEX");
+            if (i < cluster_node_count - 1)
                 memcpy(&cluster_nodes[i], &cluster_nodes[cluster_node_count - 1], sizeof(MeshNode));
             cluster_node_count--;
         } else {
@@ -459,22 +455,47 @@ void mesh_mark_node_good(const char *ip) {
 const char* mesh_get_best_peer_ip() {
     double top_score = -1.0;
     int best_idx = -1;
+    int seed_offline_idx = -1;
     time_t now = time(NULL);
-    mesh_recalculate_scores(); 
+    mesh_recalculate_scores();
     for (int i = 0; i < cluster_node_count; i++) {
+        /* Skip local IPs */
         if (is_local_ip(cluster_nodes[i].addr) || is_local_ip(cluster_nodes[i].resolved_ip)) {
+            cluster_nodes[i].status = PEER_STATUS_BANNED;
             continue;
         }
+        /* Skip nodes in penalty box */
         if (cluster_nodes[i].penalty_until > now) continue;
-        
+        /* Primary path: authenticated nodes with good score */
         if (cluster_nodes[i].status == PEER_STATUS_AUTHENTICATED) {
             if (cluster_nodes[i].metrics.gorgona_score > top_score) {
                 top_score = cluster_nodes[i].metrics.gorgona_score;
                 best_idx = i;
             }
         }
+        /* Fallback: remember the first offline SEED node */
+        if (seed_offline_idx == -1 && 
+            cluster_nodes[i].is_seed && 
+            cluster_nodes[i].status == PEER_STATUS_OFFLINE) {
+            seed_offline_idx = i;
+        }
     }
-    return (best_idx != -1) ? cluster_nodes[best_idx].addr : NULL;
+    /* If we found an authenticated peer, use it */
+    if (best_idx != -1) {
+        return cluster_nodes[best_idx].addr;
+    }
+    /* DEADLOCK PREVENTION: If no authenticated peers, but we have offline seeds,
+     * give them a chance to reconnect. Seeds are bootstrap nodes — they MUST work. */
+    if (seed_offline_idx != -1) {
+        if (verbose) {
+            log_event("DEBUG", -1, cluster_nodes[seed_offline_idx].addr, 
+                     cluster_nodes[seed_offline_idx].port,
+                     "Mesh: No authenticated peers available. Attempting reconnect to seed %s",
+                     cluster_nodes[seed_offline_idx].addr);
+        }
+        return cluster_nodes[seed_offline_idx].addr;
+    }
+    return NULL;
 }
 
 /**
