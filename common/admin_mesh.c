@@ -117,12 +117,7 @@ void mesh_recalculate_scores() {
         /* If the node is offline or stale */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
             if (n->is_seed) {
-                /* 
-                 * SEED HANDICAP: Even when offline, seed nodes get their 0.7 bonus.
-                 * This ensures they stay at the top of the reconnection queue.
-                 * Score = 0.71 (minimal base + seed bonus) instead of 0.01
-                 */
-                n->metrics.gorgona_score = 0.01 + 0.7;  // = 0.71
+                n->metrics.gorgona_score = 0.01;
             } else {
                 n->metrics.gorgona_score = 0.0;
             }

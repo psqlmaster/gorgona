@@ -110,9 +110,13 @@ void cleanup_subscriber(int index) {
     for (int n = 0; n < cluster_node_count; n++) {
         if (mesh_addr_compare(&cluster_nodes[n], disconnected_ip)) {
             cluster_nodes[n].status = PEER_STATUS_OFFLINE;
-            /* Reset volatile metrics so it doesn't stay in priority routing */
-            cluster_nodes[n].metrics.gorgona_score = 0.0;
             cluster_nodes[n].metrics.last_rtt = 0.0;
+            if (cluster_nodes[n].is_seed) {
+                /* Seed: штраф, но не обнуление. Score пересчитает recalculate. */
+                cluster_nodes[n].metrics.gorgona_score = 0.01;
+            } else {
+                cluster_nodes[n].metrics.gorgona_score = 0.0;
+            }
             break;
         }
     }
@@ -285,52 +289,71 @@ void free_out_queue(int sub_index) {
 
 void try_connect_peers() {
     static time_t last_check = 0;
-//    time_t now = time(NULL);
     time_t logical_now = get_cluster_logical_time();
-    if (logical_now - last_check < PEER_RECONNECT_INTERVAL) return;
+    /* Базовый интервал + лёгкий jitter ±25%, чтобы ноды не били в одну фазу */
+    int base = PEER_RECONNECT_INTERVAL;
+    int jitter = (base / 4) > 0 ? (rand() % (base / 2 + 1)) - (base / 4) : 0;
+    int interval = base + jitter;
+    if (interval < 1) interval = 1;
+    if (logical_now - last_check < interval) return;
     last_check = logical_now;
-
-    for (int p = 0; p < cluster_node_count; p++) {
-        MeshNode *node = &cluster_nodes[p];
-        if (node->status == PEER_STATUS_BANNED || node->status == PEER_STATUS_HANDSHAKE) continue;
+    /* Актуальные scores перед сортировкой */
+    mesh_recalculate_scores();
+    int *sorted = mesh_get_sorted_indices();
+    if (!sorted) return;
+    /* Сколько уже живых AUTHENTICATED пиров */
+    int auth_count = 0;
+    for (int i = 0; i < max_clients; i++) {
+        if (client_sockets[i] > 0 &&
+            subscribers[i].type == SUB_TYPE_PEER &&
+            subscribers[i].auth_state == AUTH_OK) {
+            auth_count++;
+        }
+    }
+    const int MAX_OUTGOING_ATTEMPTS = 3;
+    int attempts = 0;
+    for (int k = 0; k < cluster_node_count && attempts < MAX_OUTGOING_ATTEMPTS; k++) {
+        MeshNode *node = &cluster_nodes[sorted[k]];
+        if (node->status == PEER_STATUS_BANNED ||
+            node->status == PEER_STATUS_HANDSHAKE) continue;
         if (node->port <= 0 || node->penalty_until > logical_now) continue;
-
-        /* ПРОВЕРКА 1: Проверяем адрес в конфиге/кэше еще до резолва */
+        /* ПРОВЕРКА 1: адрес из конфига/кэша ещё до резолва */
         if (is_local_ip(node->addr)) {
             node->status = PEER_STATUS_BANNED;
             continue;
         }
-
+        /*
+         * Если уже есть живые пиры — не тратим слоты на совсем слабые non-seed.
+         * Seed (даже offline, score=0.01) всегда допускается: он bootstrap.
+         */
+        if (auth_count > 0 && !node->is_seed &&
+            node->metrics.gorgona_score < 0.05) {
+            continue;
+        }
         struct addrinfo hints, *res, *rp;
         char port_str[12];
         snprintf(port_str, sizeof(port_str), "%d", node->port);
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-
         if (getaddrinfo(node->addr, port_str, &hints, &res) != 0) {
             node->metrics.fail_count++;
-            continue; 
+            continue;
         }
-
         int sd = -1;
         for (rp = res; rp != NULL; rp = rp->ai_next) {
-            /* Получаем строковый IP из того, что выдал DNS/Resolver */
             char resolved_ip[64];
-            getnameinfo(rp->ai_addr, rp->ai_addrlen, resolved_ip, sizeof(resolved_ip), NULL, 0, NI_NUMERICHOST);
-
-            /* ПРОВЕРКА 2: Самая важная. Если DNS выдал наш собственный локальный IP */
+            getnameinfo(rp->ai_addr, rp->ai_addrlen,
+                        resolved_ip, sizeof(resolved_ip), NULL, 0, NI_NUMERICHOST);
+            /* ПРОВЕРКА 2: DNS выдал наш собственный локальный IP */
             if (is_local_ip(resolved_ip)) {
                 node->status = PEER_STATUS_BANNED;
-                continue; 
+                continue;
             }
-
             sd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
             if (sd == -1) continue;
-
             set_tcp_keepalive(sd);
             fcntl(sd, F_SETFL, fcntl(sd, F_GETFL, 0) | O_NONBLOCK);
-
             if (connect(sd, rp->ai_addr, rp->ai_addrlen) < 0) {
                 if (errno != EINPROGRESS) {
                     close(sd);
@@ -338,13 +361,15 @@ void try_connect_peers() {
                     continue;
                 }
             }
-
-            /* Проверка на дубликаты уже существующих соединений */
+            /* Проверка на уже существующее соединение к этому IP */
             bool already_linked = false;
             for (int i = 0; i < max_clients; i++) {
-                if (client_sockets[i] > 0 && strcmp(subscribers[i].ip_address, resolved_ip) == 0) {
+                if (client_sockets[i] > 0 &&
+                    strcmp(subscribers[i].ip_address, resolved_ip) == 0) {
                     already_linked = true;
-                    if (node->is_seed && (subscribers[i].node_ptr == NULL || !subscribers[i].node_ptr->is_seed)) {
+                    if (node->is_seed &&
+                        (subscribers[i].node_ptr == NULL ||
+                         !subscribers[i].node_ptr->is_seed)) {
                         subscribers[i].node_ptr = node;
                     }
                     if (subscribers[i].auth_state == AUTH_OK) {
@@ -353,14 +378,12 @@ void try_connect_peers() {
                     break;
                 }
             }
-
             if (already_linked) {
                 close(sd);
                 sd = -1;
                 continue;
             }
-
-            /* Если мы дошли сюда — сокет чист, это не мы сами, можно регистрировать */
+            /* Регистрируем новый исходящий сокет */
             int i;
             for (i = 0; i < max_clients; i++) {
                 if (client_sockets[i] == 0) {
@@ -373,20 +396,22 @@ void try_connect_peers() {
                     sub->auth_state = AUTH_SENT;
                     sub->node_ptr = node;
                     node->status = PEER_STATUS_HANDSHAKE;
-
                     char auth_msg[256];
                     extern int port;
-                    int auth_len = snprintf(auth_msg, sizeof(auth_msg), "AUTH|%s|%d|%d|%d", 
+                    int auth_len = snprintf(auth_msg, sizeof(auth_msg),
+                                            "AUTH|%s|%d|%d|%d",
                                             sync_psk, max_alerts, max_alert_ttl, port);
                     enqueue_message(i, auth_msg, (size_t)auth_len);
+                    attempts++;
                     break;
                 }
             }
             if (i == max_clients) close(sd);
-            break;
+            break; /* один успешный rp достаточно */
         }
         freeaddrinfo(res);
     }
+    free(sorted);
 }
 
 /*
@@ -1074,20 +1099,27 @@ void run_server(int server_fd) {
                                                 for (int k = 0; k < cluster_node_count && pos < (int)sizeof(status_msg) - 256; k++) {
                                                     int n = sorted_idx[k];
                                                     MeshNode *node = &cluster_nodes[n];
-                                                    
                                                     char display_addr[1024];
                                                     if (node->resolved_ip[0] != '\0' && strcmp(node->addr, node->resolved_ip) != 0) {
                                                         snprintf(display_addr, sizeof(display_addr), "%.500s (%.500s)", node->addr, node->resolved_ip); 
                                                     } else {
                                                         snprintf(display_addr, sizeof(display_addr), "%.1023s", node->addr); 
                                                     }
-                                                    
+                                                    const char *state_str;
+                                                    if (node->status == PEER_STATUS_AUTHENTICATED) {
+                                                        state_str = "UP";
+                                                    } else if (node->is_seed) {
+                                                        state_str = "WAIT";          /* offline seed — не DEAD */
+                                                    } else {
+                                                        state_str = "DEAD";
+                                                    }
+
                                                     pos += snprintf(status_msg + pos, sizeof(status_msg) - pos,
                                                         "  [%-40s:%-5d] Score: %.2f | RTT: %6.1f ms | Spd: %6.1f KB/s | %s [%s]\n",
                                                         display_addr, node->port, node->metrics.gorgona_score,
                                                         node->metrics.last_rtt, node->metrics.rolling_avg_speed / 1024.0,
                                                         node->is_seed ? "SEED" : (node->is_cached ? "CACHE" : "PEX "),
-                                                        (node->status == PEER_STATUS_AUTHENTICATED) ? "UP" : "DEAD");
+                                                        state_str);
                                                 }
                                                 free(sorted_idx);
                                             }
