@@ -258,6 +258,7 @@ void mesh_run_garbage_collector() {
             if (now - n->last_seen > sync_interval * 3) {
                 n->status = PEER_STATUS_OFFLINE;
                 n->metrics.gorgona_score = 0.01;  /* Keep minimal score */
+                n->penalty_until = 0;
             }
             i++;
             continue;
@@ -428,14 +429,12 @@ uint8_t* mesh_decrypt(const uint8_t *cipher, int len, const uint8_t *iv, const u
 /* Error logging function (to be called if connect/auth fails) */
 void mesh_mark_node_bad(const char *ip) {
     for (int i = 0; i < cluster_node_count; i++) {
-        /* [FIX] Используем умное сравнение для согласованности */
         if (mesh_addr_compare(&cluster_nodes[i], ip)) {
             cluster_nodes[i].status = PEER_STATUS_OFFLINE;
             cluster_nodes[i].consecutive_fails++;
             int delay = 30 * (1 << (cluster_nodes[i].consecutive_fails - 1));
             if (delay > 3600) delay = 3600; 
             cluster_nodes[i].penalty_until = time(NULL) + delay;
-            return;
         }
     }
 }
