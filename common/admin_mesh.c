@@ -116,14 +116,19 @@ void mesh_recalculate_scores() {
         }
         /* If the node is offline or stale */
         if (n->status == PEER_STATUS_OFFLINE || (now - n->last_seen > sync_interval * 2)) {
-            /* Seed nodes get a minimal score to stay in the reconnection queue */
             if (n->is_seed) {
-                n->metrics.gorgona_score = 0.01;  /* Minimal but non-zero */
+                /* 
+                 * SEED HANDICAP: Even when offline, seed nodes get their 0.7 bonus.
+                 * This ensures they stay at the top of the reconnection queue.
+                 * Score = 0.71 (minimal base + seed bonus) instead of 0.01
+                 */
+                n->metrics.gorgona_score = 0.01 + 0.7;  // = 0.71
             } else {
                 n->metrics.gorgona_score = 0.0;
             }
             continue;
         }
+        /* Normal scoring for alive nodes */
         double effective_speed = n->metrics.rolling_avg_speed;
         time_t idle_time = now - n->metrics.last_success;
         if (idle_time > 30) {
@@ -430,7 +435,14 @@ uint8_t* mesh_decrypt(const uint8_t *cipher, int len, const uint8_t *iv, const u
 void mesh_mark_node_bad(const char *ip) {
     for (int i = 0; i < cluster_node_count; i++) {
         if (mesh_addr_compare(&cluster_nodes[i], ip)) {
-            cluster_nodes[i].status = PEER_STATUS_OFFLINE;
+            /* 
+             * SEED IMMUNITY: Seed nodes do not lose AUTHENTICATED status on transient errors.
+             * Their "death" is determined solely by mesh_run_garbage_collector based on
+             * real absence duration (sync_interval * 3), preventing DEAD/UP flapping.
+             */
+            if (!cluster_nodes[i].is_seed) {
+                cluster_nodes[i].status = PEER_STATUS_OFFLINE;
+            }
             cluster_nodes[i].consecutive_fails++;
             int delay = 30 * (1 << (cluster_nodes[i].consecutive_fails - 1));
             if (delay > 3600) delay = 3600; 
