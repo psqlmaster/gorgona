@@ -819,15 +819,26 @@ static void process_repl(int i, char *buffer) {
 static void process_sync(int i, char *buffer) {
     Subscriber *sub = &subscribers[i];
     if (sub->auth_state != AUTH_OK) return;
-
     uint64_t last_id = strtoull(buffer + 5, NULL, 10);
+    /* [FIX] Защита от дублирования SYNC-запросов (Anti-Flood) */
+    static uint64_t last_sync_id[MAX_CLIENTS] = {0};
+    static time_t last_sync_time[MAX_CLIENTS] = {0};
+    time_t now = time(NULL);
+    if (last_sync_id[i] == last_id && (now - last_sync_time[i]) < 5) {
+        if (verbose) {
+            log_event("DEBUG", sub->sock, sub->ip_address, sub->port,
+                      "Ignoring duplicate SYNC for ID %" PRIu64 " (cooldown)", last_id);
+        }
+        return;
+    }
+    last_sync_id[i] = last_id;
+    last_sync_time[i] = now;
     int count = 0;
-
     for (int r = 0; r < recipient_count; r++) {
         Recipient *rec = &recipients[r];
         for (int a = 0; a < rec->count; a++) {
             /* 
-             * CRITICAL: We send ALL alerts with ID > last_id, regardless of 'active' status.
+             * We send ALL alerts with ID > last_id, regardless of 'active' status.
              * This ensures the peer's MaxID moves forward even if messages were revoked.
              */
             if (rec->alerts[a].id > last_id) {
@@ -836,7 +847,6 @@ static void process_sync(int i, char *buffer) {
             }
         }
     }
-
     log_event("INFO", sub->sock, sub->ip_address, sub->port, 
               "Sync completed: %d alerts transferred to peer (ID > %" PRIu64 ")", 
               count, last_id);
@@ -907,10 +917,15 @@ static void process_mgmt_frame(int sub_index, char *frame) {
 
         /* [ANTI-ENTROPY] */
         uint64_t my_max_id = get_max_alert_id();
-        if (remote_max_id > my_max_id) {
+        static time_t last_sync_sent_time[MAX_CLIENTS] = {0};
+        time_t now_ae = time(NULL);
+        
+        /* Отправляем SYNC не чаще одного раза в 2 секунды на одного пира */
+        if (remote_max_id > my_max_id && (now_ae - last_sync_sent_time[sub_index]) > 2) {
             char sync_req[64];
             snprintf(sync_req, sizeof(sync_req), "SYNC|%" PRIu64, my_max_id);
             enqueue_message(sub_index, sync_req, strlen(sync_req));
+            last_sync_sent_time[sub_index] = now_ae;
         }
 
         /* [MESH TOPOLOGY UPDATE] */
