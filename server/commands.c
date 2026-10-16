@@ -901,6 +901,9 @@ static void process_mgmt_frame(int sub_index, char *frame) {
         else if (strcmp(cmd, "PEX_LIST") == 0) {
             if (val1) reported_port = atoi(val1);    /* В PEX_LIST порт в 1-м поле */
         }
+        else if (strcmp(cmd, "MAXID_NUDGE") == 0) {
+            if (val1) remote_max_id = strtoull(val1, NULL, 10);
+        }
 
         /* [ANTI-ENTROPY] */
         uint64_t my_max_id = get_max_alert_id();
