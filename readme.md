@@ -142,22 +142,18 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 > - **Username:** `demo`
 > - **Password:** `demo`
 
-- Run the following command to create and start the container:
-- Use the same command **to update**, it your personal **settings will not be deleted**.
+##### Install / Update -> Gorgona Stheno
+
+One command does both: it installs the container on the first run and
+updates it afterwards. Your settings in `/etc/gorgona` and
+`/var/lib/gorgona` are **never deleted**.
 
 ```bash
-sudo docker pull perynfr/gorgona_stheno:latest && \
-sudo docker rm -f gorgona_stheno || true && \
-sudo docker run -d \
-  --name gorgona_stheno \
-  -p 8000:8000 -p 7777:7777 \
-  --restart unless-stopped \
-  -v /etc/gorgona:/etc/gorgona \
-  -v /var/lib/gorgona:/var/lib/gorgona \
-  perynfr/gorgona_stheno:latest && \
-sudo docker image prune -f && \
-sleep 2 && sudo docker logs gorgona_stheno 2>&1 | grep "#"
+curl -fsSL https://github.com/psqlmaster/gorgona/gorgona-install.sh | sudo bash
 ```
+
+> ℹ️ Docker must already be installed. If it is not, the script tells you
+> and stops - it does not install Docker for you.
 
 ---
 
