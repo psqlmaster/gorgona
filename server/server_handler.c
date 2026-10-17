@@ -989,7 +989,7 @@ void run_server(int server_fd) {
                                                     if (al->unlock_at > logical_now) {
                                                         dbg_locked++;
                                                         /* по желанию можно не считать их в live, как в режиме LIVE клиента */
-                                                        // continue;
+                                                        /* continue; не считаем в live_alerts */
                                                     }
                                                     live_alerts++;
                                                     dbg_normal_live++;

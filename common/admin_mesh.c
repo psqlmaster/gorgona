@@ -249,6 +249,21 @@ void mesh_run_garbage_collector() {
     time_t now = time(NULL);
     extern int sync_interval;
     mesh_recalculate_scores();
+    /* Remove duplicate entries (same addr:port) */
+    for (int i = 0; i < cluster_node_count; i++) {
+        for (int j = i + 1; j < cluster_node_count; j++) {
+            if (cluster_nodes[i].port == cluster_nodes[j].port && 
+                strcmp(cluster_nodes[i].addr, cluster_nodes[j].addr) == 0) {
+                log_event(MESH_LOG_LEVEL, -1, cluster_nodes[i].addr, cluster_nodes[i].port,
+                          "Layer 2 GC: Removing duplicate entry %d", j);
+                if (j < cluster_node_count - 1) {
+                    memcpy(&cluster_nodes[j], &cluster_nodes[cluster_node_count - 1], sizeof(MeshNode));
+                }
+                cluster_node_count--;
+                j--; 
+            }
+        }
+    }
     for (int i = 0; i < cluster_node_count; ) {
         MeshNode *n = &cluster_nodes[i];
         bool evict = false;
@@ -571,6 +586,7 @@ void mesh_save_peers_cache() {
 /**
  * Loads previously cached peers into the mesh table.
  * Returns the number of successfully loaded peers.
+ * [FIX] Added symmetric resolution to prevent domain/IP shadowing duplicates.
  */
 int mesh_load_peers_cache(void) {
     char cache_path[512];
@@ -585,21 +601,61 @@ int mesh_load_peers_cache(void) {
         char *colon = strchr(line, ':');
         if (!colon) continue;
         *colon = '\0';
-        char *ip = line;
+        char *addr_str = line;
         int port = atoi(colon + 1);
-        bool exists = false;
-        for (int i = 0; i < cluster_node_count; i++) {
-            if (mesh_addr_compare(&cluster_nodes[i], ip)) {
-                exists = true; break;
+        if (port <= 0 || port > 65535) continue;
+        /* Resolve */
+        char incoming_resolved[64] = "";
+        struct in_addr tmp;
+        if (inet_pton(AF_INET, addr_str, &tmp) == 1) {
+            strncpy(incoming_resolved, addr_str, sizeof(incoming_resolved) - 1);
+        } else {
+            struct addrinfo hints = {0}, *res = NULL;
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            if (getaddrinfo(addr_str, NULL, &hints, &res) == 0 && res) {
+                getnameinfo(res->ai_addr, res->ai_addrlen, incoming_resolved,
+                            sizeof(incoming_resolved), NULL, 0, NI_NUMERICHOST);
+                freeaddrinfo(res);
             }
         }
-        if (!exists && cluster_node_count < (MAX_PEERS * 4)) {
+        if (incoming_resolved[0] && is_local_ip(incoming_resolved))
+            continue;
+        if (is_local_ip(addr_str))
+            continue;
+        /* Dedup: addr/resolved + port */
+        bool exists = false;
+        for (int i = 0; i < cluster_node_count; i++) {
+            MeshNode *n = &cluster_nodes[i];
+            if (n->port != port) continue;
+            bool match = (strcmp(n->addr, addr_str) == 0);
+            if (!match && incoming_resolved[0]) {
+                if (n->resolved_ip[0] && strcmp(n->resolved_ip, incoming_resolved) == 0)
+                    match = true;
+                if (strcmp(n->addr, incoming_resolved) == 0)
+                    match = true;
+            }
+            if (!match && n->resolved_ip[0] && strcmp(n->resolved_ip, addr_str) == 0)
+                match = true;
+            if (match) {
+                exists = true;
+                n->last_seen = time(NULL);
+                if (n->resolved_ip[0] == '\0' && incoming_resolved[0])
+                    strncpy(n->resolved_ip, incoming_resolved, sizeof(n->resolved_ip) - 1);
+                break;
+            }
+        }
+        if (!exists && cluster_node_count < CLUSTER_MAX_NODES) {
             MeshNode *n = &cluster_nodes[cluster_node_count++];
-            memset(n, 0, sizeof(MeshNode));
-            strncpy(n->addr, ip, sizeof(n->addr) - 1);
+            memset(n, 0, sizeof(*n));
+            strncpy(n->addr, addr_str, sizeof(n->addr) - 1);
             n->port = port;
-            mesh_resolve_node(n);
+            if (incoming_resolved[0])
+                strncpy(n->resolved_ip, incoming_resolved, sizeof(n->resolved_ip) - 1);
+            else
+                mesh_resolve_node(n);
             n->status = PEER_STATUS_OFFLINE;
+            n->is_cached = true;
             n->last_seen = time(NULL);
             n->discovered_at = time(NULL);
             loaded++;
