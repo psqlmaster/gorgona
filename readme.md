@@ -149,7 +149,7 @@ updates it afterwards. Your settings in `/etc/gorgona` and
 `/var/lib/gorgona` are **never deleted**.
 
 ```bash
-curl -fsSL https://github.com/psqlmaster/gorgona/master/gorgona_stheno_install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/psqlmaster/gorgona/master/gorgona_stheno_install.sh | sudo bash
 ```
 
 > ℹ️ Docker must already be installed. If it is not, the script tells you
