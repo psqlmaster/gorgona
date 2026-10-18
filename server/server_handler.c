@@ -314,8 +314,20 @@ void try_connect_peers() {
     int attempts = 0;
     for (int k = 0; k < cluster_node_count && attempts < MAX_OUTGOING_ATTEMPTS; k++) {
         MeshNode *node = &cluster_nodes[sorted[k]];
-        if (node->status == PEER_STATUS_BANNED ||
-            node->status == PEER_STATUS_HANDSHAKE) continue;
+        if (node->status == PEER_STATUS_BANNED) continue;
+        if (node->status == PEER_STATUS_HANDSHAKE) {
+            bool has_socket = false;
+            for (int i = 0; i < max_clients; i++) {
+                if (client_sockets[i] > 0 &&
+                    subscribers[i].type == SUB_TYPE_PEER &&
+                    subscribers[i].node_ptr == node) {
+                    has_socket = true;
+                    break;
+                }
+            }
+            if (has_socket) continue;  /* handshake реально идёт */
+            node->status = PEER_STATUS_OFFLINE; /* сокета нет — можно снова */
+        }
         if (node->port <= 0 || node->penalty_until > logical_now) continue;
         /* ПРОВЕРКА 1: адрес из конфига/кэша ещё до резолва */
         if (is_local_ip(node->addr)) {
@@ -365,6 +377,7 @@ void try_connect_peers() {
             bool already_linked = false;
             for (int i = 0; i < max_clients; i++) {
                 if (client_sockets[i] > 0 &&
+                    subscribers[i].type == SUB_TYPE_PEER &&
                     strcmp(subscribers[i].ip_address, resolved_ip) == 0) {
                     already_linked = true;
                     if (node->is_seed &&
