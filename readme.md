@@ -67,10 +67,12 @@ $$H_i = \text{XXH3-64}\Big(\text{ID}_i \;\parallel\; H_{i-1} \;\parallel\; \text
 ---
 #### Introduction
 
-`gorgona` is a secure messaging system for sending encrypted messages that unlock at a specific time and expire after a set period. Using RSA for key exchange and AES-GCM for content encryption, `gorgona` ensures end-to-end privacy. The server stores only encrypted messages, unable to access their content, making it ideal for sensitive communications, scheduled notifications, or delayed message releases (e.g., time capsules or emergency data sharing, telemetry transport.).
-The project includes an **Autonomous Intelligent Client** (`gorgona`) that features self-healing connectivity, parallel peer probing (Happy Eyeballs), and a local execution history to guarantee exactly-once processing across a distributed mesh.
+`gorgona` is a secure, end-to-end encrypted messaging and telemetry mesh system featuring cryptographic time-locks and automated expiration. Using RSA for key exchange and AES-GCM for content encryption, the network operates in zero-knowledge mode: nodes only route and store ciphertext without access to plaintext, making it ideal for scheduled disclosures, emergency fail-safes, and sensitive telemetry.
 
-The project includes a client (`gorgona`) for key generation, sending messages, and listening for alerts, and a server (`gorgonad`) for securely storing and delivering them.
+The ecosystem comprises three core components:
+* **`gorgonad`**: The high-performance mesh daemon responsible for distributed storage, peer synchronization, and encrypted alert delivery.
+* **`gorgona`**: An autonomous intelligent CLI client featuring self-healing connectivity, parallel peer probing (Happy Eyeballs), and local deduplication for exactly-once execution.
+* **`gorgona_stheno`**: A containerized web gateway and management dashboard providing a real-time alert stream, multi-key subscription controls, robust snapshot synchronization, and authenticated webhook dispatching.
 
 #### Features
 
