@@ -40,6 +40,7 @@ $$H_i = \text{XXH3-64}\Big(\text{ID}_i \;\parallel\; H_{i-1} \;\parallel\; \text
   - [Distributed PostgreSQL High-Availability manager with LSN-based consensus and automated self-healing.](plugins/gfm/readme.md)
 - [Advantages](#advantages)
 - [Quick Start Gorgona Stheno](#quick-start-gorgona-stheno) 
+  - [Gorgona Stheno -> Web UI Documentation ↗](docs/Gorgona_Stheno.md)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
   - [Install Client and Server](#install-client-and-server)
@@ -138,7 +139,7 @@ Gorgona is engineered for standard Linux servers and restricted embedded systems
 
 #### Quick Start Gorgona Stheno 
 
-[![docs/gorgona_stheno.png](docs/gorgona_stheno.png)](http://gorgonad.mooo.com)
+[![docs/gorgona_stheno.png](docs/gorgona_stheno.jpg)](http://gorgonad.mooo.com)
 
 > **Note:** Use the following credentials for demo access:
 > - **Username:** `demo`
@@ -156,6 +157,8 @@ curl -fsSL https://raw.githubusercontent.com/psqlmaster/gorgona/master/gorgona_s
 
 > ℹ️ Docker must already be installed. If it is not, the script tells you
 > and stops - it does not install Docker for you.
+
+- [Gorgona Stheno -> Web UI Documentation ↗](docs/Gorgona_Stheno.md)
 
 ---
 
