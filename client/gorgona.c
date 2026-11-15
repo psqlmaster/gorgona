@@ -1,8 +1,8 @@
-/* 
-* BSD 3-Clause License
-* Copyright (c) 2025, Alexander Shcheglov
-* All rights reserved. 
-*/
+/*
+ * BSD 3-Clause License
+ * Copyright (c) 2025, Alexander Shcheglov
+ * All rights reserved.
+ */
 
 #include "encrypt.h"
 #include "admin_mesh.h"
@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
+#include <unistd.h>
+#include <stdlib.h>
 #include "alert_send.h"
 
 extern int verbose;
@@ -22,102 +24,262 @@ extern int daemon_exec_flag;
 extern int send_alert(int argc, char *argv[], int verbose);
 extern int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_exec_flag);
 
-void print_help(const char *program_name) {
-    // ANSI Цвета
-    #define CLR_RESET      "\033[0m"
-    #define CLR_BOLD       "\033[1m"
-    #define CLR_GREEN      "\033[0;32m"
-    #define CLR_YELLOW     "\033[0;33m"
-    #define CLR_CYAN       "\033[0;36m"
-    #define CLR_MAGENTA    "\033[0;35m"
-    #define CLR_WHITE_BOLD "\033[1;37m"
+/* ══════════════════════════════════════════════════════════════════
+ *  help / ui  —  terminal-aware, styled
+ * ══════════════════════════════════════════════════════════════════ */
 
-    printf(CLR_BOLD CLR_GREEN "Gorgona Client" CLR_RESET " (Version " CLR_YELLOW "%s" CLR_RESET ")\n", VERSION);
-    printf(CLR_BOLD "Usage:" CLR_RESET "\n");
-    printf("  %s " CLR_CYAN "[-v] [-e] [-d] [-V|--version] [-h|--help] [-c|--conf <path>]" CLR_RESET " " CLR_YELLOW "<command>" CLR_RESET " [arguments]\n", program_name);
+static const char *H_RST = "";
+static const char *H_BLD = "";
+static const char *H_DIM = "";
+static const char *H_ACC = "";
+static const char *H_GRN = "";
+static const char *H_YEL = "";
+static const char *H_CYN = "";
+static const char *H_MAG = "";
+static const char *H_WHT = "";
 
-    printf("\n" CLR_BOLD "Flags:" CLR_RESET "\n");
-    printf("  " CLR_CYAN "-v, --verbose" CLR_RESET "      Enables verbose output for debugging\n");
-    printf("  " CLR_CYAN "-e, --exec" CLR_RESET "         For 'listen' command: execute messages as system commands (requires pubkey_hash_b64).\n");
-    printf("                     If [exec_commands] in /etc/gorgona/gorgona.conf is empty, all decrypted messages are executed.\n");
-    printf("                     If [exec_commands] contains entries (e.g., 'greengage start = /path/to/script.sh'), only messages\n");
-    printf("                     matching a key are executed by running the corresponding script.\n");
-    printf("  " CLR_CYAN "-d, --daemon-exec" CLR_RESET "  Used with -e: executes commands in background as daemons (via fork + setsid).\n");
-    printf("                     Output from executed commands is written to the file specified by the environment variable\n");
-    printf("                     gorgona_LOG_FILE (e.g., gorgona_LOG_FILE=/var/log/gorgona.log ./gorgona -ed listen new ...).\n");
-    printf("                     If gorgona_LOG_FILE is not set, output is discarded (/dev/null).\n");
-    printf("  " CLR_CYAN "-c, --conf" CLR_RESET "         Path to config file (default: " CLR_YELLOW "%s" CLR_RESET ")\n", DEFAULT_CONFIG_FILE);
-    printf(" " CLR_CYAN "-V, --version" CLR_RESET " Displays version information\n");
-    printf(" " CLR_CYAN "-h, --help" CLR_RESET " Displays this help message\n");
-    printf("  " CLR_MAGENTA "Note:" CLR_RESET "              Flags -v, -e, and -V can be combined (e.g., -veV) for verbose output during command execution.\n");
+static void help_palette(void)
+{
+    static int ready;
+    const char *nc;
+    const char *term;
 
-    printf("\n" CLR_BOLD "Commands:" CLR_RESET "\n");
-    printf("  " CLR_YELLOW "genkeys" CLR_RESET "\n");
-    printf("    Generates an RSA key pair in /etc/gorgona/ (Example: " CLR_WHITE_BOLD "sudo %s genkeys" CLR_RESET ")\n\n", program_name);
+    if (ready)
+        return;
+    ready = 1;
 
-    printf("  " CLR_YELLOW "send" CLR_RESET " " CLR_CYAN "<unlock_time> <expire_time> <message> <public_key_file>" CLR_RESET "\n");
-    printf("    Sends an encrypted message. Use " CLR_YELLOW "'-'" CLR_RESET " for " CLR_CYAN "<message>" CLR_RESET " to read from stdin.\n\n");
+    /* не терминал → без цвета (пайпы, редиректы, логи) */
+    if (!isatty(STDOUT_FILENO))
+        return;
 
-    printf("  " CLR_YELLOW "listen" CLR_RESET " " CLR_CYAN "<mode> [<count>] [pubkey_hash_b64]" CLR_RESET "\n");
-    printf("    Listens for messages. " CLR_BOLD "Modes:" CLR_RESET "\n");
-    printf("    " CLR_CYAN "live" CLR_RESET "   - only active messages (unlock_at <= now)\n");
-    printf("    " CLR_CYAN "all" CLR_RESET "    - all non-expired messages, including locked, optionally last [<count>] and stay subscribed\n");
-    printf("    " CLR_CYAN "lock" CLR_RESET "   - only locked messages (unlock_at > now)\n");
-    printf("    " CLR_CYAN "single" CLR_RESET " - only active messages for the given pubkey_hash_b64\n");
-    printf("    " CLR_CYAN "last" CLR_RESET "   - the most recent [<count>] message(s), (count defaults to 1), optionally filtered by pubkey_hash_b64\n");
-    printf("    " CLR_CYAN "new" CLR_RESET "    - only new messages received after connection, optionally filtered by pubkey_hash_b64\n");
-    printf("    " CLR_MAGENTA "*" CLR_RESET " If pubkey_hash_b64 is provided, filters by it (mandatory for single and last modes)\n\n");
-    printf("  " CLR_YELLOW "send-file" CLR_RESET " " CLR_CYAN "[<unlock> <expire>] <filepath> <pubkey>" CLR_RESET "\n");
-    printf("    Sends a file (LZ4-compressed + encrypted). Times are optional (default: now … now+1h).\n");
-    printf("    Optional: --name <relative_path> to set the name on the receiver side.\n\n");
+    nc = getenv("NO_COLOR");
+    if (nc && *nc)
+        return;
 
-    printf("  " CLR_YELLOW "revoke" CLR_RESET " " CLR_CYAN "<alert_id> <pubkey_hash_b64>" CLR_RESET "\n");
-    printf("    Cancels a previously sent time-locked message, also for the “Dead Hand” scenario.\n");
+    term = getenv("TERM");
+    if (!term || !*term || strcmp(term, "dumb") == 0)
+        return;
 
-    printf("\n" CLR_BOLD "Configuration:" CLR_RESET "\n");
-    printf("  The file " CLR_CYAN "/etc/gorgona/gorgona.conf" CLR_RESET " contains server settings, execution mappings and file-sync rules.\n");
-    printf("  " CLR_BOLD "Format:" CLR_RESET "\n");
-    printf("    " CLR_MAGENTA "[server]" CLR_RESET "\n");
-    printf("    ip = <IP_address>          (example: " CLR_CYAN "64.188.70.158" CLR_RESET ")\n");
-    printf("    port = <port>              (example: " CLR_CYAN "7777" CLR_RESET ")\n");
-    printf("    sync_psk = <shared_secret> (optional, enables Layer-2 mesh)\n");
-    printf("    data_dir = /var/lib/gorgona\n");
-    printf("    conf_dir = /etc/gorgona\n\n");
+    H_RST = "\033[0m";     /* CLR_RESET      */
+    H_BLD = "\033[1m";     /* CLR_BOLD       */
+    H_DIM = "\033[2m";     /* dim / subtle   */
+    H_ACC = "\033[0;36m";  /* CLR_CYAN       */
+    H_GRN = "\033[0;32m";  /* CLR_GREEN      */
+    H_YEL = "\033[0;33m";  /* CLR_YELLOW     */
+    H_CYN = "\033[0;36m";  /* CLR_CYAN       */
+    H_MAG = "\033[0;35m";  /* CLR_MAGENTA    */
+    H_WHT = "\033[1;37m";  /* CLR_WHITE_BOLD */
+}
 
-    printf("    " CLR_MAGENTA "[exec_commands]" CLR_RESET " / " CLR_MAGENTA "[exec_commands:<pubkey>]" CLR_RESET "\n");
-    printf("    <key> = <script_path> time_limit = <sec>\n");
-    printf("    (example: " CLR_CYAN "app start = /usr/local/bin/app_start.sh time_limit = 60" CLR_RESET ")\n\n");
+/* ── primitives ─────────────────────────────────────────────────── */
 
-    printf("    " CLR_MAGENTA "[sync]" CLR_RESET "\n");
-    printf("    max_file_size = 10485760   # global limit (bytes), default 10 MiB\n\n");
+static int utf8_cols(const char *s)
+{
+    int n = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if ((*p & 0xC0) != 0x80)
+            ++n;
+        ++p;
+    }
+    return n;
+}
 
-    printf("    " CLR_MAGENTA "[sync:<pubkey>]" CLR_RESET "\n");
-    printf("    dir = /etc/nginx/conf.d    # root directory for this key\n");
-    printf("    direction = rw             # ro (receive only), wo (send only), rw (both)\n");
-    printf("    on_change = nginx -s reload  # command after successful file sync\n");
-    printf("    max_file_size = 5242880    # optional per-key limit\n");
+static void help_title(const char *text, int width)
+{
+    int i;
+    printf("\n  %s%s%s%s\n", H_ACC, H_BLD, text, H_RST);
+    printf("  %s", H_DIM);
+    for (i = 0; i < width; ++i)
+        fputs("─", stdout);
+    printf("%s\n", H_RST);
+}
 
-    printf("\n" CLR_BOLD "Examples:" CLR_RESET "\n");
-    printf("  " CLR_WHITE_BOLD "%s listen single RWTPQzuhzBw=" CLR_RESET "\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s listen last RWTPQzuhzBw=" CLR_RESET "          # Gets the last 1 message\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s listen last 3 RWTPQzuhzBw=" CLR_RESET "        # Gets the last 3 messages\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s listen new RWTPQzuhzBw=" CLR_RESET "           # Listens for new messages only\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s -e listen new RWTPQzuhzBw=" CLR_RESET "        # Listens and executes messages\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s -ve listen new RWTPQzuhzBw=" CLR_RESET "       # Listens, executes, and shows verbose output\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"hello world\" \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"app start\" \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
-    printf("   " CLR_WHITE_BOLD "df -h | %s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" - \"RWTPQzuhzBw=.pub\"" CLR_RESET "\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s send-file /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub" CLR_RESET "\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s send-file --name conf.d/new_name_site.conf /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub" CLR_RESET "\n", program_name);
-    printf("  " CLR_WHITE_BOLD "%s revoke 170119927746560 RWTPQzuhzBw=" CLR_RESET "\n", program_name);
+static void banner_row(const char *left, const char *right, int width,
+                       const char *lc, const char *rc)
+{
+    int pad = width - utf8_cols(left) - utf8_cols(right);
+    if (pad < 1)
+        pad = 1;
+    printf("  %s│%s %s%s%s%*s%s%s%s %s│%s\n",
+           H_BLD, H_RST, lc, left, H_RST, pad, "", rc, right, H_RST, H_BLD, H_RST);
+}
 
-    #undef CLR_RESET
-    #undef CLR_BOLD
-    #undef CLR_GREEN
-    #undef CLR_YELLOW
-    #undef CLR_CYAN
-    #undef CLR_MAGENTA
-    #undef CLR_WHITE_BOLD
+static void banner_text(const char *text, int width, const char *color)
+{
+    int pad = width - utf8_cols(text);
+    if (pad < 0)
+        pad = 0;
+    printf("  %s│%s %s%s%s%*s %s│%s\n",
+           H_BLD, H_RST, color, text, H_RST, pad, "", H_BLD, H_RST);
+}
+
+static void help_flag(const char *flag, const char *desc)
+{
+    printf("  %s%-20s%s %s\n", H_CYN, flag, H_RST, desc);
+}
+
+static void help_note(const char *text)
+{
+    printf("  %*s%s%s\n", 21, "", H_DIM, text);
+}
+
+static void help_cmd(const char *syntax, const char *desc)
+{
+    printf("\n  %s▸%s %s%s%s\n", H_GRN, H_RST, H_CYN, syntax, H_RST);
+    printf("      %s\n", desc);
+}
+
+static void help_sub(const char *text)
+{
+    printf("      %s%s%s\n", H_DIM, text, H_RST);
+}
+
+static void help_mode(const char *name, const char *desc)
+{
+    printf("        %s%-9s%s %s\n", H_YEL, name, H_RST, desc);
+}
+
+static void help_kv(const char *key, const char *val, const char *comment)
+{
+    printf("      %s%-13s%s = %s%s%s", H_DIM, key, H_RST, H_CYN, val, H_RST);
+    if (comment)
+        printf("   %s%s%s", H_DIM, comment, H_RST);
+    printf("\n");
+}
+
+static void help_ex(const char *prog, const char *args)
+{
+    printf("    %s$%s %s%s%s %s\n", H_GRN, H_RST, H_WHT, prog, H_RST, args);
+}
+
+/* ── main help ──────────────────────────────────────────────────── */
+
+void print_help(const char *program_name)
+{
+    const int W = 48;
+    char ver[64];
+    int i;
+
+    help_palette();
+    snprintf(ver, sizeof(ver), "v%s", VERSION);
+
+    /* ── banner ─────────────────────────────────────────────────── */
+    printf("\n  %s╭", H_BLD);
+    for (i = 0; i < W + 2; ++i)
+        fputs("─", stdout);
+    printf("╮%s\n", H_RST);
+
+    banner_row("GORGONA CLIENT", ver, W, H_GRN, H_YEL);
+    banner_text("Decentralized P2P Cron & Remote Execution Engine", W, H_DIM);
+    banner_text("End-to-End Encrypted, Time-Locked, and Resilient", W, H_DIM);
+
+    printf("  %s╰", H_BLD);
+    for (i = 0; i < W + 2; ++i)
+        fputs("─", stdout);
+    printf("╯%s\n", H_RST);
+
+    /* ── usage ──────────────────────────────────────────────────── */
+    help_title("USAGE", W);
+    printf("    %s%s%s %s[-v] [-e] [-d] [-V] [-c <path>]%s %s<command>%s %s[arguments]%s\n",
+           H_WHT, program_name, H_RST, H_CYN, H_RST, H_YEL, H_RST, H_DIM, H_RST);
+
+    /* ── flags ──────────────────────────────────────────────────── */
+    help_title("FLAGS", W);
+    help_flag("-v, --verbose",     "verbose output for debugging");
+    help_flag("-e, --exec",        "execute decrypted messages as commands (listen)");
+    help_note("· empty [exec_commands] → run every decrypted message");
+    help_note("· populated [exec_commands] → run only messages matching a key");
+    help_flag("-d, --daemon-exec", "run commands detached (fork + setsid)");
+    help_note("· requires -e  ·  output → $gorgona_LOG_FILE or /dev/null");
+    help_flag("-c, --conf <path>", "alternate config file");
+    help_note("· default: /etc/gorgona/gorgona.conf");
+    help_flag("-V, --version",     "print version and exit");
+    help_flag("-h, --help",        "print this help and exit");
+    help_note("· flags combine freely:  -ve  -ved  -veV");
+
+    /* ── commands ───────────────────────────────────────────────── */
+    help_title("COMMANDS", W);
+
+    help_cmd("genkeys", "generate a fresh RSA key pair under /etc/gorgona/");
+
+    help_cmd("send <unlock> <expire> <message> <public_key_file>",
+             "send an encrypted, time-locked message");
+    help_sub("use '-' as <message> to read the payload from stdin");
+
+    help_cmd("listen <mode> [<count>] [pubkey_hash_b64]",
+             "subscribe to the message stream");
+    help_mode("live",   "active messages (unlock_at ≤ now)");
+    help_mode("all",    "every non-expired message, locked ones included");
+    help_mode("lock",   "locked messages only (unlock_at > now)");
+    help_mode("single", "active messages for one key — pubkey required");
+    help_mode("last",   "the N most recent messages (N defaults to 1)");
+    help_mode("new",    "messages that arrive after connecting");
+    help_sub("* pubkey_hash_b64 filters the stream; mandatory for single/last");
+
+    help_cmd("send-file [<unlock> <expire>] <path> <pubkey>",
+             "send a file (LZ4-compressed, then encrypted)");
+    help_sub("times are optional — defaults to now … now + 1h");
+    help_sub("--name <relative/path> overrides the name on the receiving side");
+
+    help_cmd("revoke <alert_id> <pubkey_hash_b64>",
+             "cancel a pending time-locked message — the dead-hand switch");
+
+    /* ── configuration ──────────────────────────────────────────── */
+    help_title("CONFIGURATION", W);
+    printf("  %s/etc/gorgona/gorgona.conf%s\n", H_CYN, H_RST);
+
+    printf("\n    %s[server]%s\n", H_MAG, H_RST);
+    help_kv("ip",        "64.188.70.158",      "(example)");
+    help_kv("port",      "7777",               "(example)");
+    help_kv("sync_psk",  "<shared secret>",    "# optional, enables layer-2 mesh");
+    help_kv("data_dir",  "/var/lib/gorgona",   NULL);
+    help_kv("conf_dir",  "/etc/gorgona",       NULL);
+
+    printf("\n    %s[exec_commands]%s   %s[exec_commands:<pubkey>]%s\n",
+           H_MAG, H_RST, H_MAG, H_RST);
+    help_kv("<key>", "<script_path>   time_limit = <sec>", NULL);
+    help_sub("example:  app start = /usr/local/bin/app_start.sh  time_limit = 60");
+
+    printf("\n    %s[sync]%s\n", H_MAG, H_RST);
+    help_kv("max_file_size", "10485760", "# global limit, bytes (default 10 MiB)");
+
+    printf("\n    %s[sync:<pubkey>]%s\n", H_MAG, H_RST);
+    help_kv("dir",           "/etc/nginx/conf.d", "# root directory for this key");
+    help_kv("direction",     "rw",                "# ro | wo | rw");
+    help_kv("on_change",     "nginx -s reload",   "# run after a successful sync");
+    help_kv("max_file_size", "5242880",           "# optional per-key limit");
+
+    /* ── examples ───────────────────────────────────────────────── */
+    help_title("EXAMPLES", W);
+
+    help_ex(program_name, "listen single RWTPQzuhzBw=");
+    printf("    %s$%s %s%s%s %-34s%s# Gets the last 1 message%s\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST,
+           "listen last RWTPQzuhzBw=", H_DIM, H_RST);
+    printf("    %s$%s %s%s%s %-34s%s# Gets the last 3 messages%s\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST,
+           "listen last 3 RWTPQzuhzBw=", H_DIM, H_RST);
+    printf("    %s$%s %s%s%s %-34s%s# Listens for new messages only%s\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST,
+           "listen new RWTPQzuhzBw=", H_DIM, H_RST);
+    printf("    %s$%s %s%s%s %-34s%s# Listens and executes messages%s\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST,
+           "-e listen new RWTPQzuhzBw=", H_DIM, H_RST);
+    printf("    %s$%s %s%s%s %-34s%s# Listens, executes, and shows verbose output%s\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST,
+           "-ve listen new RWTPQzuhzBw=", H_DIM, H_RST);
+
+    help_ex(program_name, "send \"$(date -u '+%Y-%m-%d %H:%M:%S')\" \"$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')\" \"hello world\" \"RWTPQzuhzBw=.pub\"");
+    help_ex(program_name, "send \"$(date -u '+%Y-%m-%d %H:%M:%S')\" \"$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')\" \"app start\" \"RWTPQzuhzBw=.pub\"");
+    printf("    %s$%s df -h | %s%s%s send \"$(date -u '+%%Y-%%m-%%d %%H:%%M:%%S')\" \"$(date -u -d '+30 days' '+%%Y-%%m-%%d %%H:%%M:%%S')\" - \"RWTPQzuhzBw=.pub\"\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST);
+
+    help_ex(program_name, "send-file /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub");
+    help_ex(program_name, "send-file --name conf.d/new_name_site.conf /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub");
+    help_ex(program_name, "revoke 170119927746560 RWTPQzuhzBw=");
+
+    printf("\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -131,7 +293,7 @@ int main(int argc, char *argv[]) {
         {"exec", no_argument, 0, 'e'},
         {"version", no_argument, 0, 'V'},
         {"daemon-exec", no_argument, 0, 'd'},
-        {"conf",        required_argument, 0, 'c'}, 
+        {"conf",        required_argument, 0, 'c'},
         {0, 0, 0, 0}
     };
 
@@ -147,30 +309,30 @@ int main(int argc, char *argv[]) {
                 strncpy(config_file_path, config_path, sizeof(config_file_path) - 1);
                 config_file_path[sizeof(config_file_path) - 1] = '\0';
                 break;
-      case 'v':
-        verbose = 1;
-        break;
-      case 'h':
-        print_help(argv[0]);
-        return 0;
-      case 'e':
-        execute = 1;
-        break;
-      case 'V':
-        printf("Gorgona Client Version %s\n", VERSION);
-        return 0;
-      case 'd':
-        daemon_exec_flag = 1;
-        break;
-      case '?':
-        fprintf(stderr, "Unknown flag: %s\n", argv[optind - 1]);
-        print_help(argv[0]);
-        return 1;
-      default:
-        fprintf(stderr, "Error processing flags\n");
-        print_help(argv[0]);
-        return 1;
-      }
+            case 'v':
+                verbose = 1;
+                break;
+            case 'h':
+                print_help(argv[0]);
+                return 0;
+            case 'e':
+                execute = 1;
+                break;
+            case 'V':
+                printf("Gorgona Client Version %s\n", VERSION);
+                return 0;
+            case 'd':
+                daemon_exec_flag = 1;
+                break;
+            case '?':
+                fprintf(stderr, "Unknown flag: %s\n", argv[optind - 1]);
+                print_help(argv[0]);
+                return 1;
+            default:
+                fprintf(stderr, "Error processing flags\n");
+                print_help(argv[0]);
+                return 1;
+        }
     }
 
     if (daemon_exec_flag && !execute) {
@@ -206,6 +368,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    mesh_force_save = true; 
+    mesh_force_save = true;
     return 0;
 }
