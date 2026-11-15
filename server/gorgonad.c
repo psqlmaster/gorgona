@@ -1,7 +1,7 @@
-/* 
+/*
 * BSD 3-Clause License
 * Copyright (c) 2025, Alexander Shcheglov
-* All rights reserved. 
+* All rights reserved.
 */
 
 #include <stdio.h>
@@ -31,8 +31,8 @@ int client_sockets[MAX_CLIENTS];
 Subscriber subscribers[MAX_CLIENTS];
 int max_clients;
 int verbose = 0;
-int port;  
-int sync_interval = DEFAULT_SYNC_INTERVAL; 
+int port;
+int sync_interval = DEFAULT_SYNC_INTERVAL;
 int vacuum_threshold = DEFAULT_VACUUM_THRESHOLD;
 int vacuum_check_interval = DEFAULT_VACUUM_CHECK_INTERVAL;
 
@@ -77,70 +77,215 @@ void reload_handler(int sig) {
     reload_cfg_requested = 1;
 }
 
-void print_server_help(const char *program_name) {
-    // ANSI Цвета
-    #define CLR_RESET      "\033[0m"
-    #define CLR_BOLD       "\033[1m"
-    #define CLR_GREEN      "\033[0;32m"
-    #define CLR_YELLOW     "\033[0;33m"
-    #define CLR_CYAN       "\033[0;36m"
-    #define CLR_MAGENTA    "\033[0;35m"
-    #define CLR_WHITE_BOLD "\033[1;37m"
+/* ══════════════════════════════════════════════════════════════════
+ *  help / ui  —  terminal-aware, styled
+ * ══════════════════════════════════════════════════════════════════ */
 
-    printf(CLR_BOLD CLR_GREEN "Gorgona Mesh Server" CLR_RESET " (Version " CLR_YELLOW "%s" CLR_RESET ")\n", VERSION);
-    printf(CLR_BOLD "Usage:" CLR_RESET " %s " CLR_CYAN "[-h|--help] [-v|--verbose] [-V|--version] [-c|--conf <path>]" CLR_RESET "\n", program_name);
-    
-    printf("\n" CLR_BOLD "Description:" CLR_RESET "\n");
-    printf(" The gorgona server is a decentralized P2P node for encrypted alert delivery.\n");
-    printf(" It implements a Dual-Layer architecture:\n");
-    printf("  - Layer 1 (Command Plane): Blind E2E encrypted data replication.\n");
-    printf("  - Layer 2 (Management Plane): AES-256-GCM encrypted mesh for PEX and metrics.\n");
+static const char *H_RST = "";
+static const char *H_BLD = "";
+static const char *H_DIM = "";
+static const char *H_ACC = "";
+static const char *H_GRN = "";
+static const char *H_YEL = "";
+static const char *H_CYN = "";
+static const char *H_MAG = "";
+static const char *H_WHT = "";
 
-    printf("\n" CLR_BOLD "Flags:" CLR_RESET "\n");
-    printf(" " CLR_CYAN "-h, --help" CLR_RESET "     Displays this help message\n");
-    printf(" " CLR_CYAN "-v, --verbose" CLR_RESET "  Enables detailed trace (L2 metrics, gossip, decryption events)\n");
-    printf(" " CLR_CYAN "-V, --version" CLR_RESET "  Displays version information\n");
+static void help_palette(void)
+{
+    static int ready;
+    const char *nc;
+    const char *term;
 
-    printf("\n" CLR_BOLD "Configuration (" CLR_CYAN "/etc/gorgona/gorgonad.conf" CLR_RESET "):\n");
-    printf(" " CLR_MAGENTA "[server]" CLR_RESET "\n");
-    printf("  " CLR_CYAN "port" CLR_RESET " = <port>           Listen port (default: 5555, requires restart)\n");
-    printf("  " CLR_CYAN "max_alerts" CLR_RESET " = <number>   Storage limit per recipient key (reloadable)\n");
-    printf("  " CLR_CYAN "max_alert_ttl" CLR_RESET " = <sec>   Global cluster-wide TTL limit (default: 30 days, reloadable)\n");
-    printf("  " CLR_CYAN "max_clients" CLR_RESET " = <number>  Total TCP connection limit (Clients + Peers, reloadable)\n");
-    printf("  " CLR_CYAN "max_log_size" CLR_RESET " = <MB>     Log rotation size in MB (reloadable)\n");
-    printf("  " CLR_CYAN "max_message_size" CLR_RESET " = <MB> Max inbound message size in MB (reloadable via systemctl reload)\n");
-    printf("  " CLR_CYAN "use_disk_db" CLR_RESET " = <bool>    Persistence in " CLR_YELLOW "<data_dir>/alerts/" CLR_RESET " (requires restart)\n");
-    printf("  " CLR_CYAN "log_level" CLR_RESET " = <level>     \"info\", \"error\" or \"debug\" (systemctl reload gorgonad)\n");
-    printf("  " CLR_CYAN "vacuum_threshold_percent" CLR_RESET " = <%%>  Trigger database compression (1-100, reloadable)\n");
-    printf("  " CLR_CYAN "data_dir" CLR_RESET " = <path>       Data directory (default: " CLR_YELLOW "/var/lib/gorgona" CLR_RESET ", requires restart)\n");
-    printf("  " CLR_CYAN "conf_dir" CLR_RESET " = <path>       Config/Certs directory (default: " CLR_YELLOW "/etc/gorgona" CLR_RESET ", requires restart)\n");
+    if (ready)
+        return;
+    ready = 1;
 
-    printf("\n " CLR_MAGENTA "[replication]" CLR_RESET "\n");
-    printf("  " CLR_CYAN "sync_psk" CLR_RESET " = <key>        Cluster-wide secret for Layer 2 encryption (AES-256-GCM)\n");
-    printf("  " CLR_CYAN "sync_interval" CLR_RESET " = <sec>   Gossip & Heartbeat frequency (default: 10s)\n");
-    printf("  " CLR_CYAN "peer" CLR_RESET " = <IP:PORT>        Seed node for initial discovery (can be multiple entries)\n");
+    /* не терминал → без цвета (пайпы, редиректы, логи) */
+    if (!isatty(STDOUT_FILENO))
+        return;
 
-    printf("\n" CLR_BOLD "Mesh Resilience:" CLR_RESET "\n");
-    printf(" - Anti-Entropy: Continuous MaxID synchronization ensures data consistency.\n");
-    printf(" - Intelligent Routing: Best peers are prioritized via 'Gorgona Score' (RTT/Throughput).\n");
-    printf(" - Self-Healing: Dynamic node discovery (PEX) and boot-strapping from " CLR_CYAN "<data_dir>/peers.cache" CLR_RESET "\n");
+    nc = getenv("NO_COLOR");
+    if (nc && *nc)
+        return;
 
-    printf("\n" CLR_BOLD "Diagnostic Commands (via " CLR_CYAN "nc/telnet" CLR_RESET "):\n");
-    printf(" " CLR_YELLOW "status" CLR_RESET " <sync_psk>        Detailed L1/L2 metrics and cluster topology map.\n");
-    printf(" " CLR_YELLOW "sync" CLR_RESET "   <sync_psk>        Trigger immediate Mesh Anti-Entropy chain sync.\n");
-    printf(" " CLR_YELLOW "info" CLR_RESET "                     Brief uptime and identification.\n");
-    printf(" " CLR_YELLOW "help" CLR_RESET "                     Lists available plaintext commands.\n");
+    term = getenv("TERM");
+    if (!term || !*term || strcmp(term, "dumb") == 0)
+        return;
 
-    printf("\n" CLR_BOLD "Example:" CLR_RESET "\n");
-    printf(" " CLR_WHITE_BOLD "%s --verbose" CLR_RESET "\n", program_name);
+    H_RST = "\033[0m";     /* CLR_RESET      */
+    H_BLD = "\033[1m";     /* CLR_BOLD       */
+    H_DIM = "\033[2m";     /* dim / subtle   */
+    H_ACC = "\033[0;36m";  /* CLR_CYAN       */
+    H_GRN = "\033[0;32m";  /* CLR_GREEN      */
+    H_YEL = "\033[0;33m";  /* CLR_YELLOW     */
+    H_CYN = "\033[0;36m";  /* CLR_CYAN       */
+    H_MAG = "\033[0;35m";  /* CLR_MAGENTA    */
+    H_WHT = "\033[1;37m";  /* CLR_WHITE_BOLD */
+}
 
-    #undef CLR_RESET
-    #undef CLR_BOLD
-    #undef CLR_GREEN
-    #undef CLR_YELLOW
-    #undef CLR_CYAN
-    #undef CLR_MAGENTA
-    #undef CLR_WHITE_BOLD
+/* ── primitives ─────────────────────────────────────────────────── */
+
+static int utf8_cols(const char *s)
+{
+    int n = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if ((*p & 0xC0) != 0x80)
+            ++n;
+        ++p;
+    }
+    return n;
+}
+
+static void help_title(const char *text, int width)
+{
+    int i;
+    printf("\n  %s%s%s%s\n", H_ACC, H_BLD, text, H_RST);
+    printf("  %s", H_DIM);
+    for (i = 0; i < width; ++i)
+        fputs("─", stdout);
+    printf("%s\n", H_RST);
+}
+
+static void banner_row(const char *left, const char *right, int width,
+                       const char *lc, const char *rc)
+{
+    int pad = width - utf8_cols(left) - utf8_cols(right);
+    if (pad < 1)
+        pad = 1;
+    printf("  %s│%s %s%s%s%*s%s%s%s %s│%s\n",
+           H_BLD, H_RST, lc, left, H_RST, pad, "", rc, right, H_RST, H_BLD, H_RST);
+}
+
+static void banner_text(const char *text, int width, const char *color)
+{
+    int pad = width - utf8_cols(text);
+    if (pad < 0)
+        pad = 0;
+    printf("  %s│%s %s%s%s%*s %s│%s\n",
+           H_BLD, H_RST, color, text, H_RST, pad, "", H_BLD, H_RST);
+}
+
+static void help_flag(const char *flag, const char *desc)
+{
+    printf("  %s%-20s%s %s\n", H_CYN, flag, H_RST, desc);
+}
+
+static void help_note(const char *text)
+{
+    printf("  %*s%s%s\n", 21, "", H_DIM, text);
+}
+
+static void help_bullet(const char *label, const char *desc)
+{
+    printf("  %s·%s %s%s:%s %s\n", H_MAG, H_RST, H_WHT, label, H_RST, desc);
+}
+
+static void help_kv(const char *key, const char *val, const char *comment)
+{
+    printf("      %s%-24s%s = %s%-16s%s", H_CYN, key, H_RST, H_YEL, val, H_RST);
+    if (comment)
+        printf("  %s%s%s", H_DIM, comment, H_RST);
+    printf("\n");
+}
+
+static void help_diag(const char *cmd, const char *arg, const char *desc)
+{
+    printf("  %s▸%s %s%-8s%s %s%-11s%s %s\n",
+           H_GRN, H_RST, H_YEL, cmd, H_RST, H_CYN, arg ? arg : "", H_RST, desc);
+}
+
+static void help_ex(const char *prog, const char *args)
+{
+    printf("    %s$%s %s%s%s %s\n", H_GRN, H_RST, H_WHT, prog, H_RST, args);
+}
+
+/* ── main help ──────────────────────────────────────────────────── */
+
+void print_server_help(const char *program_name)
+{
+    const int W = 57;
+    char ver[64];
+    int i;
+
+    help_palette();
+    snprintf(ver, sizeof(ver), "v%s", VERSION);
+
+    /* ── banner ─────────────────────────────────────────────────── */
+    printf("\n  %s╭", H_BLD);
+    for (i = 0; i < W + 2; ++i)
+        fputs("─", stdout);
+    printf("╮%s\n", H_RST);
+
+    banner_row("GORGONA  MESH SERVER", ver, W, H_GRN, H_YEL);
+    banner_text("decentralized P2P node for encrypted alert delivery", W, H_DIM);
+    banner_text("L1: blind E2E replication · L2: AES-256-GCM PEX & metrics", W, H_DIM);
+
+    printf("  %s╰", H_BLD);
+    for (i = 0; i < W + 2; ++i)
+        fputs("─", stdout);
+    printf("╯%s\n", H_RST);
+
+    /* ── usage ──────────────────────────────────────────────────── */
+    help_title("USAGE", W);
+    printf("    %s%s%s %s[-h|--help] [-v|--verbose] [-V|--version] [-c|--conf <path>]%s\n",
+           H_WHT, program_name, H_RST, H_CYN, H_RST);
+
+    /* ── flags ──────────────────────────────────────────────────── */
+    help_title("FLAGS", W);
+    help_flag("-h, --help",        "displays this help message");
+    help_flag("-v, --verbose",     "enables detailed trace (L2 metrics, gossip, decryption events)");
+    help_flag("-V, --version",     "displays version information");
+    help_flag("-c, --conf <path>", "alternate config file");
+    help_note("· default: /etc/gorgona/gorgonad.conf");
+
+    /* ── architecture & resilience ──────────────────────────────── */
+    help_title("DUAL-LAYER ARCHITECTURE & MESH RESILIENCE", W);
+    help_bullet("Layer 1 (Command Plane)",    "blind E2E encrypted data replication");
+    help_bullet("Layer 2 (Management Plane)", "AES-256-GCM encrypted mesh for PEX and metrics");
+    help_bullet("Anti-Entropy",               "continuous MaxID synchronization ensures data consistency");
+    help_bullet("Intelligent Routing",        "best peers prioritized via 'Gorgona Score' (RTT/Throughput)");
+    help_bullet("Self-Healing",               "dynamic node discovery (PEX) & bootstrap from <data_dir>/peers.cache");
+
+    /* ── configuration ──────────────────────────────────────────── */
+    help_title("CONFIGURATION", W);
+    printf("  %s/etc/gorgona/gorgonad.conf%s  %s(reloadable keys apply via SIGHUP / systemctl reload gorgonad)%s\n",
+           H_CYN, H_RST, H_DIM, H_RST);
+
+    printf("\n    %s[server]%s\n", H_MAG, H_RST);
+    help_kv("port",                     "<port>",           "# listen port (default: 5555, requires restart)");
+    help_kv("max_alerts",               "<number>",         "# max alerts stored per key (reloadable)");
+    help_kv("max_alert_ttl",            "<sec>",            "# lifetime in sec, e.g. 7776000=90d (default: 30d, reloadable)");
+    help_kv("max_clients",              "<number>",         "# concurrent TCP connections; decrease closes excess (reloadable)");
+    help_kv("max_log_size",             "<MB>",             "# log rotation size in MB (reloadable)");
+    help_kv("log_level",                "<level>",          "# \"info\", \"error\" or \"debug\" (reloadable)");
+    help_kv("max_message_size",         "<MB>",             "# max inbound message size in MB (reloadable)");
+    help_kv("use_disk_db",              "<bool>",           "# persistent storage in <data_dir>/alerts/ (requires restart)");
+    help_kv("vacuum_threshold_percent", "<%>",              "# auto-cleanup threshold for deleted records, 1-100 (reloadable)");
+    help_kv("vacuum_check_interval",    "<sec>",            "# DB vacuum status check interval, e.g. 300s (reloadable)");
+    help_kv("data_dir",                 "/var/lib/gorgona", "# base directory for DB, cache and logs (requires restart)");
+    help_kv("conf_dir",                 "/etc/gorgona",     "# config files and TLS certs directory (requires restart)");
+    help_kv("log_file",                 "<path>",           "# optional log path (default: <data_dir>/gorgonad.log)");
+
+    printf("\n    %s[replication]%s\n", H_MAG, H_RST);
+    help_kv("sync_psk",      "<key>",          "# P2P cluster key for Layer 2 AES-256-GCM (reloadable)");
+    help_kv("sync_interval", "<sec>",          "# mesh maintenance & gossip frequency in sec (reloadable)");
+    help_kv("peer",          "<IP|FQDN:PORT>", "# seed node address, IP or DNS (repeatable, reloadable)");
+
+    /* ── diagnostic commands ────────────────────────────────────── */
+    help_title("DIAGNOSTIC COMMANDS  (via nc / telnet)", W);
+    help_diag("status", "<sync_psk>", "detailed L1/L2 metrics and cluster topology map");
+    help_diag("sync",   "<sync_psk>", "trigger immediate Mesh Anti-Entropy chain sync");
+    help_diag("info",   NULL,         "brief uptime and identification");
+    help_diag("help",   NULL,         "lists available plaintext commands");
+
+    /* ── example ────────────────────────────────────────────────── */
+    help_title("EXAMPLE", W);
+    help_ex(program_name, "--verbose");
+    printf("    %s$%s cmd=\"status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3\"; echo \"$cmd\" | %snc%s 64.188.70.158 7777\n", H_GRN, H_RST, H_WHT, H_RST);
+
+    printf("\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -157,7 +302,7 @@ int main(int argc, char *argv[]) {
     /* 1. Parse command line arguments */
     while ((opt = getopt_long(argc, argv, "vhVc:", long_options, NULL)) != -1) {
         switch (opt) {
-            case 'c': 
+            case 'c':
                 if (!optarg) {
                     fprintf(stderr, "Error: -c/--conf requires a path argument\n");
                     return 1;
@@ -196,13 +341,13 @@ int main(int argc, char *argv[]) {
 
 
     /* Load configuration */
-    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config, vacuum_check_interval_config; 
+    int max_alerts_config, max_clients_config, vacuum_threshold_config, sync_interval_tmp, max_ttl_config, vacuum_check_interval_config;
     size_t max_message_size_config, max_log_size_config;
     int use_disk_db_config;
 
-    read_config(config_path, &port, &max_alerts_config, &max_clients_config, &max_log_size_config, 
-                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config, &vacuum_check_interval_config); 
-    
+    read_config(config_path, &port, &max_alerts_config, &max_clients_config, &max_log_size_config,
+                log_level, &max_message_size_config, &use_disk_db_config, &vacuum_threshold_config, &sync_interval_tmp, &max_ttl_config, &vacuum_check_interval_config);
+
     sync_interval = sync_interval_tmp;
     max_alerts = max_alerts_config;
     max_alert_ttl = max_ttl_config;
@@ -235,7 +380,7 @@ int main(int argc, char *argv[]) {
 
     /* Sub-systems Initialization */
     mesh_init(sync_psk);
-    metrics_init_ssl(); 
+    metrics_init_ssl();
     int cached_peers = mesh_load_peers_cache();
     if (cached_peers > 0) {
         log_event("INFO", -1, NULL, 0, "Mesh network initialized (%d peer(s) loaded from cache)", cached_peers);
@@ -258,7 +403,7 @@ int main(int argc, char *argv[]) {
 
     /* Initialize database if disk storage is enabled */
     if (use_disk_db) {
-        if (alert_db_init() != 0) { 
+        if (alert_db_init() != 0) {
             log_event("ERROR", -1, NULL, 0, "Failed to initialize alert database directory");
             return 1;
         }
@@ -301,11 +446,11 @@ int main(int argc, char *argv[]) {
 
     /* Enter the main server loop */
     run_server(server_fd);
-    
+
     /* Cleanup */
     if (use_disk_db) alert_db_close_all();
     if (log_file && log_file != stdout) fclose(log_file);
-    close(server_fd); 
+    close(server_fd);
     log_event("INFO", -1, NULL, 0, "Server shutting down cleanly");
     return 0;
 }
