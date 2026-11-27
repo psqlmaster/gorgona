@@ -41,21 +41,28 @@ typedef struct sync_config {
     struct sync_config *next;
 } sync_config_t;
 
-/* Глобальный список правил синхронизации */
+/* Global list of sync rules */
 extern sync_config_t *sync_rules_head;
 
-/* Создать или найти правило по pubkey.
- * Возвращает указатель на правило или NULL при ошибке выделения памяти. */
+/* Finds a rule by pubkey or creates it,
+ * returns the rule or NULL on allocation failure. */
 sync_config_t *get_or_create_sync_rule(const char *pubkey);
 
-/* Применить глобальный лимит max_file_size ко всем правилам,
- * у которых он ещё не задан (равен 0). */
+/* Applies the global max_file_size limit to the rules
+ * that do not have it set yet (zero). */
 void apply_global_max_file_size(size_t global_limit);
 
-/* Существующий прототип оставляем */
 const sync_config_t *config_get_sync_rule(const char *pubkey);
 
 void read_config(const char *config_path, Config *config, int verbose);
+
+/* Reduces a key argument (HASH, HASH.pub, HASH.key or a full path)
+ * to the bare public key hash. */
+void key_arg_to_hash(const char *arg, char *out, size_t outlen);
+
+/* Resolves a key argument to an existing "pub" or "key" file path,
+ * returns 0 on success, -1 with the canonical path in out otherwise. */
+int key_arg_resolve(const char *arg, const char *ext, char *out, size_t outlen);
 
 int connect_with_timeout(const char *ip, int port, int timeout_ms);
 int try_sticky_node(int verbose);

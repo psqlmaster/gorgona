@@ -114,8 +114,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         fprintf(stderr, "Usage: send <unlock_time> <expire_time> <message> <public_key_file>\n");
         return 1;
     }
-
-    /* 1. Extract and Parse Arguments */
+    /* Extract and Parse Arguments */
     time_t unlock_at = parse_datetime(argv[1]);
     time_t expire_at = parse_datetime(argv[2]);
     if (unlock_at == -1 || expire_at == -1) return 1;
@@ -132,10 +131,13 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         if (message) message_len = strlen(message);
     }
     if (!message) return 1;
-
-    /* 2. Cryptography: Load Public Key and Hash it */
-    char full_pubkey_file[257];
-    snprintf(full_pubkey_file, sizeof(full_pubkey_file), "%s/%s", gorgona_conf_dir, pubkey_file);
+    
+    /* Cryptography: Load Public Key and Hash it */
+    char full_pubkey_file[PATH_MAX];
+    if (key_arg_resolve(pubkey_file, "pub", full_pubkey_file, sizeof(full_pubkey_file)) != 0) {
+        log_event("ERROR", -1, NULL, 0, "Public key file not found: %s", full_pubkey_file);
+        free(message); return 1;
+    }
     FILE *pub_fp = fopen(full_pubkey_file, "rb");
     if (!pub_fp) {
         log_event("ERROR", -1, NULL, 0, "Failed to open public key: %s", full_pubkey_file);
@@ -152,9 +154,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     unsigned char *pubkey_hash = compute_pubkey_hash(pubkey, &hash_len, verbose_flag);
     EVP_PKEY_free(pubkey);
     char *pubkey_hash_b64 = base64_encode(pubkey_hash, hash_len);
-    free(pubkey_hash);
-
-    /* 3. Data Encryption (AES-256-GCM) */
+    free(pubkey_hash);/* Data Encryption (AES-256-GCM) */
     unsigned char *encrypted = NULL, *encrypted_key = NULL, *iv = NULL, *tag = NULL;
     size_t e_len, k_len, i_len, t_len;
     if (encrypt_message(message, &encrypted, &e_len, &encrypted_key, &k_len, &iv, &i_len, &tag, &t_len, full_pubkey_file, verbose_flag) != 0) {
@@ -168,9 +168,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     sanitize_b64(encrypted_b64);
     sanitize_b64(encrypted_key_b64);
     sanitize_b64(iv_b64);
-    sanitize_b64(tag_b64);
-
-    /* 4. Configuration and Networking initialization */
+    sanitize_b64(tag_b64);/* Configuration and Networking initialization */
     Config config;
     read_config(config_file_path, &config, verbose_flag);
     bool l2_enabled = (config.sync_psk[0] != '\0');
@@ -204,9 +202,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
              encrypted_b64, encrypted_key_b64, iv_b64, tag_b64);
 
     struct timeval tv_start, tv_conn, tv_auth, tv_send, tv_ack;
-    gettimeofday(&tv_start, NULL);
-
-    /* 5. MESH-AWARE CONNECTION */
+    gettimeofday(&tv_start, NULL);/* MESH-AWARE CONNECTION */
     peer_manager_load_cache(&config);
     int sock = peer_manager_get_best_connection();
     gettimeofday(&tv_conn, NULL);
@@ -222,8 +218,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
     if (getpeername(sock, (struct sockaddr *)&p_addr, &p_l) == 0) {
         inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
     }
-
-    /* 6. MESH LAYER AUTHENTICATION (The L2 Handshake) */
+    /* MESH LAYER AUTHENTICATION (The L2 Handshake) */
     if (l2_enabled) {
         char auth_req[256];
         /* 
@@ -258,9 +253,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
             }
         }
     }
-    gettimeofday(&tv_auth, NULL);
-
-    /* 7. DATA TRANSMISSION (CHUNKED) */
+    gettimeofday(&tv_auth, NULL);/* DATA TRANSMISSION (CHUNKED) */
     log_event(MESH_LOG_LEVEL, -1, current_ip, 0, "Transmission: Sending %d bytes", total_len);
     signal(SIGPIPE, SIG_IGN);
 
@@ -280,9 +273,7 @@ int send_alert(int argc, char *argv[], int verbose_flag) {
         if (sent <= 0) { aborted = true; break; }
         total_sent += sent;
    }
-    gettimeofday(&tv_send, NULL);
-
-    /* 8. WAIT FOR SERVER ACKNOWLEDGEMENT */
+    gettimeofday(&tv_send, NULL);/* WAIT FOR SERVER ACKNOWLEDGEMENT */
     if (!aborted) {
         struct timeval tv_to = {10, 0};
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_to, sizeof(tv_to));
@@ -353,14 +344,11 @@ int alert_send_raw(const char *target_pubkey,
     char *buffer = NULL;
     char *pubkey_hash_b64 = NULL;
     unsigned char *encrypted = NULL, *encrypted_key = NULL, *iv = NULL, *tag = NULL;
-    char *encrypted_b64 = NULL, *encrypted_key_b64 = NULL, *iv_b64 = NULL, *tag_b64 = NULL;
-
-    /* 1. Путь к публичному ключу */
-    char full_pubkey_file[512];
-    if (strstr(target_pubkey, ".pub")) {
-        snprintf(full_pubkey_file, sizeof(full_pubkey_file), "%s/%s", gorgona_conf_dir, target_pubkey);
-    } else {
-        snprintf(full_pubkey_file, sizeof(full_pubkey_file), "%s/%s.pub", gorgona_conf_dir, target_pubkey);
+    char *encrypted_b64 = NULL, *encrypted_key_b64 = NULL, *iv_b64 = NULL, *tag_b64 = NULL;/* Путь к публичному ключу */
+    char full_pubkey_file[PATH_MAX];
+    if (key_arg_resolve(target_pubkey, "pub", full_pubkey_file, sizeof(full_pubkey_file)) != 0) {
+        log_event("ERROR", -1, NULL, 0, "Public key file not found: %s", full_pubkey_file);
+        return -1;
     }
 
     FILE *pub_fp = fopen(full_pubkey_file, "rb");
@@ -375,7 +363,7 @@ int alert_send_raw(const char *target_pubkey,
         return -1;
     }
 
-    /* 2. Хэш ключа */
+    /* Hash the key */
     size_t hash_len;
     unsigned char *pubkey_hash = compute_pubkey_hash(pubkey, &hash_len, verbose);
     EVP_PKEY_free(pubkey);
@@ -441,9 +429,7 @@ int alert_send_raw(const char *target_pubkey,
     socklen_t p_l = sizeof(p_addr);
     if (getpeername(sock, (struct sockaddr *)&p_addr, &p_l) == 0) {
         inet_ntop(AF_INET, &p_addr.sin_addr, current_ip, sizeof(current_ip));
-    }
-
-    /* 7. L2 AUTH */
+    }/* L2 AUTH */
     if (l2_enabled) {
         char auth_req[256];
         int al = snprintf(auth_req, sizeof(auth_req), "AUTH|%s|0|0|0", config.sync_psk);
@@ -473,7 +459,7 @@ int alert_send_raw(const char *target_pubkey,
         }
     }
 
-    /* 8. Отправка */
+    /* Sending */
     signal(SIGPIPE, SIG_IGN);
     uint32_t msg_len_net = htonl((uint32_t)total_len);
     if (send(sock, &msg_len_net, 4, MSG_NOSIGNAL) != 4) {
@@ -495,9 +481,7 @@ int alert_send_raw(const char *target_pubkey,
             break;
         }
         total_sent += sent;
-    }
-
-    /* 9. ACK */
+    }/* ACK */
     if (!aborted) {
         struct timeval tv_to = {10, 0};
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv_to, sizeof(tv_to));
@@ -543,8 +527,11 @@ int send_revocation(int argc, char *argv[], int verbose_flag) {
     const char *pubkey_hash_b64 = argv[2];
 
     /* Download and encrypt the public key (the server needs it to verify the signature) */
-    char pub_path[512];
-    snprintf(pub_path, sizeof(pub_path), "%s/%s.pub", gorgona_conf_dir, pubkey_hash_b64);
+    char pub_path[PATH_MAX];
+    if (key_arg_resolve(pubkey_hash_b64, "pub", pub_path, sizeof(pub_path)) != 0) {
+        log_event("ERROR", -1, NULL, 0, "Public key file not found: %s", pub_path);
+        return 1;
+    }
     FILE *f_pub = fopen(pub_path, "rb");
     if (!f_pub) {
         log_event("ERROR", -1, NULL, 0, "Public key file not found: %s", pub_path);
@@ -561,8 +548,12 @@ int send_revocation(int argc, char *argv[], int verbose_flag) {
     free(pub_content);
 
     /* Sign the ID with the private key */
-    char priv_path[512];
-    snprintf(priv_path, sizeof(priv_path), "%s/%s.key", gorgona_conf_dir, pubkey_hash_b64);
+    char priv_path[PATH_MAX];
+    if (key_arg_resolve(pubkey_hash_b64, "key", priv_path, sizeof(priv_path)) != 0) {
+        log_event("ERROR", -1, NULL, 0, "Private key file not found: %s", priv_path);
+        free(pubkey_b64);
+        return 1;
+    }
     char sig_b64[512] = {0};
     if (sign_message_id(alert_id, priv_path, sig_b64, sizeof(sig_b64), verbose_flag) != 0) {
         log_event("ERROR", -1, NULL, 0, "Failed to sign revocation request");

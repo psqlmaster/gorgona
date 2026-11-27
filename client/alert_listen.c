@@ -78,13 +78,13 @@ char* sanitize_and_concat(const char *script, const char *args) {
     char *result = (char *)calloc(1, safe_len);
     if (!result) return NULL;
 
-    /* 1. Find the first shell operator (| ; > &) */
+    /* Find the first shell operator (| ; > &) */
     const char *insertion_point = strpbrk(script, "|;>&");
     size_t head_len = insertion_point ? (size_t)(insertion_point - script) : strlen(script);
 
     char *ptr = result;
 
-    /* 2. Copy the command head (before the pipe) */
+    /* Copy the command head (before the pipe) */
     memcpy(ptr, script, head_len);
     ptr += head_len;
 
@@ -93,7 +93,7 @@ char* sanitize_and_concat(const char *script, const char *args) {
         ptr--;
     }
 
-    /* 3. Safely process and add arguments */
+    /* Safely process and add arguments */
     char *args_copy = strdup(args);
     if (!args_copy) { free(result); return NULL; }
 
@@ -108,7 +108,7 @@ char* sanitize_and_concat(const char *script, const char *args) {
     }
     free(args_copy);
 
-    /* 4. Add the rest of the command (tail) */
+    /* Add the rest of the command (tail) */
     if (insertion_point) {
         /* Add a space before the operator if it's not already there */
         if (ptr > result && *(ptr - 1) != ' ') {
@@ -135,8 +135,11 @@ void time_to_utc_string(time_t t, char *buf, size_t bufsize) {
 
 /* Checks for private key for pubkey_hash_b64 */
 int has_private_key(const char *pubkey_hash_b64, int verbose) {
-    char priv_file[256];
-    snprintf(priv_file, sizeof(priv_file), "/etc/gorgona/%s.key", pubkey_hash_b64);
+    char priv_file[PATH_MAX];
+    if (key_arg_resolve(pubkey_hash_b64, "key", priv_file, sizeof(priv_file)) != 0) {
+        log_event("WARN", -1, NULL, 0, "Private key not found: %s", priv_file);
+        return 0;
+    }
     FILE *priv_fp = fopen(priv_file, "rb");
     if (!priv_fp) {
         char time_str[32];
@@ -148,11 +151,11 @@ int has_private_key(const char *pubkey_hash_b64, int verbose) {
     return 1;
 }
 
-/* Collects all private key hashes from /etc/gorgona/ */
+/* Collects all private key hashes from the configuration directory */
 int collect_key_hashes(char ***key_hashes, int *key_count, int verbose) {
     *key_hashes = NULL;
     *key_count = 0;
-    DIR *dir = opendir("/etc/gorgona");
+    DIR *dir = opendir(gorgona_conf_dir);
     if (!dir) {
         log_event("ERROR", -1, NULL, 0, "Failed to open directory %s: %s", gorgona_conf_dir, strerror(errno));
         return 0;
@@ -165,10 +168,11 @@ int collect_key_hashes(char ***key_hashes, int *key_count, int verbose) {
         return 0;
     }
     while ((entry = readdir(dir))) {
-        if (strstr(entry->d_name, ".key")) {
+        size_t name_len = strlen(entry->d_name);
+        if (name_len > 4 && strcmp(entry->d_name + name_len - 4, ".key") == 0) {
             char *hash = strdup(entry->d_name);
             if (!hash) continue;
-            hash[strlen(hash) - 4] = '\0'; // Remove .key extension
+            hash[name_len - 4] = '\0'; /* Drop the .key extension */
             if (*key_count >= capacity) {
                 capacity *= 2;
                 char **new_hashes = realloc(*key_hashes, capacity * sizeof(char *));
@@ -254,8 +258,8 @@ static void execute_pending_alert(int sock, PendingAlert *pa, int verbose, Confi
         goto cleanup;
     }
 
-    char priv_file[256];
-    snprintf(priv_file, sizeof(priv_file), "/etc/gorgona/%s.key", pa->pubkey_hash_b64);
+    char priv_file[PATH_MAX];
+    key_arg_resolve(pa->pubkey_hash_b64, "key", priv_file, sizeof(priv_file));
     char *plaintext = NULL;
     int ret = decrypt_message(encrypted, encrypted_len, encrypted_key_dec, encrypted_key_len,
                              iv_dec, iv_len, tag_dec, &plaintext, priv_file, verbose);
@@ -357,8 +361,8 @@ cleanup:
  * but without opening a new socket or parsing the arguments 
  */
 static void internal_reply_error(int sock, const char *target_hash, const char *msg, int verbose) {
-    char pub_path[256];
-    snprintf(pub_path, sizeof(pub_path), "/etc/gorgona/%s.pub", target_hash);
+    char pub_path[PATH_MAX];
+    key_arg_resolve(target_hash, "pub", pub_path, sizeof(pub_path));
 
     unsigned char *enc = NULL, *enc_key = NULL, *iv = NULL, *tag = NULL;
     size_t e_len, k_len, i_len, t_len;
@@ -438,7 +442,7 @@ void remove_pending_alert(uint64_t id, int verbose) { // Исправлено: u
 void parse_response(int sock, const char *response, const char *expected_pubkey_hash_b64, 
                     int verbose, int execute, Config *config, int daemon_exec_flag) {
     /* -------------------------------------------------------------------------
-     * 1. LAYER 2 DECRYPTION (New Block)
+     * LAYER 2 DECRYPTION (New Block)
      * -------------------------------------------------------------------------
      * If the server sends an administrative mesh packet, it is wrapped in MGMT.
      * We need to decrypt it using the sync_psk from our config.
@@ -479,7 +483,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     }   
 
     /* -------------------------------------------------------------------------
-     * 2. PROTOCOL FILTERING: P2P NOISE REDUCTION
+     * PROTOCOL FILTERING: P2P NOISE REDUCTION
      * -------------------------------------------------------------------------
      * Ignore internal replication and synchronization traffic. These messages 
      * are intended for server-to-server communication and should not be 
@@ -502,7 +506,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         return;
     }
     /* -------------------------------------------------------------------------
-     * 3. STATUS & ERROR HANDLING
+     * STATUS & ERROR HANDLING
      * -------------------------------------------------------------------------
      * Check for plain-text status updates or error messages from the server.
      */
@@ -512,7 +516,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         return;
     }
     /* -------------------------------------------------------------------------
-     * 4. ALERT PACKET PARSING
+     * ALERT PACKET PARSING
      * -------------------------------------------------------------------------
      * Format: ALERT|pubkey_hash|id|unlock_at|expire_at|text|key|iv|tag
      */
@@ -536,7 +540,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         return;
     }
     /* -------------------------------------------------------------------------
-     * 5. IDENTITY & TIMESTAMP RECONSTRUCTION
+     * IDENTITY & TIMESTAMP RECONSTRUCTION
      * -------------------------------------------------------------------------
      */
     uint64_t id = strtoull(id_str, NULL, 10);
@@ -553,7 +557,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     time_t expire_at = atol(expire_at_str);
     time_t now = time(NULL);
     /* -------------------------------------------------------------------------
-     * 6. SECURITY & ACCESS CONTROL
+     * SECURITY & ACCESS CONTROL
      * -------------------------------------------------------------------------
      */
     /* Apply Pubkey Filter if specified */
@@ -569,7 +573,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         return;
     }
     /* -------------------------------------------------------------------------
-     * 7. METADATA DISPLAY
+     * METADATA DISPLAY
      * -------------------------------------------------------------------------
      */
     printf("Received Alert: Recipient_Hash=%s\n", pubkey_hash_b64);
@@ -586,7 +590,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     printf("Timestamps (Local): Created: %s, Unlock: %s, Expire: %s\n", 
            buf_create, buf_unlock, buf_expire);
     /* -------------------------------------------------------------------------
-     * 8. LIFECYCLE MANAGEMENT (EXPIRY & TIME-LOCK)
+     * LIFECYCLE MANAGEMENT (EXPIRY & TIME-LOCK)
      * -------------------------------------------------------------------------
      */
     if (expire_at <= now) {
@@ -616,7 +620,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
     }
 
     /* -------------------------------------------------------------------------
-     * 9. DECRYPTION & EXECUTION
+     * DECRYPTION & EXECUTION
      * -------------------------------------------------------------------------
      */
     size_t e_len, k_len, i_len, t_len;
@@ -629,7 +633,7 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         goto decryption_cleanup;
     }
 
-    /* --- ПЕРЕХВАТ СОБЫТИЙ-МОГИЛЬЩИКОВ (EVENT-SOURCING TOMBSTONE) --- */
+    /* ---- EVENT-SOURCING TOMBSTONE ---- */
     if (e_len >= 10 && memcmp(e_raw, "TOMBSTONE|", 10) == 0) {
         char *t_str = malloc(e_len - 10 + 1);
         if (t_str) {
@@ -649,10 +653,10 @@ void parse_response(int sock, const char *response, const char *expected_pubkey_
         goto decryption_cleanup;
     }
 
-    char priv_path[256];
-    snprintf(priv_path, sizeof(priv_path), "/etc/gorgona/%s.key", pubkey_hash_b64);
+    char priv_path[PATH_MAX];
+    key_arg_resolve(pubkey_hash_b64, "key", priv_path, sizeof(priv_path));
 
-    /* ВАЖНО: uint8_t*, а не char* */
+    /* IMPORTANT: uint8_t*, not char* */
     uint8_t *plaintext = NULL;
     size_t plain_len = 0;
 
@@ -859,6 +863,18 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
         }
     }
 
+    /* The key may be given as HASH, HASH.pub, HASH.key or a full path,
+       the protocol always works with the bare hash */
+    char normalized_key[256];
+    if (pubkey_hash_b64) {
+        key_arg_to_hash(pubkey_hash_b64, normalized_key, sizeof(normalized_key));
+        if (normalized_key[0] == '\0') {
+            fprintf(stderr, "Invalid key argument: %s\n", pubkey_hash_b64);
+            return 1;
+        }
+        pubkey_hash_b64 = normalized_key;
+    }
+
     log_event("DEBUG", -1, NULL, 0, "Parsed mode='%s', count=%d, pubkey_hash_b64='%s'",
               mode, count, pubkey_hash_b64 ? pubkey_hash_b64 : "NULL");
 
@@ -891,7 +907,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
     /* INFINITE RECONNECTION CYCLE */
     while (1) {
-        /* 1. KEY COLLECTION LOGIC (Identify target recipients) */
+        /* KEY COLLECTION LOGIC (Identify target recipients) */
         if (strcmp(mode, "last") == 0 && !pubkey_hash_b64) {
             if (key_hashes) free_key_hashes(key_hashes, key_count);
             if (!collect_key_hashes(&key_hashes, &key_count, verbose)) {
@@ -913,7 +929,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
         bool any_key_success = false;
 
-        /* 2. CONNECTION AND PROCESSING LOOP */
+        /* CONNECTION AND PROCESSING LOOP */
         for (int key_idx = 0; key_idx < (key_count > 0 ? key_count : 1); key_idx++) {
             char *current_pubkey_hash = (key_count > 0) ? key_hashes[key_idx] : NULL;
             int sock = -1;
@@ -922,7 +938,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 log_event("DEBUG", -1, NULL, 0, "Starting subscription session for key %s", current_pubkey_hash);
             }
 
-            /* --- 2.1 ESTABLISH MESH-AWARE CONNECTION --- */ 
+            /* --- ESTABLISH MESH-AWARE CONNECTION --- */ 
             /* peer_manager_load_cache automatically detects l2_mesh_enabled 
                and adjusts the candidate list accordingly. */
             peer_manager_load_cache(&config);
@@ -946,7 +962,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
 
             log_event(MESH_LOG_LEVEL, -1, current_ip, ntohs(p_addr.sin_port), "Connection established");
 
-            /* --- 2.2 LAYER 2 HANDSHAKE --- */
+            /* --- LAYER 2 HANDSHAKE --- */
             if (l2_mesh_enabled) {
                 char auth_req[256];
                 /* 
@@ -992,7 +1008,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
                 log_event(MESH_LOG_LEVEL, -1, NULL, 0, "Mesh Status: Skipping L2 Handshake (Legacy Mode Active)");
             }
 
-            /* --- 2.3 STANDARD COMMAND (LISTEN/SUBSCRIBE) --- */
+            /* --- STANDARD COMMAND (LISTEN/SUBSCRIBE) --- */
             size_t needed_len = 512;
             char *req_buffer = malloc(needed_len);
             if (!req_buffer) { close(sock); goto backoff; }
@@ -1022,7 +1038,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             /* Signal that at least one node-key session was established */
             any_key_success = true;
 
-            /* --- 3. DATA RECEIVE LOOP --- */
+            /* --- DATA RECEIVE LOOP --- */
             int connection_ok = 1;
             int messages_received = 0;
             int received_any_message = 0;
@@ -1118,7 +1134,7 @@ int listen_alerts(int argc, char *argv[], int verbose, int execute, int daemon_e
             }
         }
 
-        /* --- 4. BACKOFF & RECOVERY (for live/new only) --- */
+        /* --- BACKOFF & RECOVERY (for live/new only) --- */
         backoff: 
         if (key_hashes) { free_key_hashes(key_hashes, key_count); key_hashes = NULL; key_count = 0; }
         if (!should_reconnect) return 0;

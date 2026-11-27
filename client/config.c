@@ -28,22 +28,22 @@ sync_config_t *get_or_create_sync_rule(const char *pubkey)
 {
     if (!pubkey || !*pubkey)
         return NULL;
-    /* Ищем существующее */
+    /* Look for an existing rule */
     for (sync_config_t *r = sync_rules_head; r; r = r->next) {
         if (strcmp(r->pubkey, pubkey) == 0)
             return r;
     }
-    /* Создаём новое */
+    /* Create a new rule */
     sync_config_t *rule = calloc(1, sizeof(sync_config_t));
     if (!rule)
         return NULL;
     strncpy(rule->pubkey, pubkey, sizeof(rule->pubkey) - 1);
     rule->pubkey[sizeof(rule->pubkey) - 1] = '\0';
-    /* значения по умолчанию */
+    /* Default values */
     strncpy(rule->direction, "rw", sizeof(rule->direction) - 1);
-    rule->max_file_size = 0;          /* 0 → потом подставится глобальный */
+    rule->max_file_size = 0;          /* The global limit is applied later */
     rule->next = NULL;
-    /* вставляем в начало списка */
+    /* Insert at the head of the list */
     rule->next = sync_rules_head;
     sync_rules_head = rule;
     return rule;
@@ -57,7 +57,7 @@ void apply_global_max_file_size(size_t global_limit)
     }
 }
 
-/* Удобный поиск (уже был объявлен в заголовке) */
+/* Convenience lookup (already declared in the header) */
 const sync_config_t *config_get_sync_rule(const char *pubkey)
 {
     if (!pubkey || !*pubkey)
@@ -79,8 +79,76 @@ static char *trim_spaces(char *str) {
     return str;
 }
 
+/* ===== Key argument normalization =====
+ * Accepted forms: "HASH", "HASH.pub", "HASH.key", "/etc/gorgona/HASH.pub".
+ */
+
+static int str_ends_with(const char *s, const char *suffix) {
+    size_t ls = strlen(s), lf = strlen(suffix);
+    return lf <= ls && strcmp(s + ls - lf, suffix) == 0;
+}
+
+void key_arg_to_hash(const char *arg, char *out, size_t outlen) {
+    if (!out || outlen == 0) return;
+    out[0] = '\0';
+    if (!arg || !*arg) return;
+
+    const char *base = strrchr(arg, '/');
+    base = base ? base + 1 : arg;
+    snprintf(out, outlen, "%s", base);
+
+    if (str_ends_with(out, ".pub") || str_ends_with(out, ".key"))
+        out[strlen(out) - 4] = '\0';
+}
+
+/* A path is accepted as is only if it is not marked with the extension of
+   another key type (for example .key where a public key is required). */
+static int path_ext_compatible(const char *path, const char *ext) {
+    char dot_ext[8];
+    snprintf(dot_ext, sizeof(dot_ext), ".%s", ext ? ext : "pub");
+    if (str_ends_with(path, ".pub") || str_ends_with(path, ".key"))
+        return str_ends_with(path, dot_ext);
+    return 1;   /* no extension given, try to open it */
+}
+
+static int regular_file_exists(const char *path) {
+    struct stat st;
+    return path && *path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+int key_arg_resolve(const char *arg, const char *ext, char *out, size_t outlen) {
+    char hash[256];
+    char cand[3][PATH_MAX];
+    int n = 0;
+
+    if (!arg || !*arg || !out || outlen == 0) return -1;
+    if (!ext || !*ext) ext = "pub";
+    key_arg_to_hash(arg, hash, sizeof(hash));
+
+    /* An explicit path was given, try it as is */
+    if (strchr(arg, '/') && path_ext_compatible(arg, ext)) {
+        snprintf(cand[n++], PATH_MAX, "%s", arg);
+    }
+    /* The name relative to conf_dir (HASH, HASH.pub, HASH.key) */
+    if (path_ext_compatible(arg, ext))
+        snprintf(cand[n++], PATH_MAX, "%s/%s", gorgona_conf_dir, arg);
+    /* Canonical path <conf_dir>/<hash>.<ext> */
+    snprintf(cand[n++], PATH_MAX, "%s/%s.%s", gorgona_conf_dir, hash, ext);
+
+    for (int i = 0; i < n; i++) {
+        if (regular_file_exists(cand[i])) {
+            snprintf(out, outlen, "%s", cand[i]);
+            return 0;
+        }
+    }
+
+    /* Nothing found, return the canonical path for the error message */
+    snprintf(out, outlen, "%s", cand[n - 1]);
+    return -1;
+}
+
 void read_config(const char *config_path, Config *config, int verbose) {
-    /* 1. Initialize defaults */
+    /* Initialize defaults */
     memset(config->sync_psk, 0, sizeof(config->sync_psk));
     if (strlen(DEFAULT_SERVER_IP) > 0) {
         strncpy(config->server_ip, DEFAULT_SERVER_IP, sizeof(config->server_ip) - 1);
@@ -94,9 +162,9 @@ void read_config(const char *config_path, Config *config, int verbose) {
     gorgona_data_dir[sizeof(gorgona_data_dir) - 1] = '\0';
     strncpy(gorgona_conf_dir, DEFAULT_CONF_DIR, sizeof(gorgona_conf_dir) - 1);
     gorgona_conf_dir[sizeof(gorgona_conf_dir) - 1] = '\0';
-    gorgona_log_file[0] = '\0';   /* пусто = использовать data_dir или /dev/null */
+    gorgona_log_file[0] = '\0';   /* Empty = use data_dir or /dev/null */
 
-    /* Глобальный лимит размера файла для sync (по умолчанию 10 МБ) */
+    /* Global sync file size limit (10 MiB by default) */
     long global_max_file_size = 10485760;
 
     FILE *conf_fp = fopen(config_path, "r");
@@ -107,11 +175,11 @@ void read_config(const char *config_path, Config *config, int verbose) {
 
     int in_server_section = 0;
     int in_exec_section   = 0;
-    int in_sync_section   = 0;          /* 1 = [sync] или [sync:KEY] */
-    int is_global_sync    = 0;          /* 1 = именно [sync] без ключа */
+    int in_sync_section   = 0;          /* [sync] or [sync:KEY] */
+    int is_global_sync    = 0;          /* Exactly [sync], without a key */
 
     char current_required_key[256] = "";
-    char current_sync_key[256]     = "";   /* pubkey для [sync:KEY] */
+    char current_sync_key[256]     = "";   /* Pubkey for [sync:KEY] */
 
     char line[512];
     while (fgets(line, sizeof(line), conf_fp)) {
@@ -121,14 +189,14 @@ void read_config(const char *config_path, Config *config, int verbose) {
         char *trimmed = trim_spaces(line);
         if (*trimmed == '\0') continue;
 
-        /* === Обработка заголовка секции === */
+        /* === Section header handling === */
         if (trimmed[0] == '[') {
             char *end = strchr(trimmed, ']');
             if (end) {
                 *end = '\0';
                 char *sec = trim_spaces(trimmed + 1);
 
-                /* Сброс всех флагов секций */
+                /* Reset all section flags */
                 in_server_section = 0;
                 in_exec_section   = 0;
                 in_sync_section   = 0;
@@ -149,24 +217,24 @@ void read_config(const char *config_path, Config *config, int verbose) {
                     in_server_section = 1;
                 }
                 else if (strcmp(sec, "sync") == 0) {
-                    /* Глобальная секция [sync] */
+                    /* Global [sync] section */
                     in_sync_section = 1;
                     is_global_sync  = 1;
                 }
                 else if (strncmp(sec, "sync:", 5) == 0) {
-                    /* Секция [sync:<pubkey>] */
+                    /* [sync:<pubkey>] section */
                     in_sync_section = 1;
                     is_global_sync  = 0;
                     strncpy(current_sync_key, trim_spaces(sec + 5),
                             sizeof(current_sync_key) - 1);
                     current_sync_key[sizeof(current_sync_key) - 1] = '\0';
                 }
-                /* иначе — неизвестная секция, все флаги уже сброшены */
+                /* Otherwise an unknown section, all flags are already reset */
                 continue;
             }
         }
 
-        /* === Обработка пар key = value === */
+        /* === Handling of key = value pairs === */
         char *delimiter = strchr(trimmed, '=');
         if (!delimiter) continue;
 
@@ -232,22 +300,22 @@ void read_config(const char *config_path, Config *config, int verbose) {
         }
         else if (in_sync_section) {
             if (is_global_sync) {
-                /* Глобальная секция [sync] */
+                /* Global [sync] section */
                 if (strcmp(key, "max_file_size") == 0) {
                     global_max_file_size = atol(value);
                     if (global_max_file_size <= 0)
-                        global_max_file_size = 10485760;  /* защита */
+                        global_max_file_size = 10485760;  /* Guard against invalid values */
                 }
-                /* здесь можно добавить другие глобальные параметры sync */
+                /* Other global sync parameters can be added here */
             }
             else {
-                /* Секция [sync:<pubkey>] */
+                /* [sync:<pubkey>] section */
                 if (current_sync_key[0] == '\0')
-                    continue;   /* на всякий случай */
+                    continue;   /* Just in case */
 
                 sync_config_t *rule = get_or_create_sync_rule(current_sync_key);
                 if (!rule)
-                    continue;   /* нет свободных слотов */
+                    continue;   /* Rule could not be created */
 
                 if (strcmp(key, "dir") == 0) {
                     strncpy(rule->dir, value, sizeof(rule->dir) - 1);
@@ -269,8 +337,8 @@ void read_config(const char *config_path, Config *config, int verbose) {
     }
     fclose(conf_fp);
 
-    /* После парсинга: если у правила не задан max_file_size — берём глобальный */
-    /* (предполагается, что get_or_create_sync_rule / список правил доступны) */
+    /* After parsing: if a rule has no max_file_size set, fall back to the global one */
+    /* (get_or_create_sync_rule / the rule list are expected to be available) */
     apply_global_max_file_size((size_t)global_max_file_size); 
 
     if (verbose && config->server_ip[0] != '\0') {
@@ -306,7 +374,7 @@ int connect_with_timeout(const char *ip, int port, int timeout_ms) {
     close(sock); return -1;
 }
 
-/* ✅ STICKY_NODE_PATH теперь использует gorgona_data_dir */
+/* STICKY_NODE_PATH now uses gorgona_data_dir */
 void save_sticky_node(const char *ip, int port) {
     char sticky_path[512];
     snprintf(sticky_path, sizeof(sticky_path), "%s/sticky_node", gorgona_data_dir);
