@@ -198,16 +198,24 @@ void print_help(const char *program_name)
     help_flag("-h, --help",        "print this help and exit");
     help_note("· flags combine freely:  -ve  -ved  -veV");
 
+    /* ── key argument ───────────────────────────────────────────── */
+    help_title("KEY ARGUMENT", W);
+    help_sub("every command accepts the key in any of these forms");
+    help_sub("RWTPQzuhzBw=   RWTPQzuhzBw=.pub   RWTPQzuhzBw=.key");
+    help_sub("/etc/gorgona/RWTPQzuhzBw=.pub   a full path to the key file");
+    help_sub("send and send-file read the public key, listen and revoke the private one");
+    help_sub("an argument marked with the wrong extension resolves to the matching key");
+
     /* ── commands ───────────────────────────────────────────────── */
     help_title("COMMANDS", W);
 
     help_cmd("genkeys", "generate a fresh RSA key pair under /etc/gorgona/");
 
-    help_cmd("send <unlock> <expire> <message> <public_key_file>",
+    help_cmd("send <unlock> <expire> <message> <pubkey>",
              "send an encrypted, time-locked message");
     help_sub("use '-' as <message> to read the payload from stdin");
 
-    help_cmd("listen <mode> [<count>] [pubkey_hash_b64]",
+    help_cmd("listen <mode> [<count>] [pubkey]",
              "subscribe to the message stream");
     help_mode("live",   "active messages (unlock_at ≤ now)");
     help_mode("all",    "every non-expired message, locked ones included");
@@ -215,14 +223,14 @@ void print_help(const char *program_name)
     help_mode("single", "active messages for one key — pubkey required");
     help_mode("last",   "the N most recent messages (N defaults to 1)");
     help_mode("new",    "messages that arrive after connecting");
-    help_sub("* pubkey_hash_b64 filters the stream; mandatory for single/last");
+    help_sub("* pubkey filters the stream; mandatory for single and last");
 
     help_cmd("send-file [<unlock> <expire>] <path> <pubkey>",
              "send a file (LZ4-compressed, then encrypted)");
     help_sub("times are optional — defaults to now … now + 1h");
     help_sub("--name <relative/path> overrides the name on the receiving side");
 
-    help_cmd("revoke <alert_id> <pubkey_hash_b64>",
+    help_cmd("revoke <alert_id> <pubkey>",
              "cancel a pending time-locked message — the dead-hand switch");
 
     /* ── configuration ──────────────────────────────────────────── */
@@ -278,6 +286,11 @@ void print_help(const char *program_name)
     help_ex(program_name, "send-file /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub");
     help_ex(program_name, "send-file --name conf.d/new_name_site.conf /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub");
     help_ex(program_name, "revoke 170119927746560 RWTPQzuhzBw=");
+
+    printf("    %s$%s %s%s%s %-34s%s# Same key, other accepted forms%s\n",
+           H_GRN, H_RST, H_WHT, program_name, H_RST,
+           "listen last 1 RWTPQzuhzBw=.key", H_DIM, H_RST);
+    help_ex(program_name, "listen new /etc/gorgona/RWTPQzuhzBw=.key");
 
     printf("\n");
 }

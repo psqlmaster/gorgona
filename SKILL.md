@@ -1,17 +1,33 @@
 ---
-description: "CLI for decentralized P2P messaging and remote command execution (Gorgona v3.1.5). Contains exact command templates for sending, listening, file sync, and remote execution."
+description: "CLI for decentralized P2P messaging and remote command execution (Gorgona v3.1.6). Contains exact command templates for sending, listening, file sync, and remote execution."
 ---
 
 # Gorgona CLI
 
 **Binary:** `gorgona`  
 **Config:** `/etc/gorgona/gorgona.conf`  
-**Keys Directory:** `/etc/gorgona/` *(The CLI automatically prepends this path. Do NOT include it in your arguments!)*
+**Keys Directory:** `/etc/gorgona/` *(a bare key name is resolved against this directory)*
+
+## 0. KEY ARGUMENT FORMS (apply to every command)
+
+Any command that takes a key accepts all of these forms, they are equivalent:
+
+| Form | Example |
+|---|---|
+| Bare hash | `RWTPQzuhzBw=` |
+| Public file name | `RWTPQzuhzBw=.pub` |
+| Private file name | `RWTPQzuhzBw=.key` |
+| Full path | `/etc/gorgona/RWTPQzuhzBw=.pub` |
+
+The CLI resolves the argument to the real key file of the required type: `send` and
+`send-file` always use the public key, `listen` and `revoke` the private one. An
+argument marked with the wrong extension (for example `RWTPQzuhzBw=.key` on `send`)
+is automatically resolved to the matching key of the right type.
 
 ## 1. SENDING MESSAGES
 
 Always use this exact template. Replace `<KEY>` (e.g., `RWTPQzuhzBw=`) and `<MESSAGE>`.  
-**CRITICAL:** Pass ONLY the filename `<KEY>.pub`, without the absolute path!
+The key may be written in any form from section 0.
 
 ```bash
 gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "<MESSAGE>" "<KEY>.pub"
@@ -23,7 +39,7 @@ Via pipe (read payload from stdin — use `-` instead of the message):
 df -h | gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" - "<KEY>.pub"
 ```
 
-## 2. LISTENING (requires raw `<KEY>`, WITHOUT `.pub`)
+## 2. LISTENING (key in any form from section 0)
 
 | User Request | Command |
 |---|---|
@@ -93,6 +109,8 @@ Generates an RSA key pair in `/etc/gorgona/`.
   max_file_size = 5242880   # optional per-key limit
 ```
 
+**Note:** section names `[exec_commands:<pubkey>]` and `[sync:<pubkey>]` must contain the bare hash `RWTPQzuhzBw=`, without extension or path. Only command line arguments accept every form.
+
 ## 7. WORKING EXAMPLES
 
 ```bash
@@ -108,15 +126,21 @@ df -h | gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' 
 gorgona send-file /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub
 gorgona send-file --name conf.d/new_name_site.conf /etc/nginx/conf.d/site.conf RWTPQzuhzBw=.pub
 gorgona revoke 170119927746560 RWTPQzuhzBw=
+
+# The same commands with the key written differently, all valid
+gorgona listen last 1 "RWTPQzuhzBw=.key"
+gorgona listen new "/etc/gorgona/RWTPQzuhzBw=.key"
+gorgona send "$(date -u '+%Y-%m-%d %H:%M:%S')" "$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')" "hello world" "/etc/gorgona/RWTPQzuhzBw=.pub"
+gorgona revoke 170119927746560 /etc/gorgona/RWTPQzuhzBw.key
 ```
 
 ## ⚠️ CRITICAL RULES FOR THE AGENT
 
-1. **KEY PATHS:**  
-   - For `send` and `send-file`, pass **ONLY THE FILENAME**: `"RWTPQzuhzBw=.pub"`.  
-   - **DO NOT USE** absolute paths like `/etc/gorgona/RWTPQzuhzBw=.pub`! The CLI automatically prepends `conf_dir` (`/etc/gorgona/`) to your argument. If you pass an absolute path, it causes fatal duplication: `/etc/gorgona//etc/gorgona/...` and the command will fail with exit code 1.  
-   - For `listen` and `revoke`, use **ONLY** the raw hash: `"RWTPQzuhzBw="` (without `.pub`).
+1. **KEY ARGUMENTS:**  
+   - Any form works everywhere: bare hash, `<KEY>.pub`, `<KEY>.key` or a full path like `/etc/gorgona/RWTPQzuhzBw=.pub`.  
+   - A bare name is resolved against `conf_dir` (`/etc/gorgona/`), so both `RWTPQzuhzBw=` and an absolute path are correct.  
+   - The CLI picks the file of the type the command needs: public for `send`/`send-file`, private for `listen`/`revoke`. Do not pre-check which extension the key has.  
 2. **Date Format:** Do not try to compute dates manually. Just copy the exact bash substitution: `$(date -u '+%Y-%m-%d %H:%M:%S')` and `$(date -u -d '+30 days' '+%Y-%m-%d %H:%M:%S')`.
-3. **Argument Order for `send`:** `<unlock> <expire> <message> <pubkey_file>` — strictly in this order.
+3. **Argument Order for `send`:** `<unlock> <expire> <message> <pubkey>` — strictly in this order.
 4. **Flag Placement:** The `-e` flag goes **before** the subcommand: `gorgona -e listen ...`, NOT `gorgona listen -e ...`.
 5. **No Reconnaissance:** Do not waste tokens on reconnaissance (`ls`, `cat`, `--help`). All paths, formats, and rules are explicitly defined in this document.
