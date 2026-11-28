@@ -63,9 +63,28 @@ sudo docker run -d \
 echo ">> [${ACTION}] Cleaning up dangling images..."
 sudo docker image prune -f
 # ---------------------------------------------------------------------------
-# Wait for startup and show the banner lines from the logs
+# Wait for the startup banner in the container logs (up to 60s)
 # ---------------------------------------------------------------------------
 echo ">> [${ACTION}] Waiting for startup..."
-sleep 2
+READY=0
+for _ in $(seq 1 60); do
+  if sudo docker logs "${NAME}" 2>&1 | grep -q "has started successfully"; then
+    READY=1
+    break
+  fi
+  if ! sudo docker inspect -f '{{.State.Running}}' "${NAME}" 2>/dev/null | grep -q true; then
+    echo ">> ERROR: container exited during startup. Recent logs:"
+    sudo docker logs --tail 30 "${NAME}" 2>&1 || true
+    exit 1
+  fi
+  sleep 1
+done
+if [ "${READY}" -ne 1 ]; then
+  echo ">> ERROR: startup banner not seen within 60s. Recent logs:"
+  sudo docker logs --tail 30 "${NAME}" 2>&1 || true
+  exit 1
+fi
 sudo docker logs "${NAME}" 2>&1 | grep "#" || true
+HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+echo ">> Web UI: https://${HOST_IP:-<SERVER_IP>}:8000"
 echo ">> Done (${ACTION}). Container '${NAME}' is running."
