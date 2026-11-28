@@ -110,6 +110,7 @@ Each template card is split into two equal sections:
 * **Drag-and-Drop Reordering**: Grab and drag templates vertically to adjust prioritization. Order is permanently synchronized with the backend.
 * **Deletion**: Hover and click the **`X`** button to permanently remove the template.
 * **Fast Dismissal**: Press **`Escape`** when the message input is empty to hide the Quick Actions panel.
+* **Click-Away Collapse**: Clicking anywhere outside the composer area hides the panel while preserving the typed draft; focusing the input again expands it back.
 ---
 
 ### 6. Search, Navigation & "Smart Pulse"

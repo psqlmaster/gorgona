@@ -55,9 +55,6 @@ $$H_i = \text{XXH3-64}\Big(\text{ID}_i \;\parallel\; H_{i-1} \;\parallel\; \text
   - [Send Message](#send-message)
   - [Listen for Messages](#listen-for-messages)
   - [Run Server](#run-server)
-- [Configuration](#configuration)
-  - [Client Configuration](#client-configuration)
-  - [Server Configuration](#server-configuration)
 - [Flowchart of Server Operation](#flowchart-of-server-operation)
 - [Advanced Use Case: The Dead Man's Switch (DMS)](#advanced-use-case-the-dead-mans-switch-dms)
 - [Monitoring & Observability](#monitoring--observability)
@@ -209,7 +206,7 @@ Install dependencies (OpenSSL required):
 - On REDOS: `sudo yum install openssl11 openssl11-devel`
 - On centos: `sudo yum install -y git gcc make pkgconfig check check-devel openssl-devel`
 - On macOS: `brew install openssl`
-- On FreeBSD / OPNsense: `pkg install -y gmake git` *(Clang & OpenSSL included in base system)*. See [FreeBSD Build Guide](FreeBSD/README.md).
+- On FreeBSD / OPNsense: `pkg install -y gmake git` *(Clang & OpenSSL included in base system)*. See [FreeBSD Build Guide](FreeBSD/readme.md).
 
 > Note: Tested on Debian, Fedora, Centos and RED OS.
 > Binary Compatibility
@@ -398,7 +395,7 @@ WantedBy=multi-user.target
 
 ##### Service Installation on FreeBSD / OPNsense (rc.d)
 For FreeBSD and OPNsense, use the native `rc.d` daemon supervisor:
-See the **[FreeBSD rc.d Service Guide](FreeBSD/README.md#4-setting-up-the-background-service-rcd)**.
+See the **[FreeBSD rc.d Service Guide](FreeBSD/readme.md#4-setting-up-the-background-service-rcd)**.
 
 ---
 #### Usage
@@ -573,7 +570,7 @@ cmd="status BQQCyN8zo4La2lRSIQ2jLp5imEa0JzdXp2PKogP3"; echo "$cmd" | nc 64.188.7
 **Output:**
 ```ini
 --- Gorgona Node [64.188.70.158 7777] Detailed Status ---
-Version: 2.9.6
+Version: 3.5.7
 Uptime: 0d 0h 1m
 Connections:
   - Active Clients: 1 / 100
@@ -597,8 +594,8 @@ Operational Configuration:
   [46.138.247.148 :7777 ] Score: 0.56 | RTT:  183.0 ms | Spd: 9724.7 KB/s | SEED [UP]
   [192.168.1.10   :7777 ] Score: 0.00 | RTT:    0.0 ms | Spd:    0.0 KB/s | PEX  [DEAD]
 -----------------------------------------------------
---- Gorgona Node [192.168.1.200 7777] Detailed Status ---
-Version: 2.9.6
+--- Gorgona Node [46.138.247.148 7777] Detailed Status ---
+Version: 3.5.7
 Uptime: 0d 0h 1m
 Connections:
   - Active Clients: 3 / 100
@@ -700,7 +697,7 @@ case "$ACTION" in
         RESULT=$(pkill -9 -f "$PATTERN" 2>&1 && echo "✓ Processes killed" || echo "✗ No processes found")
         ;;
     disk)
-        # ИСПРАВЛЕНО: PATH -> CHECK_PATH (не перезаписывать системную переменную!)
+        # Use CHECK_PATH to avoid overwriting the system PATH variable
         CHECK_PATH="${SERVICE:-/}"
         RESULT=$(du -sh "$CHECK_PATH" 2>&1 && df -h "$CHECK_PATH" 2>&1 | tail -1)
         ;;
